@@ -26,7 +26,17 @@ pnpm test            # run vitest once
 pnpm test:watch      # vitest watch mode
 pnpm typecheck       # tsc --noEmit for node + web projects
 pnpm format          # prettier --write .
+pnpm dist            # package macOS .app + .dmg into release/ (electron-builder)
 ```
+
+## Packaging
+
+`pnpm dist` runs electron-builder with `electron-builder.yml`. ALL runtime deps
+(including electron-store) live in devDependencies so electron-vite bundles them
+into `out/` — the packaged app ships no node_modules, which avoids
+electron-builder's pnpm-symlink issues. Consequence: never add a runtime dep to
+"dependencies"; add it to devDependencies and let the bundler inline it. The
+build is unsigned (`identity: null`) — set a real identity before distributing.
 
 ## Version constraints (learned the hard way)
 

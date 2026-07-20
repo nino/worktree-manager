@@ -1,0 +1,16 @@
+appId: uk.org.plinth.worktree-manager
+productName: Worktree Manager
+directories:
+  output: release
+# All runtime code is bundled into out/ by electron-vite; no node_modules needed.
+files:
+  - out/**
+  - package.json
+npmRebuild: false
+mac:
+  category: public.app-category.developer-tools
+  # Local/unsigned build; sign with a real identity before distributing.
+  identity: null
+  target:
+    - target: dmg
+      arch: arm64

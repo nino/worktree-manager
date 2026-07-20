@@ -6,3 +6,4 @@ dist-electron
 *.tsbuildinfo
 .DS_Store
 .vite
+release

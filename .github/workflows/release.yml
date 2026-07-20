@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Only one release build at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: macos-latest # arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version read from packageManager field
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build and package
+        run: pnpm dist
+
+      - name: Publish rolling "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          SHORT_SHA=${GITHUB_SHA:0:7}
+          # Recreate the rolling release so its tag always points at this commit.
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest \
+            --title "Worktree Manager v${VERSION} (${SHORT_SHA})" \
+            --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Unsigned macOS arm64 build — right-click → Open on first launch." \
+            release/*.dmg

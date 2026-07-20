@@ -15,13 +15,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
-  },
-  "dependencies": {
-    "electron-store": "^11.0.2"
+    "format:check": "prettier --check .",
+    "dist": "pnpm build && electron-builder --mac --config electron-builder.yml"
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.101.3",
+    "electron-builder": "^26.15.3",
+    "electron-store": "^11.0.2",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
