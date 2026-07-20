@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "dist": "pnpm build && electron-builder --mac --config electron-builder.yml"
+    "dist": "pnpm build && electron-builder --mac --publish never --config electron-builder.yml"
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.101.3",
