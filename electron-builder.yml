@@ -9,6 +9,7 @@ files:
 npmRebuild: false
 mac:
   category: public.app-category.developer-tools
+  icon: build/icon.icns
   # Local/unsigned build; sign with a real identity before distributing.
   identity: null
   target:

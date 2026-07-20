@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, nativeImage, nativeTheme, shell } from "electron";
 import { registerIpc } from "./ipc";
 
 // MARK: Window
@@ -40,6 +41,16 @@ function createWindow(): void {
 // MARK: App lifecycle
 
 app.whenReady().then(() => {
+  // In dev the dock uses Electron's default icon (packaged builds get it from
+  // the bundle .icns). Point it at build/icon.png when running from source.
+  if (process.platform === "darwin" && app.dock) {
+    const devIcon = join(process.cwd(), "build", "icon.png");
+    if (existsSync(devIcon)) {
+      const image = nativeImage.createFromPath(devIcon);
+      if (!image.isEmpty()) app.dock.setIcon(image);
+    }
+  }
+
   registerIpc();
   createWindow();
 
