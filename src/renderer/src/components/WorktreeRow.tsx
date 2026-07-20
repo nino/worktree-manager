@@ -5,6 +5,7 @@ import {
   Code,
   FolderOpen,
   GitMerge,
+  Loader2,
   SquareTerminal,
   Trash2,
 } from "lucide-react";
@@ -232,6 +233,15 @@ export function WorktreeRow({ repo, worktree }: Props) {
 
       {gitOp.isPending && <p className="hint row-error">Running…</p>}
       {opError && <p className="error row-error">{opError}</p>}
+
+      {/* While git removes the tree it transiently reports the vanishing files
+          as changes; cover the row so that flicker never reaches the UI. */}
+      {del.isPending && (
+        <div className="wt-overlay">
+          <Loader2 {...ICON} className="spin" />
+          Deleting…
+        </div>
+      )}
     </div>
   );
 }

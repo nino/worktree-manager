@@ -186,12 +186,47 @@ body {
 }
 
 .wt-row {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   padding: 5px 8px 5px 24px;
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* Covers a row while git removes it, hiding the transient "dirty" flicker. */
+.wt-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 24px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-elev-2) 88%, transparent);
+}
+
+/* Placeholder row for a worktree that is still being created. */
+.wt-creating {
+  opacity: 0.75;
+}
+
+.wt-creating-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.wt-create-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .wt-row:last-child {

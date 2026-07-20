@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AppConfig,
   AppSettings,
-  CreateWorktreeParams,
   DeleteWorktreeParams,
   GitOpResult,
   RepoConfig,
@@ -79,14 +78,6 @@ export function useRemoveRepo() {
   const refresh = useRefreshAll();
   return useMutation({
     mutationFn: (repoId: string) => api.removeRepo(repoId),
-    onSuccess: refresh,
-  });
-}
-
-export function useCreateWorktree() {
-  const refresh = useRefreshAll();
-  return useMutation({
-    mutationFn: (params: CreateWorktreeParams) => api.createWorktree(params),
     onSuccess: refresh,
   });
 }
