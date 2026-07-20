@@ -1,0 +1,74 @@
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "Folder.svg",
+          "name" : "Folder",
+          "position" : {
+            "scale" : 0.7,
+            "translation-in-points" : [
+              -425.2586960739982,
+              158.1832317036812
+            ]
+          }
+        },
+        {
+          "blend-mode" : "normal",
+          "glass" : true,
+          "image-name" : "Folder.svg",
+          "name" : "Folder",
+          "position" : {
+            "scale" : 0.53,
+            "translation-in-points" : [
+              231.72487409283463,
+              -7.82017701226323e-05
+            ]
+          }
+        },
+        {
+          "image-name" : "Folder.svg",
+          "name" : "Folder",
+          "position" : {
+            "scale" : 0.51,
+            "translation-in-points" : [
+              240.36275881033464,
+              264.38645032222473
+            ]
+          }
+        },
+        {
+          "image-name" : "Tree.svg",
+          "name" : "Tree",
+          "position" : {
+            "scale" : 0.79,
+            "translation-in-points" : [
+              -81.54564822136172,
+              -1.8111036005793721
+            ]
+          }
+        },
+        {
+          "blend-mode" : "normal",
+          "image-name" : "Gemini_Generated_Image_zgj7pgzgj7pgzgj7.svg",
+          "name" : "Gemini_Generated_Image_zgj7pgzgj7pgzgj7"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -9,7 +9,16 @@ files:
 npmRebuild: false
 mac:
   category: public.app-category.developer-tools
+  # icon.icns is the legacy fallback (<= macOS 15). The full-resolution Liquid
+  # Glass icon lives in build/Assets.car and is used on macOS 26+ via
+  # CFBundleIconName. Both are generated from build/AppIcon.icon by
+  # build/make-icon.sh.
   icon: build/icon.icns
+  extendInfo:
+    CFBundleIconName: AppIcon
+  extraResources:
+    - from: build/Assets.car
+      to: Assets.car
   # Local/unsigned build; sign with a real identity before distributing.
   identity: null
   target:
