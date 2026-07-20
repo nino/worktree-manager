@@ -9,11 +9,10 @@ interface Props {
   onClose: () => void;
 }
 
-/** Global app settings: worktrees root, editor command, terminal command. */
+/** Global app settings: worktrees root, editor command. */
 export function SettingsDialog({ config, onClose }: Props) {
   const [worktreesRoot, setWorktreesRoot] = useState(config.worktreesRoot);
   const [editorCommand, setEditorCommand] = useState(config.editorCommand);
-  const [terminalCommand, setTerminalCommand] = useState(config.terminalCommand);
   const save = useSetAppSettings();
 
   const pickRoot = async () => {
@@ -26,7 +25,6 @@ export function SettingsDialog({ config, onClose }: Props) {
       await save.mutateAsync({
         worktreesRoot: worktreesRoot.trim(),
         editorCommand: editorCommand.trim(),
-        terminalCommand: terminalCommand.trim(),
       });
       onClose();
     } catch {
@@ -74,18 +72,10 @@ export function SettingsDialog({ config, onClose }: Props) {
         </small>
       </label>
 
-      <label className="field">
-        <span>Terminal command</span>
-        <input
-          value={terminalCommand}
-          placeholder="e.g., open -a Terminal"
-          onChange={(e) => setTerminalCommand(e.target.value)}
-        />
-        <small className="hint">
-          Command used by “Open in terminal”. Use {"{path}"} where the worktree path should go,
-          otherwise it is appended. Ghostty: open -na Ghostty --args --working-directory={"{path}"}
-        </small>
-      </label>
+      <small className="hint">
+        “Open in terminal” uses your system default terminal (set via “Set as default terminal” in
+        your terminal app).
+      </small>
 
       {save.isError && <p className="error">{(save.error as Error).message}</p>}
     </Modal>

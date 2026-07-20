@@ -20,17 +20,12 @@ export interface AppConfig {
   worktreesRoot: string;
   /** Editor command used by "Open in editor" (e.g. `code`, or an absolute path). */
   editorCommand: string;
-  /**
-   * Terminal command used by "Open in terminal" (e.g. `open -a Terminal`).
-   * Supports a `{path}` placeholder; otherwise the path is appended.
-   */
-  terminalCommand: string;
   /** Configured repositories. */
   repos: RepoConfig[];
 }
 
 /** The app-wide settings editable in the Settings dialog. */
-export type AppSettings = Pick<AppConfig, "worktreesRoot" | "editorCommand" | "terminalCommand">;
+export type AppSettings = Pick<AppConfig, "worktreesRoot" | "editorCommand">;
 
 /** Git status of a single worktree. */
 export interface WorktreeStatus {

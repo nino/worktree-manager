@@ -7,7 +7,6 @@ import type { AppConfig, AppSettings, RepoConfig } from "@shared/types";
 const defaults: AppConfig = {
   worktreesRoot: join(homedir(), ".claude-worktrees"),
   editorCommand: "code",
-  terminalCommand: process.platform === "darwin" ? "open -a Terminal" : "",
   repos: [],
 };
 
@@ -24,16 +23,14 @@ export function getConfig(): AppConfig {
   return {
     worktreesRoot: store().get("worktreesRoot"),
     editorCommand: store().get("editorCommand"),
-    terminalCommand: store().get("terminalCommand"),
     repos: store().get("repos"),
   };
 }
 
-/** Update the app-wide settings (worktrees root, editor, terminal). */
+/** Update the app-wide settings (worktrees root, editor). */
 export function setAppSettings(settings: AppSettings): AppConfig {
   store().set("worktreesRoot", settings.worktreesRoot);
   store().set("editorCommand", settings.editorCommand);
-  store().set("terminalCommand", settings.terminalCommand);
   return getConfig();
 }
 

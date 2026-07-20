@@ -99,10 +99,17 @@ src/
   `worktree prune`, no `rm -rf` fallback. Missing-folder ("prunable") worktrees
   are cleaned up via targeted prune, refused if other prunable worktrees exist.
   Mutating ops are serialized per worktree path (`withWorktreeLock`).
-- **Editor** and **terminal** commands are global; **init command** and **main
-  branch** are per-repo. Both editor/terminal commands support a `{path}`
-  placeholder (see `buildCommand` in `main/command.ts`), otherwise the path is
-  appended as a quoted argument.
+- **Editor** command is global; **init command** and **main branch** are
+  per-repo. The editor command supports a `{path}` placeholder (see
+  `buildCommand` in `main/command.ts`), otherwise the path is appended as a
+  quoted argument.
+- **Open in terminal** uses the user's system-wide default terminal — there is
+  no configurable command. On macOS the "default terminal" is the Launch
+  Services handler for the `public.unix-executable` content type (what Ghostty /
+  iTerm register via "Set as default terminal"); `main/terminal.ts` parses that
+  handler out of the LS database and `system.ts` opens the folder with
+  `open -b <bundleId> <path>` (no `-n`, so a running instance is reused). Falls
+  back to `Terminal.app` when no override is set.
 - **Per-worktree git ops**: push (auto `-u origin HEAD` on first push), pull
   (`--ff-only`), pull-primary-branch (`pull origin <main>`, or local merge when
   no remote), and a branch-switch dropdown (`git switch` — git refuses unsafe
