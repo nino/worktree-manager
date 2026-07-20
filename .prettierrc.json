@@ -1,0 +1,7 @@
+{
+  "objectWrap": "collapse",
+  "singleQuote": false,
+  "semi": true,
+  "trailingComma": "all",
+  "printWidth": 100
+}
