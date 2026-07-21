@@ -157,4 +157,17 @@ export interface WorktreeApi {
   revealInFinder(targetPath: string): Promise<void>;
   /** Open a native directory picker; returns the chosen path or null. */
   pickDirectory(title?: string): Promise<string | null>;
+  /** Collapse the window to the Dock (classic collapse box). */
+  minimizeWindow(): Promise<void>;
+  /** Toggle the classic "zoom" between maximized and restored (zoom box). */
+  zoomWindow(): Promise<void>;
+  /** Close the window (close box). */
+  closeWindow(): Promise<void>;
+  /** Resize the window to the given logical size (drives the grow box). */
+  setWindowSize(width: number, height: number): Promise<void>;
+  /**
+   * Subscribe to window activation changes (frontmost vs. background). The
+   * listener fires with the current focus state; returns an unsubscribe fn.
+   */
+  onWindowFocusChange(listener: (focused: boolean) => void): () => void;
 }

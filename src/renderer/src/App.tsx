@@ -1,15 +1,27 @@
-import { useState } from "react";
-import { RefreshCw, Settings } from "lucide-react";
+import { useEffect, useState } from "react";
+import { HelpCircle, RefreshCw, Settings } from "lucide-react";
 import { useConfig, useAddRepo, useRepos } from "./queries";
 import { api } from "./api";
 import { RepoNode } from "./components/RepoNode";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { HelpDialog } from "./components/HelpDialog";
+import { GrowBox } from "./components/GrowBox";
+
+/** Track whether the window is frontmost, so the UI can render the Mac OS 9
+ * "background window" look (flat title bars, hollow boxes) when it isn't. */
+function useWindowActive(): boolean {
+  const [active, setActive] = useState(true);
+  useEffect(() => api.onWindowFocusChange(setActive), []);
+  return active;
+}
 
 export function App() {
   const config = useConfig();
   const repos = useRepos();
   const addRepo = useAddRepo();
+  const active = useWindowActive();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const onAddRepo = async () => {
     const dir = await api.pickDirectory("Select a git repository");
@@ -20,9 +32,15 @@ export function App() {
   };
 
   return (
-    <div className="app">
+    <div className={active ? "app" : "app inactive"}>
       <header className="topbar">
         <div className="topbar-title">
+          <button
+            className="title-box title-box-close"
+            title="Close"
+            aria-label="Close window"
+            onClick={() => api.closeWindow()}
+          />
           <span className="app-name">Worktree Manager</span>
         </div>
         <div className="topbar-actions">
@@ -44,12 +62,34 @@ export function App() {
           </button>
           <button
             className="btn btn-sm btn-icon"
+            title="About Worktree Manager"
+            aria-label="About Worktree Manager"
+            onClick={() => setHelpOpen(true)}
+          >
+            <HelpCircle size={13} strokeWidth={1.75} />
+          </button>
+          <button
+            className="btn btn-sm btn-icon"
             title="Settings"
             aria-label="Settings"
             onClick={() => setSettingsOpen(true)}
           >
             <Settings size={13} strokeWidth={1.75} />
           </button>
+          <span className="title-box-group">
+            <button
+              className="title-box title-box-collapse"
+              title="Minimize"
+              aria-label="Minimize window"
+              onClick={() => api.minimizeWindow()}
+            />
+            <button
+              className="title-box title-box-zoom"
+              title="Zoom"
+              aria-label="Zoom window"
+              onClick={() => api.zoomWindow()}
+            />
+          </span>
         </div>
       </header>
 
@@ -77,6 +117,10 @@ export function App() {
       {settingsOpen && config.data && (
         <SettingsDialog config={config.data} onClose={() => setSettingsOpen(false)} />
       )}
+
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
+
+      <GrowBox />
     </div>
   );
 }

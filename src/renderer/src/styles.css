@@ -128,7 +128,10 @@ body {
 }
 
 .topbar-title {
-  padding-left: 78px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 6px;
   background: var(--bg-elev);
   padding-right: 8px;
 }
@@ -189,7 +192,7 @@ body {
   background: var(--bg-elev);
   border: none;
   color: var(--text);
-  cursor: pointer;
+  cursor: default;
   font-size: 10px;
   width: 16px;
   padding: 0 2px;
@@ -201,7 +204,7 @@ body {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  cursor: pointer;
+  cursor: default;
   background: var(--bg-elev);
   padding: 0 6px;
 }
@@ -386,7 +389,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
+  cursor: default;
 }
 
 .branch-select:hover,
@@ -489,7 +492,7 @@ body {
   border-radius: var(--btn-radius);
   box-shadow: var(--bevel-out);
   padding: 3px 9px;
-  cursor: pointer;
+  cursor: default;
   -webkit-app-region: no-drag;
 }
 
@@ -578,7 +581,7 @@ body {
   background: none;
   border: none;
   color: var(--text-dim);
-  cursor: pointer;
+  cursor: default;
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 0;
@@ -589,9 +592,11 @@ body {
   color: var(--text);
 }
 
-/* MARK: Title-bar boxes (close box on Platinum windows) */
+/* MARK: Title-bar boxes (Platinum close / collapse / zoom boxes) */
 
+.title-box,
 .close-box {
+  position: relative;
   width: 13px;
   height: 13px;
   flex-shrink: 0;
@@ -599,12 +604,112 @@ body {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   box-shadow: var(--bevel-out);
-  cursor: pointer;
+  cursor: default;
+  -webkit-app-region: no-drag;
 }
 
+.title-box:active,
 .close-box:active {
   background: #777777;
   box-shadow: var(--bevel-in);
+}
+
+/* The collapse (window-shade) box carries a single horizontal line. */
+.title-box-collapse::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 2px;
+  right: 2px;
+  height: 1px;
+  background: var(--border);
+}
+
+/* The zoom box carries a small square tucked into its top-left corner. */
+.title-box-zoom::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--border);
+}
+
+/* Corner boxes group flush to the top-right, opposite the close box. */
+.title-box-group {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+
+/* MARK: Inactive window — Mac OS 9 drains its background windows: the title-bar
+   pinstripes flatten out, the boxes hollow to plain outlines, and the chrome
+   loses its colour and bevels until the window is frontmost again. */
+.app.inactive {
+  --stripes: var(--bg-elev);
+}
+
+.app.inactive .topbar,
+.app.inactive .repo-head,
+.app.inactive .modal-head {
+  box-shadow: none;
+}
+
+.app.inactive .app-name,
+.app.inactive .repo-name,
+.app.inactive .repo-meta,
+.app.inactive .modal-title {
+  color: var(--disabled);
+  text-shadow: none;
+}
+
+/* Title-bar boxes reduce to plain outlines: no bevel, no glyph. */
+.app.inactive .title-box,
+.app.inactive .close-box {
+  box-shadow: none;
+  background: var(--bg-elev);
+  border-color: var(--border-soft);
+}
+
+.app.inactive .title-box::after {
+  display: none;
+}
+
+/* The lavender scroller desaturates to a plain grey well. */
+.app.inactive ::-webkit-scrollbar-thumb {
+  background: #c4c4c4;
+  border-color: var(--border-soft);
+  box-shadow: none;
+}
+
+/* MARK: Grow box (classic diagonal resize grip, bottom-right corner) */
+
+.grow-box {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 15px;
+  height: 15px;
+  z-index: 10;
+  /* Arrow cursor, not a resize arrow — Mac OS 9 signalled resize with the grip
+     graphic, never a cursor change. */
+  cursor: default;
+  background-color: var(--bg-elev);
+  border-top: 1px solid var(--border-soft);
+  border-left: 1px solid var(--border-soft);
+  /* Diagonal ribs of the classic grip. */
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--bevel-darker) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* Mac OS 9 hides the grow box on background windows. */
+.app.inactive .grow-box {
+  display: none;
 }
 
 /* MARK: States & text */
@@ -733,6 +838,43 @@ body {
   flex: 1;
 }
 
+/* MARK: Help / About dialog content */
+
+.help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.help p {
+  margin: 0;
+}
+
+.help h3 {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.help ul {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.help code {
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  font-size: 10px;
+  background: var(--content);
+  padding: 0 3px;
+  border: 1px solid var(--border-soft);
+}
+
 /* MARK: Forms */
 
 .field {
@@ -800,7 +942,7 @@ code.path-code {
   color: var(--text);
   border: none;
   padding: 4px 10px;
-  cursor: pointer;
+  cursor: default;
 }
 
 .seg + .seg {

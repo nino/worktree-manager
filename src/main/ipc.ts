@@ -44,6 +44,11 @@ export const CH = {
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
   pickDirectory: "system:pickDirectory",
+  windowMinimize: "window:minimize",
+  windowZoom: "window:zoom",
+  windowClose: "window:close",
+  windowSetSize: "window:setSize",
+  windowFocusChanged: "window:focusChanged",
 } as const;
 
 // MARK: Handler registration
@@ -123,5 +128,28 @@ export function registerIpc(): void {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+
+  // MARK: Window controls (classic close / collapse / zoom boxes)
+
+  ipcMain.handle(CH.windowMinimize, (e): void => {
+    BrowserWindow.fromWebContents(e.sender)?.minimize();
+  });
+
+  ipcMain.handle(CH.windowZoom, (e): void => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
+
+  ipcMain.handle(CH.windowClose, (e): void => {
+    BrowserWindow.fromWebContents(e.sender)?.close();
+  });
+
+  // Drives the classic grow-box drag. The renderer sends the desired outer
+  // size in logical pixels; Electron clamps it to the window's min/max.
+  ipcMain.handle(CH.windowSetSize, (e, width: number, height: number): void => {
+    BrowserWindow.fromWebContents(e.sender)?.setSize(Math.round(width), Math.round(height));
   });
 }

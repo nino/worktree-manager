@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, nativeImage, shell } from "electron";
-import { registerIpc } from "./ipc";
+import { CH, registerIpc } from "./ipc";
 
 // MARK: Window
 
@@ -13,7 +13,11 @@ function createWindow(): void {
     minHeight: 420,
     show: false,
     title: "Worktree Manager",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    // Frameless + square corners: no native title bar or traffic lights, so we
+    // draw the classic Mac OS 9 close/collapse/zoom boxes ourselves. Disabling
+    // rounded corners squares off the window like a Platinum window.
+    frame: false,
+    roundedCorners: false,
     // Platinum gray regardless of system theme — Mac OS 9 has one appearance.
     backgroundColor: "#cccccc",
     webPreferences: {
@@ -25,6 +29,16 @@ function createWindow(): void {
   });
 
   win.once("ready-to-show", () => win.show());
+
+  // Mirror the window's activation state to the renderer so it can flatten the
+  // pinstripes and hollow the title-bar boxes when the app isn't frontmost, the
+  // way Mac OS 9 renders background windows.
+  const sendFocus = (): void => {
+    if (!win.isDestroyed()) win.webContents.send(CH.windowFocusChanged, win.isFocused());
+  };
+  win.on("focus", sendFocus);
+  win.on("blur", sendFocus);
+  win.webContents.on("did-finish-load", sendFocus);
 
   // Open external links in the default browser, not inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {

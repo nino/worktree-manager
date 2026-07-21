@@ -29,6 +29,11 @@ const CH = {
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
   pickDirectory: "system:pickDirectory",
+  windowMinimize: "window:minimize",
+  windowZoom: "window:zoom",
+  windowClose: "window:close",
+  windowSetSize: "window:setSize",
+  windowFocusChanged: "window:focusChanged",
 } as const;
 
 const api: WorktreeApi = {
@@ -56,6 +61,16 @@ const api: WorktreeApi = {
   openInTerminal: (targetPath: string) => ipcRenderer.invoke(CH.openInTerminal, targetPath),
   revealInFinder: (targetPath: string) => ipcRenderer.invoke(CH.revealInFinder, targetPath),
   pickDirectory: (title?: string) => ipcRenderer.invoke(CH.pickDirectory, title),
+  minimizeWindow: () => ipcRenderer.invoke(CH.windowMinimize),
+  zoomWindow: () => ipcRenderer.invoke(CH.windowZoom),
+  closeWindow: () => ipcRenderer.invoke(CH.windowClose),
+  setWindowSize: (width: number, height: number) =>
+    ipcRenderer.invoke(CH.windowSetSize, width, height),
+  onWindowFocusChange: (listener: (focused: boolean) => void) => {
+    const handler = (_e: unknown, focused: boolean) => listener(focused);
+    ipcRenderer.on(CH.windowFocusChanged, handler);
+    return () => ipcRenderer.removeListener(CH.windowFocusChanged, handler);
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);
