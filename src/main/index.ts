@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, nativeImage, nativeTheme, shell } from "electron";
+import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { registerIpc } from "./ipc";
 
 // MARK: Window
@@ -14,7 +14,8 @@ function createWindow(): void {
     show: false,
     title: "Worktree Manager",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#17181b" : "#f4f4f6",
+    // Platinum gray regardless of system theme — Mac OS 9 has one appearance.
+    backgroundColor: "#cccccc",
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
@@ -53,13 +54,6 @@ app.whenReady().then(() => {
 
   registerIpc();
   createWindow();
-
-  // Keep the native window background in sync with the system theme;
-  // the renderer follows automatically via prefers-color-scheme.
-  nativeTheme.on("updated", () => {
-    const color = nativeTheme.shouldUseDarkColors ? "#17181b" : "#f4f4f6";
-    for (const win of BrowserWindow.getAllWindows()) win.setBackgroundColor(color);
-  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

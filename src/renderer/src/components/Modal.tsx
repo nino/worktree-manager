@@ -26,10 +26,9 @@ export function Modal({ title, onClose, children, footer }: ModalProps) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="modal-head">
+          <button className="close-box" title="Close" aria-label="Close" onClick={onClose} />
           <span className="modal-title">{title}</span>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
+          <span className="titlebar-spacer" aria-hidden="true" />
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
