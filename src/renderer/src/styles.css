@@ -89,15 +89,31 @@ body {
   box-shadow: inset 1px 0 0 #aaaaaa;
 }
 
+::-webkit-scrollbar-track:horizontal {
+  border-left: none;
+  border-top: 1px solid var(--border-soft);
+  box-shadow: inset 0 1px 0 #aaaaaa;
+}
+
+/* Lavender scroller with a centered three-line grip, like the Platinum thumb. */
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(to right, #c4c9f2, #8890dd 55%, #7078cc);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='7'%3E%3Cg fill='%23333366' fill-opacity='0.55'%3E%3Crect width='9' height='1'/%3E%3Crect y='3' width='9' height='1'/%3E%3Crect y='6' width='9' height='1'/%3E%3C/g%3E%3C/svg%3E")
+      center / auto no-repeat,
+    linear-gradient(to right, #c4c9f2, #8890dd 55%, #7078cc);
   border: 1px solid #333366;
   box-shadow: inset 1px 1px 0 #e2e5ff;
 }
 
 ::-webkit-scrollbar-thumb:horizontal {
-  background: linear-gradient(to bottom, #c4c9f2, #8890dd 55%, #7078cc);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='9'%3E%3Cg fill='%23333366' fill-opacity='0.55'%3E%3Crect width='1' height='9'/%3E%3Crect x='3' width='1' height='9'/%3E%3Crect x='6' width='1' height='9'/%3E%3C/g%3E%3C/svg%3E")
+      center / auto no-repeat,
+    linear-gradient(to bottom, #c4c9f2, #8890dd 55%, #7078cc);
 }
+
+/* (Mac OS 9 scroll arrows would live here, but this Chromium no longer renders
+   ::-webkit-scrollbar-button, so the scrollbar is track + scroller only.) */
 
 ::-webkit-scrollbar-corner {
   background: #c0c0c0;
@@ -172,6 +188,9 @@ body {
   background: var(--bg-elev);
   box-shadow: var(--bevel-out), var(--shadow);
   overflow: hidden;
+  /* Keep full height: when the tree overflows, it scrolls rather than
+     squeezing the panels and clipping their rows. */
+  flex-shrink: 0;
 }
 
 /* Repo header doubles as the window's pinstriped title bar. */
