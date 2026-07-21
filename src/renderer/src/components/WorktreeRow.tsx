@@ -12,8 +12,10 @@ import {
 import type { RepoConfig, WorktreeInfo } from "@shared/types";
 import { useBranches, useDeleteWorktree, useGitOp } from "../queries";
 import { api } from "../api";
+import { useRuns } from "../runs";
 import { displayPath } from "../format";
 import { StatusBadges } from "./StatusBadges";
+import { WorktreeCommands } from "./WorktreeCommands";
 
 interface Props {
   repo: RepoConfig;
@@ -29,6 +31,8 @@ export function WorktreeRow({ repo, worktree }: Props) {
   const del = useDeleteWorktree();
   const gitOp = useGitOp();
   const branches = useBranches(repo.id);
+  const runs = useRuns();
+  const runningHere = runs.runningFor(worktree.path);
 
   // If the worktree changes under an open confirm (branch switched, new
   // commit), the confirmation no longer covers what the user saw — reset it.
@@ -117,6 +121,18 @@ export function WorktreeRow({ repo, worktree }: Props) {
           ) : (
             <StatusBadges status={worktree.status} mainBranch={repo.mainBranch} />
           )}
+          {runningHere.length > 0 && (
+            <button
+              className="badge badge-running"
+              title={`Running: ${runningHere.map((r) => r.name).join(", ")} — click to view output`}
+              onClick={() =>
+                runs.view({ worktreePath: worktree.path, commandId: runningHere[0].commandId })
+              }
+            >
+              <span className="run-dot" aria-hidden="true" />
+              {runningHere.length === 1 ? runningHere[0].name : `${runningHere.length} running`}
+            </button>
+          )}
         </div>
         <div className="wt-path" title={worktree.path}>
           {displayPath(worktree.path)}
@@ -124,6 +140,7 @@ export function WorktreeRow({ repo, worktree }: Props) {
       </div>
 
       <div className="wt-actions">
+        <WorktreeCommands repo={repo} worktree={worktree} disabled={missing} />
         <span className="btn-group">
           <button
             className="btn btn-sm btn-icon"

@@ -1,5 +1,18 @@
 /** Types shared across the main and renderer processes. */
 
+/**
+ * A named command a repo can run inside a worktree (e.g. `pnpm dev`). Repos hold
+ * an array of these so more than one command per repo is supported.
+ */
+export interface RepoCommand {
+  /** Stable unique id (generated when the command is first added). */
+  id: string;
+  /** Display name shown in the UI (e.g. "Dev server"). */
+  name: string;
+  /** The shell command line to run (e.g. `pnpm dev`). */
+  command: string;
+}
+
 /** Per-repository configuration, persisted in app preferences. */
 export interface RepoConfig {
   /** Stable unique id. */
@@ -12,6 +25,8 @@ export interface RepoConfig {
   mainBranch: string;
   /** Command run inside a new worktree after it is created (e.g. `pnpm i`). */
   initCommand: string;
+  /** Configurable commands runnable per worktree (e.g. `pnpm dev`). */
+  commands: RepoCommand[];
 }
 
 /** Global, app-wide configuration, persisted in app preferences. */
@@ -134,6 +149,44 @@ export interface DeleteWorktreeResult {
   message: string;
 }
 
+/**
+ * A command process currently running for a specific worktree. Keyed uniquely by
+ * `(worktreePath, commandId)` so the same command can run on several worktrees
+ * at once. `name`/`command` are snapshots taken when the process was started.
+ */
+export interface RunningCommand {
+  /** Owning repo id. */
+  repoId: string;
+  /** Worktree the process runs in. */
+  worktreePath: string;
+  /** Id of the RepoCommand that was started. */
+  commandId: string;
+  /** Command display name at spawn time. */
+  name: string;
+  /** Command line at spawn time. */
+  command: string;
+  /** Epoch milliseconds when the process started. */
+  startedAt: number;
+}
+
+/** A chunk of merged stdout/stderr streamed from a running command. */
+export interface CommandOutputEvent {
+  worktreePath: string;
+  commandId: string;
+  /** Raw output text (may contain partial lines and ANSI escapes). */
+  chunk: string;
+}
+
+/** Emitted once when a running command exits (or fails to start). */
+export interface CommandExitEvent {
+  worktreePath: string;
+  commandId: string;
+  /** Process exit code, or null if it was killed by a signal / failed to spawn. */
+  exitCode: number | null;
+  /** Signal that terminated the process, if any. */
+  signal: string | null;
+}
+
 /** Shape of the API exposed to the renderer via the preload bridge. */
 export interface WorktreeApi {
   /** The user's home directory (for `~` display abbreviation). */
@@ -152,6 +205,18 @@ export interface WorktreeApi {
   pullWorktree(repoId: string, worktreePath: string): Promise<GitOpResult>;
   pullMainIntoWorktree(repoId: string, worktreePath: string): Promise<GitOpResult>;
   switchBranch(repoId: string, worktreePath: string, branch: string): Promise<GitOpResult>;
+  /** Start a configured command for a worktree; resolves with the run's metadata. */
+  startCommand(repoId: string, worktreePath: string, commandId: string): Promise<RunningCommand>;
+  /** Stop a running command (SIGTERM, then SIGKILL after a grace period). */
+  stopCommand(worktreePath: string, commandId: string): Promise<void>;
+  /** All commands currently running across every worktree. */
+  listRunningCommands(): Promise<RunningCommand[]>;
+  /** Existing scrollback for a running command (empty once it has exited). */
+  getCommandBuffer(worktreePath: string, commandId: string): Promise<string>;
+  /** Subscribe to live command output; returns an unsubscribe fn. */
+  onCommandOutput(listener: (event: CommandOutputEvent) => void): () => void;
+  /** Subscribe to command-exit notifications; returns an unsubscribe fn. */
+  onCommandExit(listener: (event: CommandExitEvent) => void): () => void;
   openInEditor(targetPath: string): Promise<void>;
   openInTerminal(targetPath: string): Promise<void>;
   revealInFinder(targetPath: string): Promise<void>;

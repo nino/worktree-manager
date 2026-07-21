@@ -18,12 +18,20 @@ function store(): Store<AppConfig> {
   return _store;
 }
 
+/**
+ * Migrate a persisted repo forward so older configs (written before per-repo
+ * commands existed) don't break: a missing/invalid `commands` becomes `[]`.
+ */
+function normalizeRepo(repo: RepoConfig): RepoConfig {
+  return { ...repo, commands: Array.isArray(repo.commands) ? repo.commands : [] };
+}
+
 /** Return the full persisted configuration. */
 export function getConfig(): AppConfig {
   return {
     worktreesRoot: store().get("worktreesRoot"),
     editorCommand: store().get("editorCommand"),
-    repos: store().get("repos"),
+    repos: store().get("repos").map(normalizeRepo),
   };
 }
 
@@ -49,7 +57,7 @@ export function getRepo(repoId: string): RepoConfig {
     .get("repos")
     .find((r) => r.id === repoId);
   if (!repo) throw new Error(`Unknown repo: ${repoId}`);
-  return repo;
+  return normalizeRepo(repo);
 }
 
 /** Add a repository. Refuses duplicates (by resolved path). */
@@ -69,6 +77,7 @@ export function addRepo(repo: {
     path: repo.path,
     mainBranch: repo.mainBranch,
     initCommand: repo.initCommand ?? "",
+    commands: [],
   };
   store().set("repos", [...repos, entry]);
   return getConfig();
@@ -80,13 +89,13 @@ export function updateRepo(updated: RepoConfig): AppConfig {
   const idx = repos.findIndex((r) => r.id === updated.id);
   if (idx === -1) throw new Error(`Unknown repo: ${updated.id}`);
   const next = [...repos];
-  next[idx] = {
+  next[idx] = normalizeRepo({
     ...updated,
     // Path and id are immutable via updates; name must stay a safe segment.
     id: repos[idx].id,
     path: repos[idx].path,
     name: sanitizeRepoName(updated.name),
-  };
+  });
   store().set("repos", next);
   return getConfig();
 }

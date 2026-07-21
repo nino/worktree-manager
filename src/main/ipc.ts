@@ -22,6 +22,7 @@ import {
   switchWorktreeBranch,
 } from "./worktrees";
 import { openInEditor, openInTerminal, revealInFinder } from "./system";
+import { getCommandBuffer, listRunningCommands, startCommand, stopCommand } from "./commands";
 
 // MARK: Channel names
 
@@ -40,6 +41,13 @@ export const CH = {
   pullWorktree: "worktree:pull",
   pullMainIntoWorktree: "worktree:pullMain",
   switchBranch: "worktree:switchBranch",
+  startCommand: "command:start",
+  stopCommand: "command:stop",
+  listRunningCommands: "command:listRunning",
+  getCommandBuffer: "command:buffer",
+  // Streamed events (send/on). Must match CommandEvents in commands.ts.
+  commandOutput: "command:output",
+  commandExit: "command:exit",
   openInEditor: "system:openInEditor",
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
@@ -110,6 +118,22 @@ export function registerIpc(): void {
 
   ipcMain.handle(CH.switchBranch, (_e, repoId: string, worktreePath: string, branch: string) =>
     switchWorktreeBranch(repoId, worktreePath, branch),
+  );
+
+  // MARK: Per-worktree commands (integrated terminal)
+
+  ipcMain.handle(CH.startCommand, (_e, repoId: string, worktreePath: string, commandId: string) =>
+    startCommand(repoId, worktreePath, commandId),
+  );
+
+  ipcMain.handle(CH.stopCommand, (_e, worktreePath: string, commandId: string): void =>
+    stopCommand(worktreePath, commandId),
+  );
+
+  ipcMain.handle(CH.listRunningCommands, () => listRunningCommands());
+
+  ipcMain.handle(CH.getCommandBuffer, (_e, worktreePath: string, commandId: string): string =>
+    getCommandBuffer(worktreePath, commandId),
   );
 
   ipcMain.handle(CH.openInEditor, (_e, targetPath: string): void => openInEditor(targetPath));

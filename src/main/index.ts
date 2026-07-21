@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { CH, registerIpc } from "./ipc";
+import { stopAll } from "./commands";
 
 // MARK: Window
 
@@ -77,3 +78,6 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+// Kill any commands still running so they don't outlive the app as orphans.
+app.on("before-quit", () => stopAll());
