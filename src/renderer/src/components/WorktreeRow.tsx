@@ -13,6 +13,7 @@ import type { RepoConfig, WorktreeInfo } from "@shared/types";
 import { useBranches, useDeleteWorktree, useGitOp } from "../queries";
 import { api } from "../api";
 import { displayPath } from "../format";
+import { BranchPicker } from "./BranchPicker";
 import { StatusBadges } from "./StatusBadges";
 
 interface Props {
@@ -86,22 +87,12 @@ export function WorktreeRow({ repo, worktree }: Props) {
       <div className="wt-info">
         <div className="wt-line1">
           {worktree.branch !== null && branches.data ? (
-            <select
-              className="branch-select"
-              value={worktree.branch}
+            <BranchPicker
+              branches={branches.data}
+              current={worktree.branch}
               disabled={busy || missing}
-              title="Switch branch"
-              onChange={(e) => runOp("switch", e.target.value)}
-            >
-              {!branches.data.includes(worktree.branch) && (
-                <option value={worktree.branch}>{worktree.branch}</option>
-              )}
-              {branches.data.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
+              onSelect={(branch) => runOp("switch", branch)}
+            />
           ) : (
             <span className="wt-branch">{worktree.branch ?? "(detached)"}</span>
           )}
