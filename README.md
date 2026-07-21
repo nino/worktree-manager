@@ -55,10 +55,10 @@ Once you've packaged the app, copy the bundle into your Applications folder:
 
 ```sh
 pnpm dist         # build the .app (skip if you already have one in release/)
-pnpm install:app  # copy release/…/Worktree Manager.app → /Applications
+pnpm install-app  # copy release/…/Worktree Manager.app → /Applications
 ```
 
-`install:app` is macOS-only — it exits with an error on other platforms, since
+`install-app` is macOS-only — it exits with an error on other platforms, since
 the packaged target is a `.app` bundle. It overwrites any existing install.
 
 ## Development
