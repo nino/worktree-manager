@@ -21,9 +21,11 @@ const TERMINAL_THEME = {
  * Renders one run's output in a real xterm.js terminal, so ANSI colours and
  * cursor control sequences (progress bars, spinners, clears) render correctly.
  * Subscribes to live output first, then writes the backlog, so a drawer opened
- * mid-run shows history in order and keeps updating. xterm is imported lazily so
- * it never loads outside the browser (e.g. in unit tests). Remounted (via `key`)
- * whenever the selection changes, so the terminal resets cleanly.
+ * mid-run shows history and keeps updating (a chunk emitted in the small window
+ * between subscribing and the snapshot resolving may appear once in each — the
+ * design favours never *losing* output). xterm is imported lazily so it never
+ * loads outside the browser (e.g. in unit tests). Remounted (via `key`) whenever
+ * the selection changes, so the terminal resets cleanly.
  */
 function TerminalView({ selection }: { selection: RunSelection }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -31,15 +33,21 @@ function TerminalView({ selection }: { selection: RunSelection }) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    let cancelled = false;
-    let cleanup: (() => void) | undefined;
+    let disposed = false;
+    // Teardown steps registered as each resource is created, so unmounting at
+    // ANY await point (before `cleanup` would otherwise be assigned) still tears
+    // everything down — otherwise the IPC listeners + terminal leak.
+    const disposers: Array<() => void> = [];
+    const disposeAll = () => {
+      while (disposers.length) disposers.pop()?.();
+    };
 
     void (async () => {
       const [{ Terminal }, { FitAddon }] = await Promise.all([
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
       ]);
-      if (cancelled) return;
+      if (disposed) return; // unmounted before anything was created
 
       const term = new Terminal({
         convertEol: true,
@@ -48,6 +56,7 @@ function TerminalView({ selection }: { selection: RunSelection }) {
         fontSize: 11,
         theme: { ...TERMINAL_THEME },
       });
+      disposers.push(() => term.dispose());
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(host);
@@ -56,28 +65,25 @@ function TerminalView({ selection }: { selection: RunSelection }) {
       // Hold live chunks until the backlog is written so ordering is preserved.
       let backlogWritten = false;
       const pending: string[] = [];
-      const onChunk = (chunk: string) => {
+      const write = (chunk: string) => {
         if (backlogWritten) term.write(chunk);
         else pending.push(chunk);
       };
+      const matches = (e: { worktreePath: string; commandId: string }) =>
+        e.worktreePath === selection.worktreePath && e.commandId === selection.commandId;
 
-      const offOutput = api.onCommandOutput((e) => {
-        if (e.worktreePath === selection.worktreePath && e.commandId === selection.commandId) {
-          onChunk(e.chunk);
-        }
-      });
-      const offExit = api.onCommandExit((e) => {
-        if (e.worktreePath === selection.worktreePath && e.commandId === selection.commandId) {
+      disposers.push(
+        api.onCommandOutput((e) => {
+          if (matches(e)) write(e.chunk);
+        }),
+      );
+      disposers.push(
+        api.onCommandExit((e) => {
+          if (!matches(e)) return;
           const how = e.signal ? `signal ${e.signal}` : `code ${e.exitCode ?? 0}`;
-          onChunk(`\r\n[process exited — ${how}]\r\n`);
-        }
-      });
-
-      const buf = await api.getCommandBuffer(selection.worktreePath, selection.commandId);
-      if (!cancelled && buf) term.write(buf);
-      backlogWritten = true;
-      for (const c of pending) term.write(c);
-      pending.length = 0;
+          write(`\r\n[process exited — ${how}]\r\n`);
+        }),
+      );
 
       const resize = new ResizeObserver(() => {
         try {
@@ -87,18 +93,23 @@ function TerminalView({ selection }: { selection: RunSelection }) {
         }
       });
       resize.observe(host);
+      disposers.push(() => resize.disconnect());
 
-      cleanup = () => {
-        offOutput();
-        offExit();
-        resize.disconnect();
-        term.dispose();
-      };
+      const buf = await api.getCommandBuffer(selection.worktreePath, selection.commandId);
+      if (disposed) {
+        // Unmounted during the buffer round-trip — tear down what we created.
+        disposeAll();
+        return;
+      }
+      if (buf) term.write(buf);
+      backlogWritten = true;
+      for (const c of pending) term.write(c);
+      pending.length = 0;
     })();
 
     return () => {
-      cancelled = true;
-      cleanup?.();
+      disposed = true;
+      disposeAll();
     };
   }, [selection.worktreePath, selection.commandId]);
 

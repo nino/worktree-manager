@@ -23,7 +23,18 @@ function store(): Store<AppConfig> {
  * commands existed) don't break: a missing/invalid `commands` becomes `[]`.
  */
 function normalizeRepo(repo: RepoConfig): RepoConfig {
-  return { ...repo, commands: Array.isArray(repo.commands) ? repo.commands : [] };
+  // Drop malformed entries (e.g. a hand-edited/corrupted store) so downstream
+  // code can trust every command has string id/name/command fields.
+  const commands = Array.isArray(repo.commands)
+    ? repo.commands.filter(
+        (c) =>
+          c != null &&
+          typeof c.id === "string" &&
+          typeof c.name === "string" &&
+          typeof c.command === "string",
+      )
+    : [];
+  return { ...repo, commands };
 }
 
 /** Return the full persisted configuration. */
