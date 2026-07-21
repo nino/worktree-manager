@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import { App } from "../App";
 import { CreationsProvider } from "../creations";
+import { RunsProvider } from "../runs";
 
 /** Mount the full app (real provider tree) with a fresh, retry-free QueryClient
  * and a userEvent instance. Tests query via the global `screen`. */
@@ -14,9 +15,11 @@ export function renderApp(): { user: UserEvent; queryClient: QueryClient } {
   const user = userEvent.setup();
   render(
     <QueryClientProvider client={queryClient}>
-      <CreationsProvider>
-        <App />
-      </CreationsProvider>
+      <RunsProvider>
+        <CreationsProvider>
+          <App />
+        </CreationsProvider>
+      </RunsProvider>
     </QueryClientProvider>,
   );
   return { user, queryClient };

@@ -34,6 +34,7 @@ export function makeRepo(over: Partial<RepoConfig> = {}): RepoConfig {
     path: "/Users/test/dev/app",
     mainBranch: "main",
     initCommand: "",
+    commands: [],
     ...over,
   };
 }

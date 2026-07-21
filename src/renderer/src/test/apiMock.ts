@@ -38,6 +38,12 @@ export const apiMock: MockedApi = {
   closeWindow: vi.fn(),
   setWindowSize: vi.fn(),
   onWindowFocusChange: vi.fn(() => () => {}),
+  startCommand: vi.fn(),
+  stopCommand: vi.fn(),
+  listRunningCommands: vi.fn(),
+  getCommandBuffer: vi.fn(),
+  onCommandOutput: vi.fn(() => () => {}),
+  onCommandExit: vi.fn(() => () => {}),
 };
 
 /** Reset every mock and install safe, empty defaults. Call in `beforeEach`. */
@@ -55,4 +61,9 @@ export function resetApiMock(): void {
   apiMock.pickDirectory.mockResolvedValue(null);
   // Window-focus subscription must hand back an unsubscribe fn for React cleanup.
   apiMock.onWindowFocusChange.mockReturnValue(() => {});
+  // No commands running by default; event subscriptions hand back unsubscribers.
+  apiMock.listRunningCommands.mockResolvedValue([]);
+  apiMock.getCommandBuffer.mockResolvedValue("");
+  apiMock.onCommandOutput.mockReturnValue(() => {});
+  apiMock.onCommandExit.mockReturnValue(() => {});
 }
