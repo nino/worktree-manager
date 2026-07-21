@@ -41,6 +41,8 @@ pnpm dev       # run in development (renderer HMR)
 
 ## Build
 
+Run `pnpm i && pnpm build && pnpm dist`, and boom, you'll have an app ready in the dist folder.
+
 ```sh
 pnpm build     # typecheck + production build into out/
 pnpm start     # preview the production build
