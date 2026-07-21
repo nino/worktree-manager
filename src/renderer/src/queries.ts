@@ -6,6 +6,7 @@ import type {
   GitOpResult,
   RepoConfig,
   RepoWithWorktrees,
+  RunningCommand,
 } from "@shared/types";
 import { api } from "./api";
 
@@ -15,6 +16,7 @@ export const keys = {
   config: ["config"] as const,
   repos: ["repos"] as const,
   branches: (repoId: string) => ["branches", repoId] as const,
+  runningCommands: ["runningCommands"] as const,
 };
 
 // MARK: Queries
@@ -36,6 +38,16 @@ export function useBranches(repoId: string) {
     queryKey: keys.branches(repoId),
     queryFn: () => api.listBranches(repoId),
     staleTime: 15_000,
+  });
+}
+
+/** Commands currently running across all worktrees. Kept fresh by the RunsProvider. */
+export function useRunningCommands() {
+  return useQuery<RunningCommand[]>({
+    queryKey: keys.runningCommands,
+    queryFn: () => api.listRunningCommands(),
+    // Command start/stop/exit events drive invalidation; poll as a backstop.
+    refetchInterval: 10_000,
   });
 }
 

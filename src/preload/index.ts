@@ -2,6 +2,8 @@ import { homedir } from "node:os";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppSettings,
+  CommandExitEvent,
+  CommandOutputEvent,
   CreateWorktreeParams,
   CreateWorktreeResult,
   DeleteWorktreeParams,
@@ -25,6 +27,12 @@ const CH = {
   pullWorktree: "worktree:pull",
   pullMainIntoWorktree: "worktree:pullMain",
   switchBranch: "worktree:switchBranch",
+  startCommand: "command:start",
+  stopCommand: "command:stop",
+  listRunningCommands: "command:listRunning",
+  getCommandBuffer: "command:buffer",
+  commandOutput: "command:output",
+  commandExit: "command:exit",
   openInEditor: "system:openInEditor",
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
@@ -57,6 +65,23 @@ const api: WorktreeApi = {
     ipcRenderer.invoke(CH.pullMainIntoWorktree, repoId, worktreePath),
   switchBranch: (repoId: string, worktreePath: string, branch: string) =>
     ipcRenderer.invoke(CH.switchBranch, repoId, worktreePath, branch),
+  startCommand: (repoId: string, worktreePath: string, commandId: string) =>
+    ipcRenderer.invoke(CH.startCommand, repoId, worktreePath, commandId),
+  stopCommand: (worktreePath: string, commandId: string) =>
+    ipcRenderer.invoke(CH.stopCommand, worktreePath, commandId),
+  listRunningCommands: () => ipcRenderer.invoke(CH.listRunningCommands),
+  getCommandBuffer: (worktreePath: string, commandId: string) =>
+    ipcRenderer.invoke(CH.getCommandBuffer, worktreePath, commandId),
+  onCommandOutput: (listener: (event: CommandOutputEvent) => void) => {
+    const handler = (_e: unknown, event: CommandOutputEvent) => listener(event);
+    ipcRenderer.on(CH.commandOutput, handler);
+    return () => ipcRenderer.removeListener(CH.commandOutput, handler);
+  },
+  onCommandExit: (listener: (event: CommandExitEvent) => void) => {
+    const handler = (_e: unknown, event: CommandExitEvent) => listener(event);
+    ipcRenderer.on(CH.commandExit, handler);
+    return () => ipcRenderer.removeListener(CH.commandExit, handler);
+  },
   openInEditor: (targetPath: string) => ipcRenderer.invoke(CH.openInEditor, targetPath),
   openInTerminal: (targetPath: string) => ipcRenderer.invoke(CH.openInTerminal, targetPath),
   revealInFinder: (targetPath: string) => ipcRenderer.invoke(CH.revealInFinder, targetPath),

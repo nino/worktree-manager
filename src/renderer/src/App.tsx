@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { HelpCircle, RefreshCw, Settings } from "lucide-react";
+import { HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
 import { useConfig, useAddRepo, useRepos } from "./queries";
 import { api } from "./api";
+import { useRuns } from "./runs";
 import { RepoNode } from "./components/RepoNode";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { HelpDialog } from "./components/HelpDialog";
+import { TerminalDrawer } from "./components/TerminalDrawer";
 import { GrowBox } from "./components/GrowBox";
 
 /** Track whether the window is frontmost, so the UI can render the Mac OS 9
@@ -20,6 +22,7 @@ export function App() {
   const repos = useRepos();
   const addRepo = useAddRepo();
   const active = useWindowActive();
+  const runs = useRuns();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -59,6 +62,15 @@ export function App() {
             disabled={addRepo.isPending}
           >
             + Add repo
+          </button>
+          <button
+            className={`btn btn-sm btn-icon${runs.drawerOpen ? " btn-on" : ""}`}
+            title={runs.drawerOpen ? "Hide terminal" : "Show terminal"}
+            aria-label={runs.drawerOpen ? "Hide terminal" : "Show terminal"}
+            onClick={() => (runs.drawerOpen ? runs.closeDrawer() : runs.openDrawer())}
+          >
+            <SquareTerminal size={13} strokeWidth={1.75} />
+            {runs.running.length > 0 && <span className="run-count">{runs.running.length}</span>}
           </button>
           <button
             className="btn btn-sm btn-icon"
@@ -119,6 +131,8 @@ export function App() {
       )}
 
       {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
+
+      <TerminalDrawer />
 
       <GrowBox />
     </div>
