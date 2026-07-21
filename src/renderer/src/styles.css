@@ -537,25 +537,28 @@ body {
   }
 }
 
-/* The "default" button: bold ring around it, like OK in an OS 9 dialog. */
-.btn-primary {
-  font-weight: 700;
+/* Keyboard focus draws the bold OS 9 default-button ring. */
+.btn:focus-visible {
+  outline: none;
   box-shadow:
     var(--bevel-out),
     0 0 0 2px var(--bg-elev),
     0 0 0 3.5px var(--border);
-  margin: 3px;
 }
 
-.btn-primary:hover {
-  background: var(--btn-hover);
-}
-
-.btn-primary:active:not(:disabled) {
+.btn:focus-visible:active:not(:disabled) {
   box-shadow:
     var(--bevel-in),
     0 0 0 2px var(--bg-elev),
     0 0 0 3.5px var(--border);
+}
+
+.btn-primary {
+  font-weight: 700;
+}
+
+.btn-primary:hover {
+  background: var(--btn-hover);
 }
 
 .btn-danger {
