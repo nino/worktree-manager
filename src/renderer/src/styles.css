@@ -405,9 +405,11 @@ body {
   field-sizing: content;
   flex: 0 1 auto;
   min-width: 6ch;
+  max-width: 26ch;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
   cursor: default;
 }
 
@@ -421,6 +423,76 @@ body {
   color: var(--disabled);
   border-color: var(--disabled);
   cursor: default;
+}
+
+/* MARK: Branch picker (fuzzy-finder dropdown)
+
+   A Platinum popup menu: a square, beveled panel portalled to <body> so the
+   repo panel's overflow can't clip it. Holds a filter well over a sunken list. */
+.branch-picker-pop {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 340px;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: var(--bevel-out), var(--shadow);
+}
+
+.branch-picker-input {
+  font-size: 11px;
+  padding: 2px 5px;
+}
+
+.branch-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 208px;
+  overflow-y: auto;
+  background: var(--content);
+  border: 1px solid var(--border);
+  box-shadow: inset 1px 1px 0 #bbbbbb;
+}
+
+.branch-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  font-family: "Geneva", "Lucida Grande", Verdana, Helvetica, sans-serif;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* Classic menu highlight: lavender bar, white text. */
+.branch-picker-option[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.branch-picker-check {
+  flex: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.branch-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.branch-picker-empty {
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
 }
 
 .confirm-inline {
