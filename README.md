@@ -49,6 +49,18 @@ pnpm start     # preview the production build
 pnpm dist      # package a macOS .app + .dmg into release/
 ```
 
+## Install into /Applications
+
+Once you've packaged the app, copy the bundle into your Applications folder:
+
+```sh
+pnpm dist         # build the .app (skip if you already have one in release/)
+pnpm install:app  # copy release/…/Worktree Manager.app → /Applications
+```
+
+`install:app` is macOS-only — it exits with an error on other platforms, since
+the packaged target is a `.app` bundle. It overwrites any existing install.
+
 ## Development
 
 ```sh
