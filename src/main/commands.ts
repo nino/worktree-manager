@@ -82,11 +82,13 @@ export async function startCommand(
     throw new Error(`"${command.name}" is already running on this worktree.`);
   }
 
-  // shell: true runs the command line via the platform shell; detached puts it in
-  // its own process group so stop() can signal the whole tree, not just the shell.
-  const child = spawn(command.command, {
+  // Run through the user's login shell (like the init command in worktrees.ts)
+  // so GUI/Finder launches still pick up nvm/pnpm on PATH — a plain /bin/sh
+  // wouldn't. detached puts it in its own process group so stop() can signal the
+  // whole tree (shell + e.g. node), not just the shell.
+  const loginShell = process.env.SHELL || "/bin/zsh";
+  const child = spawn(loginShell, ["-lc", command.command], {
     cwd: worktreePath,
-    shell: true,
     detached: true,
     env: process.env,
     windowsHide: true,
