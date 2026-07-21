@@ -1226,19 +1226,21 @@ code.path-code {
   padding: 0 4px;
 }
 
-.terminal-output {
+/* Host for the xterm.js terminal; it fills the drawer body and manages its own
+   scrollback. min-height:0 lets it shrink inside the flex column so the fit
+   addon can size it. */
+.terminal-xterm {
   flex: 1;
-  margin: 0;
-  padding: 8px 10px;
-  overflow: auto;
+  min-height: 0;
+  padding: 6px 8px;
   background: var(--content);
-  color: var(--text);
-  font-family: "Monaco", "Courier New", ui-monospace, monospace;
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
   box-shadow: inset 1px 1px 0 var(--bevel-dark);
+  overflow: hidden;
+}
+
+.terminal-xterm .xterm,
+.terminal-xterm .xterm-viewport {
+  background: transparent !important;
 }
 
 .terminal-empty {

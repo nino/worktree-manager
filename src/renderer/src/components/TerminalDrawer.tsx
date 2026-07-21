@@ -1,74 +1,108 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Square, X } from "lucide-react";
 import type { RunningCommand } from "@shared/types";
 import { api } from "../api";
 import { displayPath } from "../format";
-import { stripAnsi } from "../ansi";
 import { useRuns, sameRun, type RunSelection } from "../runs";
 
 const ICON = { size: 13, strokeWidth: 1.75 } as const;
 
-// MARK: Scrollback view
+// White Platinum-ish terminal theme (classic Terminal.app was light too).
+const TERMINAL_THEME = {
+  background: "#ffffff",
+  foreground: "#000000",
+  cursor: "#000000",
+  selectionBackground: "#b4d5fe",
+} as const;
+
+// MARK: Terminal view
 
 /**
- * Streams one run's output. Subscribes to live output first, then fetches the
- * existing backlog, so a drawer opened mid-run shows history and keeps updating.
- * Remounted (via `key`) whenever the selection changes, so state resets cleanly.
+ * Renders one run's output in a real xterm.js terminal, so ANSI colours and
+ * cursor control sequences (progress bars, spinners, clears) render correctly.
+ * Subscribes to live output first, then writes the backlog, so a drawer opened
+ * mid-run shows history in order and keeps updating. xterm is imported lazily so
+ * it never loads outside the browser (e.g. in unit tests). Remounted (via `key`)
+ * whenever the selection changes, so the terminal resets cleanly.
  */
 function TerminalView({ selection }: { selection: RunSelection }) {
-  const [text, setText] = useState("");
-  const scrollRef = useRef<HTMLPreElement>(null);
-  // Stick to the bottom unless the user has scrolled up to read history.
-  const stickRef = useRef(true);
+  const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
     let cancelled = false;
-    let backlog = "";
-    let live = "";
-    const apply = () => {
-      if (!cancelled) setText(backlog + live);
-    };
+    let cleanup: (() => void) | undefined;
 
-    const offOutput = api.onCommandOutput((e) => {
-      if (e.worktreePath !== selection.worktreePath || e.commandId !== selection.commandId) return;
-      live += e.chunk;
-      apply();
-    });
-    const offExit = api.onCommandExit((e) => {
-      if (e.worktreePath !== selection.worktreePath || e.commandId !== selection.commandId) return;
-      const how = e.signal ? `signal ${e.signal}` : `code ${e.exitCode ?? 0}`;
-      live += `\n[process exited — ${how}]\n`;
-      apply();
-    });
+    void (async () => {
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        import("@xterm/xterm"),
+        import("@xterm/addon-fit"),
+      ]);
+      if (cancelled) return;
 
-    void api.getCommandBuffer(selection.worktreePath, selection.commandId).then((buf) => {
-      backlog = buf;
-      apply();
-    });
+      const term = new Terminal({
+        convertEol: true,
+        scrollback: 5000,
+        fontFamily: '"Monaco", "Courier New", ui-monospace, monospace',
+        fontSize: 11,
+        theme: { ...TERMINAL_THEME },
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(host);
+      fit.fit();
+
+      // Hold live chunks until the backlog is written so ordering is preserved.
+      let backlogWritten = false;
+      const pending: string[] = [];
+      const onChunk = (chunk: string) => {
+        if (backlogWritten) term.write(chunk);
+        else pending.push(chunk);
+      };
+
+      const offOutput = api.onCommandOutput((e) => {
+        if (e.worktreePath === selection.worktreePath && e.commandId === selection.commandId) {
+          onChunk(e.chunk);
+        }
+      });
+      const offExit = api.onCommandExit((e) => {
+        if (e.worktreePath === selection.worktreePath && e.commandId === selection.commandId) {
+          const how = e.signal ? `signal ${e.signal}` : `code ${e.exitCode ?? 0}`;
+          onChunk(`\r\n[process exited — ${how}]\r\n`);
+        }
+      });
+
+      const buf = await api.getCommandBuffer(selection.worktreePath, selection.commandId);
+      if (!cancelled && buf) term.write(buf);
+      backlogWritten = true;
+      for (const c of pending) term.write(c);
+      pending.length = 0;
+
+      const resize = new ResizeObserver(() => {
+        try {
+          fit.fit();
+        } catch {
+          // Container not laid out (e.g. drawer hidden) — ignore.
+        }
+      });
+      resize.observe(host);
+
+      cleanup = () => {
+        offOutput();
+        offExit();
+        resize.disconnect();
+        term.dispose();
+      };
+    })();
 
     return () => {
       cancelled = true;
-      offOutput();
-      offExit();
+      cleanup?.();
     };
   }, [selection.worktreePath, selection.commandId]);
 
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-  };
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [text]);
-
-  return (
-    <pre className="terminal-output" ref={scrollRef} onScroll={onScroll}>
-      {stripAnsi(text)}
-    </pre>
-  );
+  return <div className="terminal-xterm" ref={hostRef} />;
 }
 
 // MARK: Drawer
