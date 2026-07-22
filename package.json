@@ -17,7 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dist": "pnpm build && electron-builder --mac --publish never --config electron-builder.yml",
-    "install-app": "node scripts/install.mjs"
+    "install-app": "node scripts/install.mjs",
+    "screenshot": "electron-vite build && node scripts/screenshot.mjs"
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.101.3",
@@ -36,6 +37,7 @@
     "electron-vite": "^5.0.0",
     "happy-dom": "^20.11.0",
     "lucide-react": "^1.25.0",
+    "playwright-core": "^1.61.1",
     "prettier": "^3.9.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

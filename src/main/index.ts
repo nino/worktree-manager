@@ -4,6 +4,10 @@ import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { CH, registerIpc } from "./ipc";
 import { stopAll } from "./commands";
 
+// Screenshot/test sandbox: point config storage at a throwaway profile so
+// tooling runs (scripts/screenshot.mjs) never touch the real user's config.
+if (process.env.WTM_USER_DATA) app.setPath("userData", process.env.WTM_USER_DATA);
+
 // MARK: Window
 
 function createWindow(): void {

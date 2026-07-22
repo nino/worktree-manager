@@ -27,6 +27,8 @@ pnpm test:watch      # vitest watch mode
 pnpm typecheck       # tsc --noEmit for node + web projects
 pnpm format          # prettier --write .
 pnpm dist            # package macOS .app + .dmg into release/ (electron-builder)
+pnpm screenshot      # regenerate docs/screenshot.png (throwaway demo repos,
+                     # sandboxed config via WTM_USER_DATA — never real user data)
 ```
 
 ## Packaging

@@ -6,6 +6,8 @@ across multiple repositories.
 The main window is a tree: repositories at the top level, their worktrees nested
 underneath — each with branch, path, live git status, and one-click actions.
 
+![Worktree Manager main window](docs/screenshot.png)
+
 ## Features
 
 - **Status at a glance** — staged / unstaged / untracked changes, commits ahead of
@@ -68,7 +70,13 @@ the packaged target is a `.app` bundle. It overwrites any existing install.
 pnpm test          # vitest (pure parsers, path logic)
 pnpm typecheck     # tsc for main + renderer projects
 pnpm format        # prettier
+pnpm screenshot    # regenerate docs/screenshot.png (demo repos, sandboxed config)
 ```
+
+`pnpm screenshot` rebuilds the README image after a restyle: it stages throwaway
+demo repos under `~/wtm-demo`, points the app at a temporary config profile (via
+`WTM_USER_DATA`, so your real config is untouched), captures the window, and
+cleans everything up.
 
 Stack: Electron (electron-vite), React 19, TypeScript 7, TanStack Query,
 electron-store, Vitest. See [CLAUDE.md](CLAUDE.md) for architecture notes,
