@@ -75,7 +75,7 @@ src/
       api.ts             window.api accessor
       queries.ts         TanStack Query hooks (keys, queries, mutations)
       components/        Modal, RepoNode, WorktreeRow, StatusBadges, dialogs
-      styles.css         Compact theme, light/dark via prefers-color-scheme
+      styles.css         Brushed-metal skeuomorphic theme (single appearance)
 ```
 
 ## Key behaviors
@@ -126,10 +126,13 @@ src/
 - Paths shown in the UI are abbreviated with `~` via `displayPath`
   (`renderer/src/format.ts`, backed by `tildify` in `shared/paths.ts`); keep the
   full path in the `title` tooltip. Inputs hold real, unabbreviated paths.
-- **Theming**: all colors are CSS custom properties in `styles.css` — light values
-  in `:root`, dark overrides in `@media (prefers-color-scheme: dark)`. Tints derive
-  from base tokens via `color-mix()`; never hard-code a hex outside the token blocks.
-  The native window background follows `nativeTheme` in `main/index.ts`.
+- **Theming**: the UI is a single skeuomorphic "brushed metal" appearance (there
+  is no dark variant — the `@media (prefers-color-scheme: dark)` block re-asserts
+  the same look). Every color literal lives in the `:root` token block of
+  `styles.css` (including gradient/texture/shadow-stack tokens); rules below it
+  only reference tokens, `color-mix()` of tokens, and `rgba()` light/shade
+  overlays — never hard-code a hex outside the token block. The native window
+  background is the fixed desktop charcoal in `main/index.ts`.
 - The IPC contract is the `WorktreeApi` interface in `src/shared/types.ts`; the
   channel-name map (`CH`) is duplicated in `ipc.ts` and `preload/index.ts` — keep
   them in sync.

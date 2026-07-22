@@ -14,13 +14,14 @@ function createWindow(): void {
     minHeight: 420,
     show: false,
     title: "Worktree Manager",
-    // Frameless + square corners: no native title bar or traffic lights, so we
-    // draw the classic Mac OS 9 close/collapse/zoom boxes ourselves. Disabling
-    // rounded corners squares off the window like a Platinum window.
+    // Frameless: no native title bar or traffic lights, so we draw the Aqua
+    // gems and brushed-metal chrome ourselves. Rounded corners match the
+    // Mac OS X metal window shape.
     frame: false,
-    roundedCorners: false,
-    // Platinum gray regardless of system theme — Mac OS 9 has one appearance.
-    backgroundColor: "#cccccc",
+    roundedCorners: true,
+    // Dark desktop charcoal (--desktop-lo) regardless of system theme —
+    // brushed metal has one appearance.
+    backgroundColor: "#414144",
     webPreferences: {
       preload: join(__dirname, "../preload/index.mjs"),
       sandbox: false,
@@ -31,9 +32,9 @@ function createWindow(): void {
 
   win.once("ready-to-show", () => win.show());
 
-  // Mirror the window's activation state to the renderer so it can flatten the
-  // pinstripes and hollow the title-bar boxes when the app isn't frontmost, the
-  // way Mac OS 9 renders background windows.
+  // Mirror the window's activation state to the renderer so it can drain the
+  // Aqua gems to grey and fade the etched titles when the app isn't frontmost,
+  // the way brushed-metal windows render in the background.
   const sendFocus = (): void => {
     if (!win.isDestroyed()) win.webContents.send(CH.windowFocusChanged, win.isFocused());
   };

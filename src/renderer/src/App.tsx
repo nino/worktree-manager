@@ -9,8 +9,8 @@ import { HelpDialog } from "./components/HelpDialog";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { GrowBox } from "./components/GrowBox";
 
-/** Track whether the window is frontmost, so the UI can render the Mac OS 9
- * "background window" look (flat title bars, hollow boxes) when it isn't. */
+/** Track whether the window is frontmost, so the UI can render the brushed-
+ * metal "background window" look (grey gems, faded etching) when it isn't. */
 function useWindowActive(): boolean {
   const [active, setActive] = useState(true);
   useEffect(() => api.onWindowFocusChange(setActive), []);
@@ -38,12 +38,26 @@ export function App() {
     <div className={active ? "app" : "app inactive"}>
       <header className="topbar">
         <div className="topbar-title">
-          <button
-            className="title-box title-box-close"
-            title="Close"
-            aria-label="Close window"
-            onClick={() => api.closeWindow()}
-          />
+          <span className="gems" role="group" aria-label="Window controls">
+            <button
+              className="gem gem-close"
+              title="Close"
+              aria-label="Close window"
+              onClick={() => api.closeWindow()}
+            />
+            <button
+              className="gem gem-min"
+              title="Minimize"
+              aria-label="Minimize window"
+              onClick={() => api.minimizeWindow()}
+            />
+            <button
+              className="gem gem-zoom"
+              title="Zoom"
+              aria-label="Zoom window"
+              onClick={() => api.zoomWindow()}
+            />
+          </span>
           <span className="app-name">Worktree Manager</span>
         </div>
         <div className="topbar-actions">
@@ -88,20 +102,6 @@ export function App() {
           >
             <Settings size={13} strokeWidth={1.75} />
           </button>
-          <span className="title-box-group">
-            <button
-              className="title-box title-box-collapse"
-              title="Minimize"
-              aria-label="Minimize window"
-              onClick={() => api.minimizeWindow()}
-            />
-            <button
-              className="title-box title-box-zoom"
-              title="Zoom"
-              aria-label="Zoom window"
-              onClick={() => api.zoomWindow()}
-            />
-          </span>
         </div>
       </header>
 

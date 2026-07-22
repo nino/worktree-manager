@@ -28,7 +28,8 @@ underneath — each with branch, path, live git status, and one-click actions.
   (e.g. Ghostty: `open -na Ghostty --args --working-directory={path}`).
 - **Persistent config** — worktrees root, editor/terminal commands, and the repo
   list (with per-repo primary branch + init command) survive relaunches.
-- Light/dark theme following the system.
+- A shamelessly skeuomorphic brushed-metal appearance — machined panels, embossed
+  keys, engraved badges, Aqua gems — one look, regardless of system theme.
 
 ## Install & run
 
