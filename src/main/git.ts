@@ -346,6 +346,25 @@ export async function branchExists(repoPath: string, branch: string): Promise<bo
   }
 }
 
+/** Whether a ref resolves in the repo (any kind: branch, tag, remote-tracking). */
+export async function refExists(repoPath: string, ref: string): Promise<boolean> {
+  try {
+    await runGit(repoPath, ["rev-parse", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch updates for a repo's default remote (`git fetch`), pruning deleted
+ * remote-tracking branches so ahead/behind counts stay accurate. Resolves even
+ * on failure is NOT desired here — callers decide how to handle a throw.
+ */
+export async function fetchRepo(repoPath: string): Promise<void> {
+  await runGit(repoPath, ["fetch", "--prune"]);
+}
+
 /** Create a new worktree. */
 export async function addWorktree(
   repoPath: string,
@@ -356,7 +375,11 @@ export async function addWorktree(
 ): Promise<void> {
   const args = ["worktree", "add"];
   if (newBranch) {
-    args.push("-b", branch, worktreePath);
+    // --no-track: even when basing off a remote-tracking ref (origin/main), the
+    // new branch must NOT adopt it as upstream. This app's model is "push sets
+    // upstream on first push"; an inherited upstream would break that (push
+    // would target origin/main, not origin/<branch>).
+    args.push("--no-track", "-b", branch, worktreePath);
     if (baseRef) args.push(baseRef);
   } else {
     args.push(worktreePath, branch);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
-import { useConfig, useAddRepo, useRepos } from "./queries";
+import { useConfig, useAddRepo, useRepos, keys } from "./queries";
 import { api } from "./api";
 import { useRuns } from "./runs";
 import { RepoNode } from "./components/RepoNode";
@@ -17,11 +18,21 @@ function useWindowActive(): boolean {
   return active;
 }
 
+/** Refetch the repo trees whenever the background fetch reports new remote refs. */
+function useReposChangedRefresh(): void {
+  const qc = useQueryClient();
+  useEffect(
+    () => api.onReposChanged(() => void qc.invalidateQueries({ queryKey: keys.repos })),
+    [qc],
+  );
+}
+
 export function App() {
   const config = useConfig();
   const repos = useRepos();
   const addRepo = useAddRepo();
   const active = useWindowActive();
+  useReposChangedRefresh();
   const runs = useRuns();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);

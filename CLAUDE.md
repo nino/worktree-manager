@@ -87,6 +87,18 @@ src/
   survives relaunches.
 - **Worktree paths**: new worktrees are created at
   `<worktreesRoot>/<repoName>/<branch-slug>` (see `worktreePathFor`).
+- **New-branch base ref**: a new branch defaults to `origin/<mainBranch>` when
+  that remote-tracking ref exists, else the local `mainBranch` — see
+  `defaultBaseRefFor` in `worktrees.ts`, surfaced to the UI as
+  `RepoWithWorktrees.defaultBaseRef` and used as the dialog default. New branches
+  are created `--no-track` (see `addWorktree`) so branching off `origin/…` never
+  adopts it as upstream — the "push sets upstream on first push" model relies on
+  the branch having no upstream until pushed.
+- **Background fetch**: `main/fetcher.ts` runs `git fetch --prune` on every repo
+  with a remote once at launch and then every 8m43s (`FETCH_INTERVAL_MS`).
+  Overlapping cycles are skipped; failures are logged, never fatal. After a cycle
+  that fetched anything it pushes `CH.reposChanged`, and the renderer invalidates
+  the `repos` query (see `useReposChangedRefresh` in `App.tsx`).
 - **Adding a repo** resolves the path to its git root, auto-detects the main
   branch, and immediately lists existing worktrees.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the repo's

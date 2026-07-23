@@ -84,6 +84,12 @@ export interface WorktreeInfo {
 export interface RepoWithWorktrees {
   repo: RepoConfig;
   worktrees: WorktreeInfo[];
+  /**
+   * Preferred base ref when creating a new branch: `origin/<trunk>` when that
+   * remote-tracking branch exists locally (so new branches start from the
+   * latest fetched remote state), otherwise the local trunk branch name.
+   */
+  defaultBaseRef: string;
   /** Populated if listing worktrees failed. */
   error?: string;
 }
@@ -235,4 +241,9 @@ export interface WorktreeApi {
    * listener fires with the current focus state; returns an unsubscribe fn.
    */
   onWindowFocusChange(listener: (focused: boolean) => void): () => void;
+  /**
+   * Subscribe to "repos may have changed" pushes from the periodic background
+   * fetch, so the renderer can refetch its trees. Returns an unsubscribe fn.
+   */
+  onReposChanged(listener: () => void): () => void;
 }

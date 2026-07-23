@@ -57,6 +57,8 @@ export const CH = {
   windowClose: "window:close",
   windowSetSize: "window:setSize",
   windowFocusChanged: "window:focusChanged",
+  // Pushed after a background fetch cycle so the renderer refreshes its trees.
+  reposChanged: "repo:changed",
 } as const;
 
 // MARK: Handler registration

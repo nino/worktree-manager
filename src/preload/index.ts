@@ -42,6 +42,7 @@ const CH = {
   windowClose: "window:close",
   windowSetSize: "window:setSize",
   windowFocusChanged: "window:focusChanged",
+  reposChanged: "repo:changed",
 } as const;
 
 const api: WorktreeApi = {
@@ -95,6 +96,11 @@ const api: WorktreeApi = {
     const handler = (_e: unknown, focused: boolean) => listener(focused);
     ipcRenderer.on(CH.windowFocusChanged, handler);
     return () => ipcRenderer.removeListener(CH.windowFocusChanged, handler);
+  },
+  onReposChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on(CH.reposChanged, handler);
+    return () => ipcRenderer.removeListener(CH.reposChanged, handler);
   },
 };
 

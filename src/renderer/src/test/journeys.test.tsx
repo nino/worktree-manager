@@ -75,11 +75,13 @@ describe("create a worktree", () => {
 
     // Fire-and-close: the dialog closes and a placeholder row appears.
     expect(await screen.findByText("Creating…")).toBeInTheDocument();
+    // New branches default to the remote trunk (origin/<trunk>), so they start
+    // from the latest fetched state rather than a possibly-stale local trunk.
     expect(apiMock.createWorktree).toHaveBeenCalledWith({
       repoId: "r1",
       branch: "feat/login",
       newBranch: true,
-      baseRef: "main",
+      baseRef: "origin/main",
     });
 
     // Once it lands, the refetched tree includes the new worktree.

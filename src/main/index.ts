@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { app, BrowserWindow, nativeImage, shell } from "electron";
 import { CH, registerIpc } from "./ipc";
 import { stopAll } from "./commands";
+import { startAutoFetch, stopAutoFetch } from "./fetcher";
 
 // Screenshot/test sandbox: point config storage at a throwaway profile so
 // tooling runs (scripts/screenshot.mjs) never touch the real user's config.
@@ -46,6 +47,13 @@ function createWindow(): void {
   win.on("blur", sendFocus);
   win.webContents.on("did-finish-load", sendFocus);
 
+  // Periodically `git fetch` every repo in the background; nudge the renderer to
+  // refresh its trees after any cycle that fetched something.
+  startAutoFetch(() => {
+    if (!win.isDestroyed()) win.webContents.send(CH.reposChanged);
+  });
+  win.on("closed", stopAutoFetch);
+
   // Open external links in the default browser, not inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -84,5 +92,9 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// Kill any commands still running so they don't outlive the app as orphans.
-app.on("before-quit", () => stopAll());
+// Kill any commands still running so they don't outlive the app as orphans, and
+// stop the background fetch loop.
+app.on("before-quit", () => {
+  stopAll();
+  stopAutoFetch();
+});

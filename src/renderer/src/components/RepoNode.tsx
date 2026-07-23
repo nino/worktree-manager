@@ -13,7 +13,7 @@ interface Props {
 
 /** A repo and its worktrees, collapsible. */
 export function RepoNode({ node }: Props) {
-  const { repo, worktrees, error } = node;
+  const { repo, worktrees, error, defaultBaseRef } = node;
   const [collapsed, setCollapsed] = useState(false);
   const [creating, setCreating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -94,7 +94,13 @@ export function RepoNode({ node }: Props) {
         </div>
       )}
 
-      {creating && <CreateWorktreeDialog repo={repo} onClose={() => setCreating(false)} />}
+      {creating && (
+        <CreateWorktreeDialog
+          repo={repo}
+          defaultBaseRef={defaultBaseRef}
+          onClose={() => setCreating(false)}
+        />
+      )}
       {settingsOpen && <RepoSettingsDialog repo={repo} onClose={() => setSettingsOpen(false)} />}
     </section>
   );

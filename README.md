@@ -17,9 +17,14 @@ underneath — each with branch, path, live git status, and one-click actions.
   (fast-forward only), merge the primary branch in (`--no-rebase`, your
   `pull.rebase` config can't rewrite history from a button), and a branch-switch
   dropdown backed by plain `git switch`.
-- **Create worktrees** — new or existing branch, based on any ref. Worktrees land in
-  `<worktrees root>/<repo name>/<branch-slug>` and the repo's init command (e.g.
-  `pnpm i`) runs automatically in the new tree.
+- **Create worktrees** — new or existing branch, based on any ref. A new branch
+  defaults to branching off `origin/<trunk>` (the latest fetched remote state)
+  when the remote is present, falling back to the local trunk otherwise; the
+  base ref is editable. Worktrees land in `<worktrees root>/<repo name>/<branch-slug>`
+  and the repo's init command (e.g. `pnpm i`) runs automatically in the new tree.
+- **Background fetch** — every repo is `git fetch`ed automatically in the
+  background (every 8m43s), so ahead/behind and unpushed counts — and the
+  `origin/<trunk>` base ref — stay current without a manual pull.
 - **Delete with a safety ladder** — the path is verified against git's own worktree
   list, the branch is revalidated at delete time (stale rows refuse), and
   `git worktree remove` runs _without_ `--force` first: deleting a dirty worktree

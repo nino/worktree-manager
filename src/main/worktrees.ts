@@ -22,6 +22,7 @@ import {
   hasRemote,
   listWorktrees,
   parseWorktreePorcelain,
+  refExists,
   runGit,
 } from "./git";
 
@@ -64,14 +65,27 @@ export function worktreePathFor(worktreesRoot: string, repoName: string, branch:
   return join(worktreesRoot, repoName, slugifyBranch(branch));
 }
 
+/**
+ * Preferred base ref for a new branch: the remote trunk (`origin/<trunk>`) when
+ * that remote-tracking branch has been fetched, so new branches start from the
+ * latest pushed state rather than a possibly-stale local trunk. Falls back to
+ * the local trunk name when there is no remote / it hasn't been fetched yet.
+ * Never throws — a broken repo path resolves to the local name.
+ */
+export async function defaultBaseRefFor(repoPath: string, mainBranch: string): Promise<string> {
+  const remoteRef = `origin/${mainBranch}`;
+  return (await refExists(repoPath, remoteRef)) ? remoteRef : mainBranch;
+}
+
 /** List worktrees for a single repo (existing worktrees included automatically). */
 export async function listReposWorktrees(repoId: string): Promise<RepoWithWorktrees> {
   const repo = store.getRepo(repoId);
+  const defaultBaseRef = await defaultBaseRefFor(repo.path, repo.mainBranch);
   try {
     const worktrees = await listWorktrees(repo.path, repo.mainBranch);
-    return { repo, worktrees };
+    return { repo, worktrees, defaultBaseRef };
   } catch (err) {
-    return { repo, worktrees: [], error: (err as Error).message };
+    return { repo, worktrees: [], defaultBaseRef, error: (err as Error).message };
   }
 }
 
@@ -151,13 +165,10 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
     // Ensure the repo's parent directory under the worktrees root exists.
     await mkdir(join(worktreesRoot, repo.name), { recursive: true });
 
-    await addWorktree(
-      repo.path,
-      targetPath,
-      branch,
-      params.newBranch,
-      params.baseRef ?? (params.newBranch ? repo.mainBranch : undefined),
-    );
+    const baseRef =
+      params.baseRef ??
+      (params.newBranch ? await defaultBaseRefFor(repo.path, repo.mainBranch) : undefined);
+    await addWorktree(repo.path, targetPath, branch, params.newBranch, baseRef);
 
     return runInitCommand(repo.initCommand, targetPath);
   });

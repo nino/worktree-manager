@@ -5,14 +5,16 @@ import { Modal } from "./Modal";
 
 interface Props {
   repo: RepoConfig;
+  /** Preferred base ref for a new branch (e.g. `origin/main`); see RepoWithWorktrees. */
+  defaultBaseRef: string;
   onClose: () => void;
 }
 
 /** Dialog to create a new worktree for a repo. */
-export function CreateWorktreeDialog({ repo, onClose }: Props) {
+export function CreateWorktreeDialog({ repo, defaultBaseRef, onClose }: Props) {
   const [branch, setBranch] = useState("");
   const [newBranch, setNewBranch] = useState(true);
-  const [baseRef, setBaseRef] = useState(repo.mainBranch);
+  const [baseRef, setBaseRef] = useState(defaultBaseRef);
   const { create } = useCreations();
 
   // Creation runs in the background: fire it off and close immediately. A
@@ -23,7 +25,7 @@ export function CreateWorktreeDialog({ repo, onClose }: Props) {
       repoId: repo.id,
       branch: branch.trim(),
       newBranch,
-      baseRef: newBranch ? baseRef.trim() || repo.mainBranch : undefined,
+      baseRef: newBranch ? baseRef.trim() || defaultBaseRef : undefined,
     });
     onClose();
   };
@@ -71,7 +73,7 @@ export function CreateWorktreeDialog({ repo, onClose }: Props) {
           <span>Base ref</span>
           <input
             value={baseRef}
-            placeholder={`e.g., ${repo.mainBranch}`}
+            placeholder={`e.g., ${defaultBaseRef}`}
             onChange={(e) => setBaseRef(e.target.value)}
           />
         </label>

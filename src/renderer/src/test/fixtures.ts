@@ -44,7 +44,8 @@ export function makeNode(
   repo: Partial<RepoConfig> = {},
   worktrees: WorktreeInfo[] = [],
 ): RepoWithWorktrees {
-  return { repo: makeRepo(repo), worktrees };
+  const r = makeRepo(repo);
+  return { repo: r, worktrees, defaultBaseRef: `origin/${r.mainBranch}` };
 }
 
 /** A promise you resolve/reject by hand — for asserting in-flight UI states. */
