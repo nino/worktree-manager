@@ -105,19 +105,24 @@ export interface CreateWorktreeParams {
   baseRef?: string;
 }
 
-/** Result of running the init command in a new worktree. */
-export interface InitCommandResult {
-  ran: boolean;
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-}
-
 /** Result of creating a worktree. */
 export interface CreateWorktreeResult {
   worktree: WorktreeInfo;
-  init: InitCommandResult;
+  /**
+   * True if the repo's init command was started as a background run in the new
+   * worktree. It runs non-blocking (streamed to the integrated terminal, shown
+   * as an "Initialising" badge) so the worktree is usable immediately — see
+   * `INIT_COMMAND_ID` and `startInitCommand`.
+   */
+  initStarted: boolean;
 }
+
+/**
+ * Reserved `commandId` for the auto-started init run. Not a real `RepoCommand`
+ * id (those are uuids), so it never collides; the UI special-cases it to render
+ * the "Initialising" badge instead of a generic running-command badge.
+ */
+export const INIT_COMMAND_ID = "__init__";
 
 /**
  * Outcome of a git operation triggered from the UI (push/pull/switch…).

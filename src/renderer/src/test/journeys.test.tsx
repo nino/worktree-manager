@@ -91,34 +91,49 @@ describe("create a worktree", () => {
         makeWorktree({ branch: "feat/login", path: "/Users/test/worktrees/app/feat-login" }),
       ]),
     ]);
-    create.resolve({
-      worktree: makeWorktree({ branch: "feat/login" }),
-      init: { ran: false, exitCode: null, stdout: "", stderr: "" },
-    });
+    create.resolve({ worktree: makeWorktree({ branch: "feat/login" }), initStarted: false });
 
     // The real row (identified by its unique path) replaces the placeholder.
     expect(await screen.findByText("~/worktrees/app/feat-login")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("Creating…")).not.toBeInTheDocument());
   });
 
-  it("surfaces a dismissible error when the init command fails", async () => {
+  it("shows an Initialising badge while the init command runs in the background", async () => {
     const { user } = renderApp();
     await screen.findByText("app");
 
+    const wtPath = "/Users/test/worktrees/app/feat-x";
     apiMock.createWorktree.mockResolvedValue({
-      worktree: makeWorktree({ branch: "feat/x" }),
-      init: { ran: true, exitCode: 1, stdout: "", stderr: "boom" },
+      worktree: makeWorktree({ branch: "feat/x", path: wtPath }),
+      initStarted: true,
     });
+    // The refetched tree includes the new worktree...
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({ initCommand: "pnpm i" }, [
+        makeWorktree({ branch: "main", isMain: true, path: "/Users/test/worktrees/app/main" }),
+        makeWorktree({ branch: "feat/x", path: wtPath }),
+      ]),
+    ]);
+    // ...and the init run is reported as running on it, driving the badge.
+    apiMock.listRunningCommands.mockResolvedValue([
+      {
+        repoId: "r1",
+        worktreePath: wtPath,
+        commandId: "__init__",
+        name: "Initialising",
+        command: "pnpm i",
+        startedAt: 0,
+      },
+    ]);
 
     await user.click(screen.getByRole("button", { name: "+ Worktree" }));
     await user.type(await screen.findByPlaceholderText("e.g., feature/my-thing"), "feat/x");
     await user.click(screen.getByRole("button", { name: "Create" }));
 
-    const banner = await screen.findByText(/init command failed/i);
-    expect(banner).toHaveTextContent("boom");
-
-    await user.click(screen.getByRole("button", { name: "Dismiss" }));
-    await waitFor(() => expect(screen.queryByText(/init command failed/i)).not.toBeInTheDocument());
+    // The row is present (usable) and carries the Initialising badge — the app
+    // is not blocked waiting for the init command to finish.
+    expect(await screen.findByText("~/worktrees/app/feat-x")).toBeInTheDocument();
+    expect(await screen.findByText("Initialising…")).toBeInTheDocument();
   });
 });
 

@@ -1352,6 +1352,23 @@ code.path-code {
   cursor: default;
 }
 
+/* The init command running on a freshly created worktree. Amber, like a machine
+   still warming up, distinct from the green "command running" LED. */
+.badge-initialising {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 45%, var(--steel-edge));
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--yellow) 24%, var(--steel-3)),
+    color-mix(in srgb, var(--yellow) 12%, var(--steel-1))
+  );
+  cursor: default;
+}
+
 /* A lit LED, complete with glow. */
 .run-dot {
   width: 6px;

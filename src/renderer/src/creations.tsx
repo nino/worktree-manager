@@ -62,18 +62,16 @@ export function CreationsProvider({ children }: { children: ReactNode }) {
       void api
         .createWorktree(params)
         .then((result) => {
-          // The worktree now exists regardless of the init command — pull it
-          // into the tree so the real row replaces the placeholder.
+          // The worktree now exists — pull it into the tree so the real row
+          // replaces the placeholder. The init command (if any) runs in the
+          // background as a normal streamed run; refresh the running list so its
+          // "Initialising" badge shows up on the new row right away. Its progress
+          // and outcome are watched in the integrated terminal, like any command.
           void qc.invalidateQueries({ queryKey: keys.repos });
-          if (result.init.ran && result.init.exitCode !== 0) {
-            const detail = result.init.stderr.trim() || `exit code ${result.init.exitCode}`;
-            finish({
-              status: "error",
-              message: `Worktree “${params.branch}” was created, but the init command failed: ${detail}`,
-            });
-          } else {
-            finish(null);
+          if (result.initStarted) {
+            void qc.invalidateQueries({ queryKey: keys.runningCommands });
           }
+          finish(null);
         })
         .catch((err: unknown) => {
           finish({ status: "error", message: (err as Error).message });

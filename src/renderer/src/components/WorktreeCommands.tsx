@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Square } from "lucide-react";
-import type { RepoConfig, WorktreeInfo } from "@shared/types";
+import { INIT_COMMAND_ID, type RepoConfig, type WorktreeInfo } from "@shared/types";
 import { useRuns } from "../runs";
 
 interface Props {
@@ -21,7 +21,9 @@ const ICON = { size: 13, strokeWidth: 1.75 } as const;
 export function WorktreeCommands({ repo, worktree, disabled }: Props) {
   const runs = useRuns();
   const [error, setError] = useState<string | null>(null);
-  const runningHere = runs.runningFor(worktree.path);
+  // The init run has its own "Initialising" badge (viewable/stoppable from the
+  // terminal drawer); it isn't a configured command, so keep it out of here.
+  const runningHere = runs.runningFor(worktree.path).filter((r) => r.commandId !== INIT_COMMAND_ID);
   const hasCommands = repo.commands.length > 0;
 
   const onPick = async (commandId: string) => {
