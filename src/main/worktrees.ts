@@ -21,7 +21,7 @@ import {
   hasRemote,
   listWorktrees,
   parseWorktreePorcelain,
-  refExists,
+  resolveTrunkRef,
   runGit,
 } from "./git";
 
@@ -64,16 +64,17 @@ export function worktreePathFor(worktreesRoot: string, repoName: string, branch:
  * Never throws — a broken repo path resolves to the local name.
  */
 export async function defaultBaseRefFor(repoPath: string, mainBranch: string): Promise<string> {
-  const remoteRef = `origin/${mainBranch}`;
-  return (await refExists(repoPath, remoteRef)) ? remoteRef : mainBranch;
+  return resolveTrunkRef(repoPath, mainBranch);
 }
 
 /** List worktrees for a single repo (existing worktrees included automatically). */
 export async function listReposWorktrees(repoId: string): Promise<RepoWithWorktrees> {
   const repo = store.getRepo(repoId);
-  const defaultBaseRef = await defaultBaseRefFor(repo.path, repo.mainBranch);
+  // The trunk ref serves double duty: base for new branches AND the ref every
+  // worktree's ahead/behind counts are measured against.
+  const defaultBaseRef = await resolveTrunkRef(repo.path, repo.mainBranch);
   try {
-    const worktrees = await listWorktrees(repo.path, repo.mainBranch);
+    const worktrees = await listWorktrees(repo.path, defaultBaseRef);
     return { repo, worktrees, defaultBaseRef };
   } catch (err) {
     return { repo, worktrees: [], defaultBaseRef, error: (err as Error).message };
@@ -129,7 +130,8 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
   // going, and an "Initialising" badge tracks it in the UI.
   const initStarted = await startInitCommand(repo.id, targetPath).catch(() => false);
 
-  const status = await getWorktreeStatus(targetPath, repo.mainBranch).catch(() => null);
+  const trunkRef = await resolveTrunkRef(repo.path, repo.mainBranch);
+  const status = await getWorktreeStatus(targetPath, trunkRef).catch(() => null);
   const worktree: WorktreeInfo = {
     path: targetPath,
     branch,

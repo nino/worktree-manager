@@ -237,20 +237,33 @@ export async function detectMainBranch(repoPath: string): Promise<string> {
 }
 
 /**
- * Compute ahead/behind of a worktree's HEAD relative to `mainBranch`.
- * Returns nulls when the comparison fails (e.g. the branch doesn't exist) —
+ * The ref that worktrees are compared against: the remote trunk
+ * (`origin/<trunk>`) when that remote-tracking branch has been fetched, else the
+ * local trunk name. Ahead/behind counts against the remote trunk answer the
+ * question the user actually has ("how far am I from what is on the remote?");
+ * a local trunk that is never checked out goes stale and reports 0 forever.
+ * Never throws — a broken repo path resolves to the local name.
+ */
+export async function resolveTrunkRef(repoPath: string, mainBranch: string): Promise<string> {
+  const remoteRef = `origin/${mainBranch}`;
+  return (await refExists(repoPath, remoteRef)) ? remoteRef : mainBranch;
+}
+
+/**
+ * Compute ahead/behind of a worktree's HEAD relative to `trunkRef`.
+ * Returns nulls when the comparison fails (e.g. the ref doesn't exist) —
  * "unknown" must never masquerade as "0" in delete decisions.
  */
-async function aheadBehindMain(
+async function aheadBehindTrunk(
   worktreePath: string,
-  mainBranch: string,
+  trunkRef: string,
 ): Promise<{ ahead: number | null; behind: number | null }> {
   try {
     const out = await runGit(worktreePath, [
       "rev-list",
       "--left-right",
       "--count",
-      `${mainBranch}...HEAD`,
+      `${trunkRef}...HEAD`,
     ]);
     return parseLeftRightCount(out);
   } catch {
@@ -258,19 +271,23 @@ async function aheadBehindMain(
   }
 }
 
-/** Compute the full git status for a single worktree. */
+/**
+ * Compute the full git status for a single worktree. `trunkRef` is the ref the
+ * ahead/behind counts are measured against — see `resolveTrunkRef`.
+ */
 export async function getWorktreeStatus(
   worktreePath: string,
-  mainBranch: string,
+  trunkRef: string,
 ): Promise<WorktreeStatus> {
   const statusOut = await runGit(worktreePath, ["status", "--porcelain=v2", "--branch"]);
   const parsed = parseStatusPorcelainV2(statusOut);
-  const { ahead, behind } = await aheadBehindMain(worktreePath, mainBranch);
+  const { ahead, behind } = await aheadBehindTrunk(worktreePath, trunkRef);
 
   return {
     hasUnstaged: parsed.hasUnstaged,
     hasStaged: parsed.hasStaged,
     hasUntracked: parsed.hasUntracked,
+    trunkRef,
     aheadOfMain: ahead,
     behindMain: behind,
     hasUpstream: parsed.upstream !== null,
@@ -279,8 +296,12 @@ export async function getWorktreeStatus(
   };
 }
 
-/** List all worktrees for a repo, including per-worktree status. */
-export async function listWorktrees(repoPath: string, mainBranch: string): Promise<WorktreeInfo[]> {
+/**
+ * List all worktrees for a repo, including per-worktree status. `trunkRef` is
+ * resolved once by the caller (see `resolveTrunkRef`) and reused for every
+ * worktree's ahead/behind counts.
+ */
+export async function listWorktrees(repoPath: string, trunkRef: string): Promise<WorktreeInfo[]> {
   const out = await runGit(repoPath, ["worktree", "list", "--porcelain"]);
   const all = parseWorktreePorcelain(out);
   // git lists the primary working tree (or the bare repo dir) first.
@@ -292,7 +313,7 @@ export async function listWorktrees(repoPath: string, mainBranch: string): Promi
       let status: WorktreeStatus | null = null;
       if (!w.prunable) {
         try {
-          status = await getWorktreeStatus(w.path, mainBranch);
+          status = await getWorktreeStatus(w.path, trunkRef);
         } catch {
           status = null;
         }

@@ -10,6 +10,9 @@ interface Props {
 export function StatusBadges({ status, mainBranch }: Props) {
   if (!status) return <span className="badge badge-muted">no status</span>;
 
+  // The ref the counts were measured against — usually `origin/<main>`. The
+  // repo's configured branch name is only a fallback for older/partial status.
+  const trunkRef = status.trunkRef || mainBranch;
   const dirty = status.hasStaged || status.hasUnstaged || status.hasUntracked;
   const badges: ReactElement[] = [];
 
@@ -36,9 +39,9 @@ export function StatusBadges({ status, mainBranch }: Props) {
       <span
         key="vs-main-unknown"
         className="badge badge-muted"
-        title={`Couldn't compare with ${mainBranch} — check the repo's main-branch setting`}
+        title={`Couldn't compare with ${trunkRef} — check the repo's main-branch setting`}
       >
-        ? {mainBranch}
+        ? {trunkRef}
       </span>,
     );
   if (status.aheadOfMain !== null && status.aheadOfMain > 0)
@@ -46,9 +49,9 @@ export function StatusBadges({ status, mainBranch }: Props) {
       <span
         key="ahead"
         className="badge badge-ahead"
-        title={`${status.aheadOfMain} commit(s) ahead of ${mainBranch}`}
+        title={`${status.aheadOfMain} commit(s) ahead of ${trunkRef}`}
       >
-        ↑{status.aheadOfMain} {mainBranch}
+        ↑{status.aheadOfMain} {trunkRef}
       </span>,
     );
   if (status.behindMain !== null && status.behindMain > 0)
@@ -56,9 +59,9 @@ export function StatusBadges({ status, mainBranch }: Props) {
       <span
         key="behind"
         className="badge badge-behind"
-        title={`${status.behindMain} commit(s) behind ${mainBranch}`}
+        title={`${status.behindMain} commit(s) behind ${trunkRef}`}
       >
-        ↓{status.behindMain} {mainBranch}
+        ↓{status.behindMain} {trunkRef}
       </span>,
     );
   if (status.unpushed)

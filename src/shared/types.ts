@@ -21,7 +21,10 @@ export interface RepoConfig {
   name: string;
   /** Absolute path to the repository root (the primary working tree). */
   path: string;
-  /** Branch that worktrees are compared against for ahead/behind. */
+  /**
+   * Trunk branch. Worktrees are compared against its remote-tracking version
+   * (`origin/<mainBranch>`) when that exists, else against the local branch.
+   */
   mainBranch: string;
   /** Command run inside a new worktree after it is created (e.g. `pnpm i`). */
   initCommand: string;
@@ -50,9 +53,14 @@ export interface WorktreeStatus {
   hasStaged: boolean;
   /** Untracked files present. */
   hasUntracked: boolean;
-  /** Commits ahead of the repo's configured main branch; null if unknown. */
+  /**
+   * The ref the ahead/behind counts are measured against: `origin/<mainBranch>`
+   * when that remote-tracking branch exists, else the local `mainBranch`.
+   */
+  trunkRef: string;
+  /** Commits ahead of `trunkRef`; null if unknown. */
   aheadOfMain: number | null;
-  /** Commits behind the repo's configured main branch; null if unknown. */
+  /** Commits behind `trunkRef`; null if unknown. */
   behindMain: number | null;
   /** True if the branch has an upstream and local commits are unpushed. */
   unpushed: boolean;
