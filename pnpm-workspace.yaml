@@ -1,0 +1,19 @@
+# pnpm settings. From pnpm 11 on, only auth/registry config may live in .npmrc
+# and the `pnpm` field in package.json is ignored — every other setting belongs
+# here (this file is read even though the repo is not a workspace).
+
+# Packages permitted to run install/postinstall scripts. Anything absent is
+# blocked by default, so a new dependency that needs a build must be added here.
+# Replaces pnpm 10's `pnpm.onlyBuiltDependencies` in package.json.
+#
+# esbuild fetches its platform binary in a postinstall.
+# electron is listed for parity, but note its npm package ships no postinstall
+# here — the root `postinstall` script runs its install.js by hand (see CLAUDE.md).
+allowBuilds:
+  electron: true
+  esbuild: true
+  # Pulled in transitively by electron-builder for Squirrel.Windows targets.
+  # This app packages macOS only (`pnpm dist` → --mac), so its build script is
+  # dead weight. pnpm 10 blocked it too; false keeps that behaviour explicit.
+  # Flip to true if a Windows target is ever added.
+  electron-winstaller: false

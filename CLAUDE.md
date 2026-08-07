@@ -10,7 +10,8 @@ nested underneath, each with git status and quick actions.
 - **React 19** + **TypeScript 7** in the renderer
 - **TanStack Query** for renderer data/state (queries + mutations over IPC)
 - **electron-store** for persisted preferences
-- **pnpm** as package manager / task runner
+- **pnpm 11** as package manager / task runner, pinned by the `packageManager`
+  field and run through corepack (not a global install — see "pnpm settings")
 - **Vitest** for unit tests
 - **Prettier** for formatting (`objectWrap: collapse`, double quotes, semicolons,
   `trailingComma: all`)
@@ -40,13 +41,32 @@ electron-builder's pnpm-symlink issues. Consequence: never add a runtime dep to
 "dependencies"; add it to devDependencies and let the bundler inline it. The
 build is unsigned (`identity: null`) — set a real identity before distributing.
 
+## pnpm settings
+
+pnpm is pinned by `packageManager` in package.json and executed through
+**corepack**, which downloads that exact version on demand — there is no global
+pnpm to upgrade. To move versions, edit that field (or run `corepack use
+pnpm@<v>`); a `pnpm` on PATH from mise/npm is bypassed.
+
+From pnpm 11 on, settings live in **`pnpm-workspace.yaml`** (present even though
+this is not a workspace). `.npmrc` may hold auth/registry config only, and the
+`pnpm` field in package.json is **ignored** — putting settings there fails
+silently. Dependency build scripts are blocked unless listed in `allowBuilds`
+(which replaced pnpm 10's `onlyBuiltDependencies`); an unlisted package that
+needs one fails the install with `ERR_PNPM_IGNORED_BUILDS`, and pnpm appends a
+`<name>: set this to true or false` placeholder to the file for you to resolve.
+
 ## Version constraints (learned the hard way)
 
 - **vite must stay on ^7** while electron-vite is on 5.x (peer range `^5 || ^6 || ^7`).
   With vite 8, electron-vite silently fails to externalize the `electron` package,
   bundling its Node launcher into `out/main/index.js` — the app then dies at startup
-  with "Unable to find Electron app at .../out/main/install.js". If the main bundle
-  is suspiciously large (hundreds of kB instead of ~16 kB), suspect this first.
+  with "Unable to find Electron app at .../out/main/install.js". Don't diagnose
+  this by bundle size — `out/main/index.js` is legitimately ~430 kB because
+  electron-store (and its `conf`/`ajv` tree) is inlined on purpose, per
+  "Packaging" above. Check instead that the bundle still *imports* electron
+  rather than inlining it:
+  `grep -c 'from "electron"' out/main/index.js` (1 = externalized, good).
 - **@vitejs/plugin-react must stay on ^5** (6.x requires vite 8).
 - The `electron` npm package here has **no postinstall script**, so the root
   `postinstall` in package.json runs `node node_modules/electron/install.js` to
