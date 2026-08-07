@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import { App } from "../App";
 import { CreationsProvider } from "../creations";
+import { PoofProvider } from "../poof";
 import { RunsProvider } from "../runs";
 
 /** Mount the full app (real provider tree) with a fresh, retry-free QueryClient
@@ -17,7 +18,9 @@ export function renderApp(): { user: UserEvent; queryClient: QueryClient } {
     <QueryClientProvider client={queryClient}>
       <RunsProvider>
         <CreationsProvider>
-          <App />
+          <PoofProvider>
+            <App />
+          </PoofProvider>
         </CreationsProvider>
       </RunsProvider>
     </QueryClientProvider>,

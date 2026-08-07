@@ -65,6 +65,35 @@
     rgba(0, 0, 0, 0.028) 1px 2px,
     transparent 2px 4px
   );
+  /* Vanishing puff of smoke (deleted worktree) — the Dock's poof cloud. One
+     lobe of it: lit from above-left, falling off gently the whole way to a rim
+     feathered into nothing. The falloff is deliberately broad — a tight
+     highlight leaves a bright dot in the middle of each lobe, and seven dots
+     read as bubbles rather than one cloud. The last stop mixes the token *to*
+     transparent instead of using the `transparent` keyword, which fades
+     through black and dirties the edge. */
+  --smoke-hi: #ffffff;
+  --smoke-mid: #dcdde1;
+  --puff: radial-gradient(
+    circle at 42% 32%,
+    var(--smoke-hi) 0%,
+    var(--smoke-mid) 62%,
+    color-mix(in srgb, var(--smoke-mid) 0%, transparent) 100%
+  );
+  /* Grounds the cloud against light metal — a pale cloud on a pale panel is
+     otherwise invisible. Shadowing the merged silhouette (rather than each
+     lobe) is what keeps it from looking like a handful of pearls. */
+  --puff-shadow: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.26));
+  /* Specular sweep dragged across a freshly created row. */
+  --sheen: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.12) 32%,
+    rgba(255, 255, 255, 0.8) 50%,
+    rgba(255, 255, 255, 0.12) 68%,
+    rgba(255, 255, 255, 0) 100%
+  );
+
   /* Popup-button chevron, drawn in the frame colour. */
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' fill='none' stroke='%232b2b2d' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
 
@@ -635,6 +664,139 @@ textarea,
 .btn-group .btn:focus-visible {
   position: relative;
   z-index: 1;
+}
+
+/* MARK: Arrival & departure
+
+   Two one-shot flourishes on the worktree list. A new worktree lands with a
+   specular highlight raked across its slat — the same glint you'd get tilting
+   a machined panel under a lamp. A deleted one leaves in a puff of smoke, the
+   Mac OS X "drag it off the Dock" poof. Both are decoration: the rows they
+   play on are already correct without them, and both stand down under
+   prefers-reduced-motion. */
+
+/* The glint: a soft band of light dragged left-to-right over the whole slat,
+   buttons included. Sits above the row's content but never eats a click. */
+.wt-new::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  /* Invisible at rest, so the band never sits parked on the row between the
+     animation ending and the class lapsing. */
+  opacity: 0;
+  background-image: var(--sheen);
+  background-repeat: no-repeat;
+  background-size: 55% 100%;
+  animation: wt-sheen 1100ms cubic-bezier(0.3, 0.1, 0.25, 1);
+}
+
+@keyframes wt-sheen {
+  from {
+    background-position: -45% 0;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  to {
+    background-position: 145% 0;
+    opacity: 0;
+  }
+}
+
+/* …over a slat that starts a touch brighter and settles back to the stack. */
+.wt-new {
+  animation: wt-arrive 1100ms ease-out;
+}
+
+@keyframes wt-arrive {
+  from {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 0 0 999px rgba(255, 255, 255, 0.26);
+  }
+  to {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      inset 0 0 0 999px rgba(255, 255, 255, 0);
+  }
+}
+
+/* The poof plays in a window-wide layer, not in the row: the row is gone by
+   then. Clouds are positioned in viewport coordinates by PoofProvider. */
+.poof-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100; /* over modals (50) and the branch picker (60) */
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The cloud as a whole: swells out of nothing, rises, thins away. Expanding the
+   cluster rather than each lobe is what keeps it one mass — lobes that drift
+   individually tear the cloud into clumps halfway through. */
+.poof {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  filter: var(--puff-shadow);
+  animation: poof-cloud 520ms cubic-bezier(0.2, 0.75, 0.35, 1);
+}
+
+@keyframes poof-cloud {
+  from {
+    transform: scale(0.42);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 0.95;
+  }
+  to {
+    transform: translateY(-9px) scale(1.55);
+    opacity: 0;
+  }
+}
+
+/* One lobe, parked where PoofProvider placed it. They overlap heavily and are
+   blurred, so the rims dissolve into each other rather than reading as circles. */
+.poof-puff {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 50%;
+  background-image: var(--puff);
+  filter: blur(3px);
+  transform: translate(-50%, -50%) translate(var(--x), var(--y)) rotate(var(--spin));
+  /* Staggered per lobe, so the cloud billows outward from its middle instead of
+     appearing all at once. `backwards` holds it tucked in during its delay. */
+  animation: poof-lobe 200ms ease-out backwards;
+}
+
+@keyframes poof-lobe {
+  from {
+    transform: translate(-50%, -50%) translate(calc(var(--x) * 0.25), calc(var(--y) * 0.25))
+      scale(0.5) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) translate(var(--x), var(--y)) rotate(var(--spin));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wt-new,
+  .wt-new::after {
+    animation: none;
+  }
+
+  .poof-layer {
+    display: none;
+  }
 }
 
 /* MARK: Popup buttons (branch plate + command launcher) */

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -12,6 +12,8 @@ import {
 import { INIT_COMMAND_ID, type RepoConfig, type WorktreeInfo } from "@shared/types";
 import { useBranches, useDeleteWorktree, useGitOp } from "../queries";
 import { api } from "../api";
+import { useCreations } from "../creations";
+import { usePoof } from "../poof";
 import { useRuns } from "../runs";
 import { displayPath } from "../format";
 import { BranchPicker } from "./BranchPicker";
@@ -33,6 +35,11 @@ export function WorktreeRow({ repo, worktree }: Props) {
   const gitOp = useGitOp();
   const branches = useBranches(repo.id);
   const runs = useRuns();
+  const { poof } = usePoof();
+  const { isArriving } = useCreations();
+  // The row's identity block — where the puff of smoke is centred, and stable
+  // whether or not a confirmation panel is expanded below it.
+  const infoRef = useRef<HTMLDivElement>(null);
   const runningHere = runs.runningFor(worktree.path);
   // The auto-started init run gets its own "Initialising" badge; keep it out of
   // the generic running-command badge so the two never double up.
@@ -47,6 +54,9 @@ export function WorktreeRow({ repo, worktree }: Props) {
 
   const remove = async (force: boolean) => {
     setOpError(null);
+    // Measure before the delete: by the time it resolves the refetched tree is
+    // already dropping this row, and a detached element has no rect.
+    const anchor = infoRef.current?.getBoundingClientRect();
     try {
       const result = await del.mutateAsync({
         repoId: repo.id,
@@ -56,6 +66,7 @@ export function WorktreeRow({ repo, worktree }: Props) {
       });
       if (result.ok) {
         setConfirmStage(null);
+        if (anchor) poof(anchor);
       } else if (result.reason === "dirty" && !force) {
         setConfirmStage("force");
       } else {
@@ -90,9 +101,12 @@ export function WorktreeRow({ repo, worktree }: Props) {
     worktree.status !== null &&
     (worktree.status.hasStaged || worktree.status.hasUnstaged || worktree.status.hasUntracked);
 
+  /** Just created from the dialog — the row catches the light as it lands. */
+  const arriving = isArriving(repo.id, worktree.branch);
+
   return (
-    <div className={`wt-row${worktree.isMain ? " wt-main" : ""}`}>
-      <div className="wt-info">
+    <div className={`wt-row${worktree.isMain ? " wt-main" : ""}${arriving ? " wt-new" : ""}`}>
+      <div className="wt-info" ref={infoRef}>
         <div className="wt-line1">
           {worktree.branch !== null && branches.data ? (
             <BranchPicker
