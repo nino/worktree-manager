@@ -149,6 +149,49 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* MARK: Text selection
+
+   A native Mac app doesn't let you rubber-band-select its chrome: labels,
+   badges, and button captions are furniture, not content. So selection is off
+   by default and switched back on only for content worth copying — form
+   fields, branch names, paths, and git/error output. The arrow cursor stays
+   over furniture; only selectable content gets the I-beam.
+
+   Adding new copyable content? Add it to the opt-in list (or give it the
+   `selectable` class) instead of dropping the global rule.
+
+   Two deliberate absences: the embedded terminal (xterm.js sets
+   `user-select: none` itself and implements its own selection + copy), and
+   `.branch-select` — the branch name in a row is a popup *button*, and a drag
+   across it would also fire its click. `.wt-branch` is the plain-text branch
+   label used when no picker is shown, and that one is selectable. */
+
+body {
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+.selectable,
+.wt-branch,
+.wt-path,
+.repo-path,
+.path-code,
+.help code,
+.wt-create-error,
+.banner,
+.error {
+  user-select: text;
+  cursor: text;
+}
+
+/* Controls inside a selectable container keep the arrow cursor. */
+.banner button,
+.error button {
+  cursor: default;
+}
+
 /* MARK: Scrollbars (metal capsule thumb in a recessed dark channel) */
 
 ::-webkit-scrollbar {
@@ -1360,6 +1403,23 @@ code.path-code {
     to bottom,
     color-mix(in srgb, var(--green) 22%, var(--steel-3)),
     color-mix(in srgb, var(--green) 12%, var(--steel-1))
+  );
+  cursor: default;
+}
+
+/* The init command running on a freshly created worktree. Amber, like a machine
+   still warming up, distinct from the green "command running" LED. */
+.badge-initialising {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 45%, var(--steel-edge));
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--yellow) 24%, var(--steel-3)),
+    color-mix(in srgb, var(--yellow) 12%, var(--steel-1))
   );
   cursor: default;
 }

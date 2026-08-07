@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { join } from "node:path";
 import { mkdir, stat } from "node:fs/promises";
 import type {
@@ -8,11 +6,12 @@ import type {
   DeleteWorktreeParams,
   DeleteWorktreeResult,
   GitOpResult,
-  InitCommandResult,
   RepoWithWorktrees,
   WorktreeInfo,
 } from "@shared/types";
+import { slugifyBranch } from "@shared/paths";
 import * as store from "./store";
+import { startInitCommand } from "./commands";
 import {
   GitError,
   addWorktree,
@@ -22,11 +21,9 @@ import {
   hasRemote,
   listWorktrees,
   parseWorktreePorcelain,
-  refExists,
+  resolveTrunkRef,
   runGit,
 } from "./git";
-
-const execFileAsync = promisify(execFile);
 
 // MARK: Per-worktree serialization
 
@@ -46,16 +43,10 @@ function withWorktreeLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** Turn a branch name into a filesystem-safe directory segment. */
-export function slugifyBranch(branch: string): string {
-  return (
-    branch
-      .replace(/[/\\]/g, "-")
-      .replace(/[^a-zA-Z0-9._-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "") || "worktree"
-  );
-}
+// Re-exported so callers (and the unit tests) can reach it from this module,
+// though the canonical definition now lives in the shared paths helper so the
+// renderer can predict a new worktree's sort position too.
+export { slugifyBranch } from "@shared/paths";
 
 /**
  * Compute the on-disk path for a new worktree:
@@ -73,16 +64,17 @@ export function worktreePathFor(worktreesRoot: string, repoName: string, branch:
  * Never throws — a broken repo path resolves to the local name.
  */
 export async function defaultBaseRefFor(repoPath: string, mainBranch: string): Promise<string> {
-  const remoteRef = `origin/${mainBranch}`;
-  return (await refExists(repoPath, remoteRef)) ? remoteRef : mainBranch;
+  return resolveTrunkRef(repoPath, mainBranch);
 }
 
 /** List worktrees for a single repo (existing worktrees included automatically). */
 export async function listReposWorktrees(repoId: string): Promise<RepoWithWorktrees> {
   const repo = store.getRepo(repoId);
-  const defaultBaseRef = await defaultBaseRefFor(repo.path, repo.mainBranch);
+  // The trunk ref serves double duty: base for new branches AND the ref every
+  // worktree's ahead/behind counts are measured against.
+  const defaultBaseRef = await resolveTrunkRef(repo.path, repo.mainBranch);
   try {
-    const worktrees = await listWorktrees(repo.path, repo.mainBranch);
+    const worktrees = await listWorktrees(repo.path, defaultBaseRef);
     return { repo, worktrees, defaultBaseRef };
   } catch (err) {
     return { repo, worktrees: [], defaultBaseRef, error: (err as Error).message };
@@ -95,46 +87,7 @@ export async function listAllRepos(): Promise<RepoWithWorktrees[]> {
   return Promise.all(repos.map((r) => listReposWorktrees(r.id)));
 }
 
-/**
- * Run a repo's configured init command inside a freshly created worktree.
- * Uses the user's login shell (so GUI launches still see nvm/pnpm on PATH)
- * and a hard timeout so a long-lived command can't hang the IPC call forever.
- */
-async function runInitCommand(command: string, cwd: string): Promise<InitCommandResult> {
-  const trimmed = command.trim();
-  if (!trimmed) {
-    return { ran: false, exitCode: 0, stdout: "", stderr: "" };
-  }
-  const loginShell = process.env.SHELL || "/bin/zsh";
-  try {
-    const { stdout, stderr } = await execFileAsync(loginShell, ["-lc", trimmed], {
-      cwd,
-      maxBuffer: 32 * 1024 * 1024,
-      windowsHide: true,
-      timeout: 15 * 60_000,
-      killSignal: "SIGTERM",
-    });
-    return { ran: true, exitCode: 0, stdout, stderr };
-  } catch (err) {
-    const e = err as {
-      code?: number;
-      killed?: boolean;
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-    };
-    return {
-      ran: true,
-      exitCode: typeof e.code === "number" ? e.code : 1,
-      stdout: e.stdout ?? "",
-      stderr: e.killed
-        ? `Init command timed out after 15 minutes and was terminated.\n${e.stderr ?? ""}`
-        : (e.stderr ?? e.message ?? ""),
-    };
-  }
-}
-
-/** Create a new worktree for a repo and run its init command. */
+/** Create a new worktree for a repo and kick off its init command. */
 export async function createWorktree(params: CreateWorktreeParams): Promise<CreateWorktreeResult> {
   const repo = store.getRepo(params.repoId);
   const { worktreesRoot } = store.getConfig();
@@ -157,7 +110,7 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
   }
 
   const targetPath = worktreePathFor(worktreesRoot, repo.name, branch);
-  const init = await withWorktreeLock(targetPath, async () => {
+  await withWorktreeLock(targetPath, async () => {
     if (await pathExists(targetPath)) {
       throw new Error(`Target path already exists: ${targetPath}`);
     }
@@ -169,11 +122,16 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
       params.baseRef ??
       (params.newBranch ? await defaultBaseRefFor(repo.path, repo.mainBranch) : undefined);
     await addWorktree(repo.path, targetPath, branch, params.newBranch, baseRef);
-
-    return runInitCommand(repo.initCommand, targetPath);
   });
 
-  const status = await getWorktreeStatus(targetPath, repo.mainBranch).catch(() => null);
+  // The worktree exists on disk now, so it's immediately usable. Run the init
+  // command as a non-blocking background run (the lock is already released) —
+  // the user can open the worktree in their editor while e.g. `pnpm i` is still
+  // going, and an "Initialising" badge tracks it in the UI.
+  const initStarted = await startInitCommand(repo.id, targetPath).catch(() => false);
+
+  const trunkRef = await resolveTrunkRef(repo.path, repo.mainBranch);
+  const status = await getWorktreeStatus(targetPath, trunkRef).catch(() => null);
   const worktree: WorktreeInfo = {
     path: targetPath,
     branch,
@@ -183,7 +141,7 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
     prunable: false,
     status,
   };
-  return { worktree, init };
+  return { worktree, initStarted };
 }
 
 /**

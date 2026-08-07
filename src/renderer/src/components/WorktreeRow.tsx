@@ -9,7 +9,7 @@ import {
   SquareTerminal,
   Trash2,
 } from "lucide-react";
-import type { RepoConfig, WorktreeInfo } from "@shared/types";
+import { INIT_COMMAND_ID, type RepoConfig, type WorktreeInfo } from "@shared/types";
 import { useBranches, useDeleteWorktree, useGitOp } from "../queries";
 import { api } from "../api";
 import { useRuns } from "../runs";
@@ -34,6 +34,10 @@ export function WorktreeRow({ repo, worktree }: Props) {
   const branches = useBranches(repo.id);
   const runs = useRuns();
   const runningHere = runs.runningFor(worktree.path);
+  // The auto-started init run gets its own "Initialising" badge; keep it out of
+  // the generic running-command badge so the two never double up.
+  const initRun = runningHere.find((r) => r.commandId === INIT_COMMAND_ID);
+  const otherRuns = runningHere.filter((r) => r.commandId !== INIT_COMMAND_ID);
 
   // If the worktree changes under an open confirm (branch switched, new
   // commit), the confirmation no longer covers what the user saw — reset it.
@@ -112,16 +116,26 @@ export function WorktreeRow({ repo, worktree }: Props) {
           ) : (
             <StatusBadges status={worktree.status} mainBranch={repo.mainBranch} />
           )}
-          {runningHere.length > 0 && (
+          {initRun && (
+            <button
+              className="badge badge-initialising"
+              title="Running the repo's init command — click to view output"
+              onClick={() => runs.view({ worktreePath: worktree.path, commandId: INIT_COMMAND_ID })}
+            >
+              <Loader2 size={11} strokeWidth={2} className="spin" />
+              Initialising…
+            </button>
+          )}
+          {otherRuns.length > 0 && (
             <button
               className="badge badge-running"
-              title={`Running: ${runningHere.map((r) => r.name).join(", ")} — click to view output`}
+              title={`Running: ${otherRuns.map((r) => r.name).join(", ")} — click to view output`}
               onClick={() =>
-                runs.view({ worktreePath: worktree.path, commandId: runningHere[0].commandId })
+                runs.view({ worktreePath: worktree.path, commandId: otherRuns[0].commandId })
               }
             >
               <span className="run-dot" aria-hidden="true" />
-              {runningHere.length === 1 ? runningHere[0].name : `${runningHere.length} running`}
+              {otherRuns.length === 1 ? otherRuns[0].name : `${otherRuns.length} running`}
             </button>
           )}
         </div>

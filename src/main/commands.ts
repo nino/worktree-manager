@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { BrowserWindow } from "electron";
-import type { CommandExitEvent, CommandOutputEvent, RunningCommand } from "@shared/types";
+import {
+  INIT_COMMAND_ID,
+  type CommandExitEvent,
+  type CommandOutputEvent,
+  type RunningCommand,
+} from "@shared/types";
 import * as store from "./store";
 import { runGit } from "./git";
 import { LineRingBuffer, runKey } from "./commandKit";
@@ -60,34 +65,19 @@ async function requireWorktree(repoPath: string, worktreePath: string): Promise<
 // MARK: Lifecycle
 
 /**
- * Start a repo command inside a worktree. Validates the command exists and the
- * worktree belongs to the repo, then spawns via a shell in its own process group
- * so the whole tree (shell + e.g. node) can be signalled on stop. Streams merged
- * stdout/stderr to the renderer and buffers a bounded scrollback.
+ * Spawn `commandLine` for a run whose metadata is already built, wire its output
+ * into a bounded scrollback + the renderer stream, and register it. The caller
+ * owns validation and the "already running" check. Spawns via the user's login
+ * shell (like the init command) so GUI/Finder launches still pick up nvm/pnpm on
+ * PATH — a plain /bin/sh wouldn't; `detached` puts it in its own process group
+ * so stop() can signal the whole tree (shell + e.g. node), not just the shell.
  */
-export async function startCommand(
-  repoId: string,
-  worktreePath: string,
-  commandId: string,
-): Promise<RunningCommand> {
-  const repo = store.getRepo(repoId);
-  const command = repo.commands.find((c) => c.id === commandId);
-  if (!command) throw new Error(`Unknown command: ${commandId}`);
-  if (!command.command.trim()) throw new Error(`Command "${command.name}" is empty.`);
-
-  await requireWorktree(repo.path, worktreePath);
-
+function spawnRun(meta: RunningCommand, commandLine: string): RunningCommand {
+  const { worktreePath, commandId } = meta;
   const key = runKey(worktreePath, commandId);
-  if (runs.has(key)) {
-    throw new Error(`"${command.name}" is already running on this worktree.`);
-  }
 
-  // Run through the user's login shell (like the init command in worktrees.ts)
-  // so GUI/Finder launches still pick up nvm/pnpm on PATH — a plain /bin/sh
-  // wouldn't. detached puts it in its own process group so stop() can signal the
-  // whole tree (shell + e.g. node), not just the shell.
   const loginShell = process.env.SHELL || "/bin/zsh";
-  const child = spawn(loginShell, ["-lc", command.command], {
+  const child = spawn(loginShell, ["-lc", commandLine], {
     cwd: worktreePath,
     detached: true,
     env: process.env,
@@ -95,14 +85,6 @@ export async function startCommand(
   });
 
   const buffer = new LineRingBuffer(MAX_LINES);
-  const meta: RunningCommand = {
-    repoId,
-    worktreePath,
-    commandId,
-    name: command.name,
-    command: command.command,
-    startedAt: Date.now(),
-  };
   const run: Run = { child, buffer, meta, killTimer: null, finished: false };
   runs.set(key, run);
 
@@ -141,6 +123,72 @@ export async function startCommand(
   child.on("close", (code, signal) => finalize(code, signal));
 
   return meta;
+}
+
+/**
+ * Start a repo command inside a worktree. Validates the command exists and the
+ * worktree belongs to the repo, then spawns it as a streamed, bounded-scrollback
+ * background run.
+ */
+export async function startCommand(
+  repoId: string,
+  worktreePath: string,
+  commandId: string,
+): Promise<RunningCommand> {
+  const repo = store.getRepo(repoId);
+  const command = repo.commands.find((c) => c.id === commandId);
+  if (!command) throw new Error(`Unknown command: ${commandId}`);
+  if (!command.command.trim()) throw new Error(`Command "${command.name}" is empty.`);
+
+  await requireWorktree(repo.path, worktreePath);
+
+  const key = runKey(worktreePath, commandId);
+  if (runs.has(key)) {
+    throw new Error(`"${command.name}" is already running on this worktree.`);
+  }
+
+  return spawnRun(
+    {
+      repoId,
+      worktreePath,
+      commandId,
+      name: command.name,
+      command: command.command,
+      startedAt: Date.now(),
+    },
+    command.command,
+  );
+}
+
+/**
+ * Auto-start a repo's init command in a freshly created worktree, as a
+ * non-blocking background run (reserved `INIT_COMMAND_ID`). Returns false when
+ * the repo has no init command, or true once the run is spawned / already
+ * running. Never throws for the empty-command case — creation must not fail just
+ * because there is nothing to initialise.
+ */
+export async function startInitCommand(repoId: string, worktreePath: string): Promise<boolean> {
+  const repo = store.getRepo(repoId);
+  const command = repo.initCommand.trim();
+  if (!command) return false;
+
+  await requireWorktree(repo.path, worktreePath);
+
+  const key = runKey(worktreePath, INIT_COMMAND_ID);
+  if (runs.has(key)) return true;
+
+  spawnRun(
+    {
+      repoId,
+      worktreePath,
+      commandId: INIT_COMMAND_ID,
+      name: "Initialising",
+      command,
+      startedAt: Date.now(),
+    },
+    command,
+  );
+  return true;
 }
 
 /** Send a signal to a run's whole process group, falling back to the child. */

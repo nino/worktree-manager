@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Loader2, Settings2, X } from "lucide-react";
-import type { RepoWithWorktrees } from "@shared/types";
-import { useCreations } from "../creations";
+import type { RepoWithWorktrees, WorktreeInfo } from "@shared/types";
+import { slugifyBranch } from "@shared/paths";
+import { useCreations, type Creation } from "../creations";
 import { displayPath } from "../format";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { RepoSettingsDialog } from "./RepoSettingsDialog";
@@ -9,6 +10,37 @@ import { WorktreeRow } from "./WorktreeRow";
 
 interface Props {
   node: RepoWithWorktrees;
+}
+
+/** A tree row is either an existing worktree or an in-flight "Creating…" placeholder. */
+type Row = { kind: "worktree"; worktree: WorktreeInfo } | { kind: "pending"; creation: Creation };
+
+/** The directory segment git sorts a worktree by (its path basename / branch slug). */
+function sortSlug(row: Row): string {
+  return row.kind === "worktree"
+    ? (row.worktree.path.split("/").pop() ?? "")
+    : slugifyBranch(row.creation.branch);
+}
+
+/**
+ * Merge existing worktrees and pending creations into the order they'll appear
+ * once created: the primary tree first, then the rest ascending by slug — which
+ * mirrors git's own alphabetical worktree ordering. This lets a "Creating…"
+ * placeholder sit at its final position instead of jumping from the bottom.
+ */
+function orderedRows(worktrees: WorktreeInfo[], pending: Creation[]): Row[] {
+  const rows: Row[] = [
+    ...worktrees.map((worktree): Row => ({ kind: "worktree", worktree })),
+    ...pending.map((creation): Row => ({ kind: "pending", creation })),
+  ];
+  return rows.sort((a, b) => {
+    const aMain = a.kind === "worktree" && a.worktree.isMain;
+    const bMain = b.kind === "worktree" && b.worktree.isMain;
+    if (aMain !== bMain) return aMain ? -1 : 1;
+    const as = sortSlug(a);
+    const bs = sortSlug(b);
+    return as < bs ? -1 : as > bs ? 1 : 0;
+  });
 }
 
 /** A repo and its worktrees, collapsible. */
@@ -75,22 +107,23 @@ export function RepoNode({ node }: Props) {
               </button>
             </div>
           ))}
-          {worktrees.map((wt) => (
-            <WorktreeRow key={wt.path} repo={repo} worktree={wt} />
-          ))}
-          {pending.map((c) => (
-            <div key={c.id} className="wt-row wt-creating">
-              <div className="wt-info">
-                <div className="wt-line1">
-                  <span className="wt-branch">{c.branch}</span>
+          {orderedRows(worktrees, pending).map((row) =>
+            row.kind === "worktree" ? (
+              <WorktreeRow key={row.worktree.path} repo={repo} worktree={row.worktree} />
+            ) : (
+              <div key={`pending-${row.creation.id}`} className="wt-row wt-creating">
+                <div className="wt-info">
+                  <div className="wt-line1">
+                    <span className="wt-branch">{row.creation.branch}</span>
+                  </div>
                 </div>
+                <span className="wt-creating-label">
+                  <Loader2 size={13} strokeWidth={1.75} className="spin" />
+                  Creating…
+                </span>
               </div>
-              <span className="wt-creating-label">
-                <Loader2 size={13} strokeWidth={1.75} className="spin" />
-                Creating…
-              </span>
-            </div>
-          ))}
+            ),
+          )}
         </div>
       )}
 

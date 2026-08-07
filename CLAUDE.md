@@ -124,9 +124,14 @@ src/
   declares no document types) — test them against `pnpm dist`, where
   `open -a "<app>" <folder>` sends the same event a real drop does.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the repo's
-  configured main branch, and unpushed commits vs upstream. Parsing is done by
-  pure functions in `git.ts` (`parseWorktreePorcelain`, `parseStatusPorcelainV2`)
-  which are unit-tested.
+  trunk, and unpushed commits vs upstream. The ahead/behind comparison uses the
+  *remote* trunk (`origin/<mainBranch>`) when that remote-tracking ref exists,
+  else the local branch — see `resolveTrunkRef` in `git.ts`. The ref used is
+  returned as `WorktreeStatus.trunkRef` and is what the ↑/↓ badges show, so a
+  never-checked-out local trunk can't report a stale 0. `listReposWorktrees`
+  resolves it once per repo (same value as `defaultBaseRef`) and passes it down.
+  Parsing is done by pure functions in `git.ts` (`parseWorktreePorcelain`,
+  `parseStatusPorcelainV2`) which are unit-tested.
 - **Delete** is a safety ladder (see `deleteWorktree` in `worktrees.ts`): path must
   match git's own worktree list, primary tree refused, branch revalidated against
   what the UI showed (`expectedBranch`), and `git worktree remove` runs WITHOUT
@@ -169,6 +174,12 @@ src/
   only reference tokens, `color-mix()` of tokens, and `rgba()` light/shade
   overlays — never hard-code a hex outside the token block. The native window
   background is the fixed desktop charcoal in `main/index.ts`.
+- **Text selection**: `body` is `user-select: none` (native-app feel — labels,
+  badges, and button captions aren't selectable). Content worth copying opts back
+  in through the list in the "Text selection" block of `styles.css`; new
+  copyable text goes on that list, or gets the `selectable` class. Never drop the
+  global rule. The terminal and `.branch-select` are intentionally excluded (see
+  the comment there).
 - The IPC contract is the `WorktreeApi` interface in `src/shared/types.ts`; the
   channel-name map (`CH`) is duplicated in `ipc.ts` and `preload/index.ts` — keep
   them in sync.

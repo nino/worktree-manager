@@ -21,7 +21,10 @@ export interface RepoConfig {
   name: string;
   /** Absolute path to the repository root (the primary working tree). */
   path: string;
-  /** Branch that worktrees are compared against for ahead/behind. */
+  /**
+   * Trunk branch. Worktrees are compared against its remote-tracking version
+   * (`origin/<mainBranch>`) when that exists, else against the local branch.
+   */
   mainBranch: string;
   /** Command run inside a new worktree after it is created (e.g. `pnpm i`). */
   initCommand: string;
@@ -71,9 +74,14 @@ export interface WorktreeStatus {
   hasStaged: boolean;
   /** Untracked files present. */
   hasUntracked: boolean;
-  /** Commits ahead of the repo's configured main branch; null if unknown. */
+  /**
+   * The ref the ahead/behind counts are measured against: `origin/<mainBranch>`
+   * when that remote-tracking branch exists, else the local `mainBranch`.
+   */
+  trunkRef: string;
+  /** Commits ahead of `trunkRef`; null if unknown. */
   aheadOfMain: number | null;
-  /** Commits behind the repo's configured main branch; null if unknown. */
+  /** Commits behind `trunkRef`; null if unknown. */
   behindMain: number | null;
   /** True if the branch has an upstream and local commits are unpushed. */
   unpushed: boolean;
@@ -126,19 +134,24 @@ export interface CreateWorktreeParams {
   baseRef?: string;
 }
 
-/** Result of running the init command in a new worktree. */
-export interface InitCommandResult {
-  ran: boolean;
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-}
-
 /** Result of creating a worktree. */
 export interface CreateWorktreeResult {
   worktree: WorktreeInfo;
-  init: InitCommandResult;
+  /**
+   * True if the repo's init command was started as a background run in the new
+   * worktree. It runs non-blocking (streamed to the integrated terminal, shown
+   * as an "Initialising" badge) so the worktree is usable immediately — see
+   * `INIT_COMMAND_ID` and `startInitCommand`.
+   */
+  initStarted: boolean;
 }
+
+/**
+ * Reserved `commandId` for the auto-started init run. Not a real `RepoCommand`
+ * id (those are uuids), so it never collides; the UI special-cases it to render
+ * the "Initialising" badge instead of a generic running-command badge.
+ */
+export const INIT_COMMAND_ID = "__init__";
 
 /**
  * Outcome of a git operation triggered from the UI (push/pull/switch…).

@@ -5,6 +5,7 @@ export function makeStatus(over: Partial<WorktreeStatus> = {}): WorktreeStatus {
     hasUnstaged: false,
     hasStaged: false,
     hasUntracked: false,
+    trunkRef: "origin/main",
     aheadOfMain: 0,
     behindMain: 0,
     unpushed: false,
