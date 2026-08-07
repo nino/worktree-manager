@@ -1,5 +1,12 @@
-import { ipcMain, dialog, BrowserWindow } from "electron";
+import {
+  ipcMain,
+  dialog,
+  BrowserWindow,
+  type IpcMainInvokeEvent,
+  type WebContents,
+} from "electron";
 import type {
+  AddReposResult,
   AppConfig,
   AppSettings,
   CreateWorktreeParams,
@@ -10,7 +17,8 @@ import type {
   RepoWithWorktrees,
 } from "@shared/types";
 import * as store from "./store";
-import { assertValidRef, detectMainBranch, listBranches, resolveRepoRoot } from "./git";
+import { assertValidRef, listBranches } from "./git";
+import { addRepos } from "./repos";
 import {
   createWorktree,
   deleteWorktree,
@@ -29,7 +37,7 @@ import { getCommandBuffer, listRunningCommands, startCommand, stopCommand } from
 export const CH = {
   getConfig: "config:get",
   setAppSettings: "config:setAppSettings",
-  addRepo: "repo:add",
+  addRepos: "repo:add",
   updateRepo: "repo:update",
   removeRepo: "repo:remove",
   listRepos: "repo:list",
@@ -52,6 +60,7 @@ export const CH = {
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
   pickDirectory: "system:pickDirectory",
+  pickDirectories: "system:pickDirectories",
   windowMinimize: "window:minimize",
   windowZoom: "window:zoom",
   windowClose: "window:close",
@@ -59,7 +68,46 @@ export const CH = {
   windowFocusChanged: "window:focusChanged",
   // Pushed after a background fetch cycle so the renderer refreshes its trees.
   reposChanged: "repo:changed",
+  // Dock drops: the renderer drains what it missed, then listens for the rest.
+  takeDroppedRepos: "repo:takeDropped",
+  reposDropped: "repo:dropped",
 } as const;
+
+// MARK: Dock-drop delivery
+
+/**
+ * Outcomes of Dock drops that no renderer has picked up yet.
+ *
+ * A drop can be handled before there is a window at all (dropping onto the Dock
+ * icon launches the app), so results are queued until a renderer announces
+ * itself by calling `takeDroppedRepos`; later drops go straight to it.
+ */
+let undeliveredDrops: AddReposResult[] = [];
+let dropListener: WebContents | null = null;
+
+/** Hand a Dock-drop outcome to the renderer, queueing it if none is listening. */
+export function publishDropResult(result: AddReposResult): void {
+  if (dropListener && !dropListener.isDestroyed()) dropListener.send(CH.reposDropped, result);
+  else undeliveredDrops.push(result);
+}
+
+// MARK: Folder picker
+
+/** Show the native folder picker sheet; returns [] when it is cancelled. */
+async function pickFolders(
+  e: IpcMainInvokeEvent,
+  title: string,
+  multiple: boolean,
+): Promise<string[]> {
+  const win = BrowserWindow.fromWebContents(e.sender) ?? undefined;
+  const properties: ("openDirectory" | "createDirectory" | "multiSelections")[] = [
+    "openDirectory",
+    "createDirectory",
+  ];
+  if (multiple) properties.push("multiSelections");
+  const result = await dialog.showOpenDialog(win!, { title, properties });
+  return result.canceled ? [] : result.filePaths;
+}
 
 // MARK: Handler registration
 
@@ -71,10 +119,16 @@ export function registerIpc(): void {
     store.setAppSettings(settings),
   );
 
-  ipcMain.handle(CH.addRepo, async (_e, repoPath: string): Promise<AppConfig> => {
-    const root = await resolveRepoRoot(repoPath);
-    const mainBranch = await detectMainBranch(root);
-    return store.addRepo({ path: root, mainBranch });
+  ipcMain.handle(CH.addRepos, (_e, repoPaths: string[]): Promise<AddReposResult> =>
+    addRepos(repoPaths),
+  );
+
+  ipcMain.handle(CH.takeDroppedRepos, (e): AddReposResult[] => {
+    // This renderer is now listening; send subsequent drops straight to it.
+    dropListener = e.sender;
+    const queued = undeliveredDrops;
+    undeliveredDrops = [];
+    return queued;
   });
 
   ipcMain.handle(CH.updateRepo, async (_e, repo: RepoConfig): Promise<AppConfig> => {
@@ -147,14 +201,13 @@ export function registerIpc(): void {
   );
 
   ipcMain.handle(CH.pickDirectory, async (e, title?: string): Promise<string | null> => {
-    const win = BrowserWindow.fromWebContents(e.sender) ?? undefined;
-    const result = await dialog.showOpenDialog(win!, {
-      title: title ?? "Select a folder",
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (result.canceled || result.filePaths.length === 0) return null;
-    return result.filePaths[0];
+    const paths = await pickFolders(e, title ?? "Select a folder", false);
+    return paths[0] ?? null;
   });
+
+  ipcMain.handle(CH.pickDirectories, (e, title?: string): Promise<string[]> =>
+    pickFolders(e, title ?? "Select folders", true),
+  );
 
   // MARK: Window controls (classic close / collapse / zoom boxes)
 

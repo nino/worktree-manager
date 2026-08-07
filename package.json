@@ -5,7 +5,7 @@
   "main": "./out/main/index.js",
   "author": "nino@plinth.org.uk",
   "type": "module",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.20.0",
   "scripts": {
     "postinstall": "node node_modules/electron/install.js",
     "dev": "electron-vite dev",
@@ -44,11 +44,5 @@
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.10"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild"
-    ]
   }
 }

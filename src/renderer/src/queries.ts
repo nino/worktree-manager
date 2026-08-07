@@ -70,10 +70,10 @@ export function useSetAppSettings() {
   });
 }
 
-export function useAddRepo() {
+export function useAddRepos() {
   const refresh = useRefreshAll();
   return useMutation({
-    mutationFn: (repoPath: string) => api.addRepo(repoPath),
+    mutationFn: (repoPaths: string[]) => api.addRepos(repoPaths),
     onSuccess: refresh,
   });
 }

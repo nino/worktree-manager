@@ -26,8 +26,13 @@ export function HelpDialog({ onClose }: Props) {
         <h3>Getting started</h3>
         <ul>
           <li>
-            <strong>+ Add repo</strong> — pick any git repository. It resolves to the primary
-            working tree, auto-detects the main branch, and lists existing worktrees right away.
+            <strong>+ Add repo</strong> — pick any git repository (select several at once to add
+            them in one go). Each resolves to its primary working tree, auto-detects the main
+            branch, and lists existing worktrees right away.
+          </li>
+          <li>
+            <strong>Drop on the Dock icon</strong> — dragging repository folders onto the app's Dock
+            icon adds them the same way, even while the app isn't running.
           </li>
           <li>
             <strong>New worktree</strong> — create one from a new or existing branch, based on any

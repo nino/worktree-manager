@@ -1,9 +1,10 @@
+import { basename } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
-import type { CreateWorktreeResult } from "@shared/types";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import type { AddReposResult, AppConfig, CreateWorktreeResult } from "@shared/types";
 import { apiMock, resetApiMock } from "./apiMock";
 import { renderApp } from "./renderApp";
-import { deferred, makeNode, makeStatus, makeWorktree } from "./fixtures";
+import { deferred, makeNode, makeRepo, makeStatus, makeWorktree } from "./fixtures";
 
 beforeEach(() => {
   resetApiMock();
@@ -17,17 +18,24 @@ describe("empty state", () => {
 });
 
 describe("add a repository", () => {
+  /** The config `addRepos` echoes back after adding the given repo paths. */
+  function configWith(paths: string[]): AppConfig {
+    return {
+      worktreesRoot: "/Users/test/worktrees",
+      editorCommand: "code",
+      repos: paths.map((path, i) => makeRepo({ id: `r${i + 1}`, name: basename(path), path })),
+    };
+  }
+
   it("picks a folder, adds the repo, and shows it in the tree", async () => {
     const { user } = renderApp();
     await screen.findByText("No repositories yet");
 
-    apiMock.pickDirectory.mockResolvedValue("/Users/test/dev/app");
-    apiMock.addRepo.mockResolvedValue({
-      worktreesRoot: "/Users/test/worktrees",
-      editorCommand: "code",
-      repos: [
-        { id: "r1", name: "app", path: "/Users/test/dev/app", mainBranch: "main", initCommand: "" },
-      ],
+    apiMock.pickDirectories.mockResolvedValue(["/Users/test/dev/app"]);
+    apiMock.addRepos.mockResolvedValue({
+      config: configWith(["/Users/test/dev/app"]),
+      added: ["app"],
+      failed: [],
     });
     // After the add, the invalidated repos query refetches this populated list.
     apiMock.listRepos.mockResolvedValue([
@@ -37,21 +45,103 @@ describe("add a repository", () => {
     // Two "+ Add repo" buttons exist in the empty state (top bar + welcome).
     await user.click(screen.getAllByRole("button", { name: "+ Add repo" })[0]);
 
-    expect(apiMock.pickDirectory).toHaveBeenCalledWith("Select a git repository");
+    expect(apiMock.pickDirectories).toHaveBeenCalledWith("Select git repositories");
     expect(await screen.findByText("app")).toBeInTheDocument();
     // The worktree row and a status badge render.
     expect(screen.getByText("primary")).toBeInTheDocument();
-    expect(apiMock.addRepo).toHaveBeenCalledWith("/Users/test/dev/app");
+    expect(apiMock.addRepos).toHaveBeenCalledWith(["/Users/test/dev/app"]);
+  });
+
+  it("adds every folder chosen in one multi-selection", async () => {
+    const { user } = renderApp();
+    await screen.findByText("No repositories yet");
+
+    const paths = ["/Users/test/dev/app", "/Users/test/dev/api"];
+    apiMock.pickDirectories.mockResolvedValue(paths);
+    apiMock.addRepos.mockResolvedValue({
+      config: configWith(paths),
+      added: ["app", "api"],
+      failed: [],
+    });
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({ id: "r1", name: "app", path: paths[0] }),
+      makeNode({ id: "r2", name: "api", path: paths[1] }),
+    ]);
+
+    await user.click(screen.getAllByRole("button", { name: "+ Add repo" })[0]);
+
+    expect(apiMock.addRepos).toHaveBeenCalledWith(paths);
+    expect(await screen.findByText("Added app, api")).toBeInTheDocument();
+    expect(screen.getByText("api")).toBeInTheDocument();
+  });
+
+  it("reports the folders that could not be added", async () => {
+    const { user } = renderApp();
+    await screen.findByText("No repositories yet");
+
+    const paths = ["/Users/test/dev/app", "/Users/test/Documents"];
+    apiMock.pickDirectories.mockResolvedValue(paths);
+    apiMock.addRepos.mockResolvedValue({
+      config: configWith([paths[0]]),
+      added: ["app"],
+      failed: [{ path: paths[1], message: "Not a git repository" }],
+    });
+
+    await user.click(screen.getAllByRole("button", { name: "+ Add repo" })[0]);
+
+    expect(
+      await screen.findByText("Added app · ~/Documents: Not a git repository"),
+    ).toBeInTheDocument();
   });
 
   it("does nothing when the folder picker is cancelled", async () => {
     const { user } = renderApp();
     await screen.findByText("No repositories yet");
-    apiMock.pickDirectory.mockResolvedValue(null);
+    apiMock.pickDirectories.mockResolvedValue([]);
 
     await user.click(screen.getAllByRole("button", { name: "+ Add repo" })[0]);
 
-    expect(apiMock.addRepo).not.toHaveBeenCalled();
+    expect(apiMock.addRepos).not.toHaveBeenCalled();
+  });
+});
+
+describe("repos dropped on the Dock icon", () => {
+  it("reports drops that landed before the window was listening", async () => {
+    apiMock.takeDroppedRepos.mockResolvedValue([
+      {
+        config: { worktreesRoot: "", editorCommand: "code", repos: [] },
+        added: ["app"],
+        failed: [],
+      },
+    ]);
+    apiMock.listRepos.mockResolvedValue([makeNode()]);
+
+    renderApp();
+
+    expect(await screen.findByText("Added app")).toBeInTheDocument();
+    expect(screen.getByText("app")).toBeInTheDocument();
+  });
+
+  it("reports a drop that arrives while the app is open", async () => {
+    let push!: (result: AddReposResult) => void;
+    apiMock.onReposDropped.mockImplementation((listener: (result: AddReposResult) => void) => {
+      push = listener;
+      return () => {};
+    });
+
+    renderApp();
+    await screen.findByText("No repositories yet");
+
+    apiMock.listRepos.mockResolvedValue([makeNode()]);
+    act(() =>
+      push({
+        config: { worktreesRoot: "", editorCommand: "code", repos: [] },
+        added: [],
+        failed: [{ path: "/Users/test/Downloads", message: "Not a git repository" }],
+      }),
+    );
+
+    expect(await screen.findByText("~/Downloads: Not a git repository")).toBeInTheDocument();
   });
 });
 

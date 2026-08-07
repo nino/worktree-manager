@@ -45,6 +45,27 @@ export interface AppConfig {
 /** The app-wide settings editable in the Settings dialog. */
 export type AppSettings = Pick<AppConfig, "worktreesRoot" | "editorCommand">;
 
+/** A path that could not be added as a repository, with the reason why. */
+export interface AddRepoFailure {
+  /** The path exactly as it was picked or dropped. */
+  path: string;
+  /** Short, human-readable reason (e.g. "Not a git repository"). */
+  message: string;
+}
+
+/**
+ * Outcome of adding one or more repositories. Adding is per-path best effort —
+ * a bad path never aborts the rest — so both lists can be non-empty.
+ */
+export interface AddReposResult {
+  /** Configuration after the adds (unchanged when every path failed). */
+  config: AppConfig;
+  /** Display names of the repos that were added, in the order they were added. */
+  added: string[];
+  /** Paths that were rejected. */
+  failed: AddRepoFailure[];
+}
+
 /** Git status of a single worktree. */
 export interface WorktreeStatus {
   /** Working-tree changes that are not staged. */
@@ -212,7 +233,8 @@ export interface WorktreeApi {
   home: string;
   getConfig(): Promise<AppConfig>;
   setAppSettings(settings: AppSettings): Promise<AppConfig>;
-  addRepo(repoPath: string): Promise<AppConfig>;
+  /** Add one or more repositories by path; never rejects for a single bad path. */
+  addRepos(repoPaths: string[]): Promise<AddReposResult>;
   updateRepo(repo: RepoConfig): Promise<AppConfig>;
   removeRepo(repoId: string): Promise<AppConfig>;
   listRepos(): Promise<RepoWithWorktrees[]>;
@@ -241,6 +263,8 @@ export interface WorktreeApi {
   revealInFinder(targetPath: string): Promise<void>;
   /** Open a native directory picker; returns the chosen path or null. */
   pickDirectory(title?: string): Promise<string | null>;
+  /** Open a native directory picker that allows several folders; [] if cancelled. */
+  pickDirectories(title?: string): Promise<string[]>;
   /** Collapse the window to the Dock (classic collapse box). */
   minimizeWindow(): Promise<void>;
   /** Toggle the classic "zoom" between maximized and restored (zoom box). */
@@ -259,4 +283,12 @@ export interface WorktreeApi {
    * fetch, so the renderer can refetch its trees. Returns an unsubscribe fn.
    */
   onReposChanged(listener: () => void): () => void;
+  /**
+   * Drain the outcomes of repos dropped on the Dock icon that were handled
+   * before this renderer was listening (including drops that launched the app).
+   * Call once on mount, together with `onReposDropped`.
+   */
+  takeDroppedRepos(): Promise<AddReposResult[]>;
+  /** Subscribe to Dock-drop outcomes from here on. Returns an unsubscribe fn. */
+  onReposDropped(listener: (result: AddReposResult) => void): () => void;
 }

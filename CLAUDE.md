@@ -10,7 +10,8 @@ nested underneath, each with git status and quick actions.
 - **React 19** + **TypeScript 7** in the renderer
 - **TanStack Query** for renderer data/state (queries + mutations over IPC)
 - **electron-store** for persisted preferences
-- **pnpm** as package manager / task runner
+- **pnpm 11** as package manager / task runner, pinned by the `packageManager`
+  field and run through corepack (not a global install — see "pnpm settings")
 - **Vitest** for unit tests
 - **Prettier** for formatting (`objectWrap: collapse`, double quotes, semicolons,
   `trailingComma: all`)
@@ -40,13 +41,32 @@ electron-builder's pnpm-symlink issues. Consequence: never add a runtime dep to
 "dependencies"; add it to devDependencies and let the bundler inline it. The
 build is unsigned (`identity: null`) — set a real identity before distributing.
 
+## pnpm settings
+
+pnpm is pinned by `packageManager` in package.json and executed through
+**corepack**, which downloads that exact version on demand — there is no global
+pnpm to upgrade. To move versions, edit that field (or run `corepack use
+pnpm@<v>`); a `pnpm` on PATH from mise/npm is bypassed.
+
+From pnpm 11 on, settings live in **`pnpm-workspace.yaml`** (present even though
+this is not a workspace). `.npmrc` may hold auth/registry config only, and the
+`pnpm` field in package.json is **ignored** — putting settings there fails
+silently. Dependency build scripts are blocked unless listed in `allowBuilds`
+(which replaced pnpm 10's `onlyBuiltDependencies`); an unlisted package that
+needs one fails the install with `ERR_PNPM_IGNORED_BUILDS`, and pnpm appends a
+`<name>: set this to true or false` placeholder to the file for you to resolve.
+
 ## Version constraints (learned the hard way)
 
 - **vite must stay on ^7** while electron-vite is on 5.x (peer range `^5 || ^6 || ^7`).
   With vite 8, electron-vite silently fails to externalize the `electron` package,
   bundling its Node launcher into `out/main/index.js` — the app then dies at startup
-  with "Unable to find Electron app at .../out/main/install.js". If the main bundle
-  is suspiciously large (hundreds of kB instead of ~16 kB), suspect this first.
+  with "Unable to find Electron app at .../out/main/install.js". Don't diagnose
+  this by bundle size — `out/main/index.js` is legitimately ~430 kB because
+  electron-store (and its `conf`/`ajv` tree) is inlined on purpose, per
+  "Packaging" above. Check instead that the bundle still *imports* electron
+  rather than inlining it:
+  `grep -c 'from "electron"' out/main/index.js` (1 = externalized, good).
 - **@vitejs/plugin-react must stay on ^5** (6.x requires vite 8).
 - The `electron` npm package here has **no postinstall script**, so the root
   `postinstall` in package.json runs `node node_modules/electron/install.js` to
@@ -63,6 +83,7 @@ src/
     ipc.ts               ipcMain handlers; CH channel-name map
     store.ts             electron-store persistence (AppConfig, RepoConfig)
     git.ts               git command runner + pure porcelain parsers
+    repos.ts             add repos by path (picker + Dock drops), per-path errors
     worktrees.ts         create/delete/list orchestration; path building
     system.ts            open in editor / terminal / Finder
     *.test.ts            Vitest unit tests (pure parsers, path logic)
@@ -101,8 +122,29 @@ src/
   Overlapping cycles are skipped; failures are logged, never fatal. After a cycle
   that fetched anything it pushes `CH.reposChanged`, and the renderer invalidates
   the `repos` query (see `useReposChangedRefresh` in `App.tsx`).
-- **Adding a repo** resolves the path to its git root, auto-detects the main
-  branch, and immediately lists existing worktrees.
+- **Adding repos** (`addRepos` in `main/repos.ts`) resolves each path to its git
+  root, auto-detects the main branch, and immediately lists existing worktrees.
+  It is best effort per path — a folder that isn't a repo (or is already added)
+  lands in `AddReposResult.failed` instead of aborting the batch — and runs
+  sequentially because `store.addRepo` is read-modify-write. The picker allows
+  multi-selection (`pickDirectories`), so several repos can be added at once.
+  Outcomes are summarized into the banner under the top bar by
+  `summarizeAddResult` (`renderer/src/format.ts`): any failure makes the notice
+  an error and it stays, a clean add is informational and clears after 5s.
+- **Dock drops**: dragging repo folders onto the app icon adds them. macOS only
+  offers this for declared document types, so `electron-builder.yml` declares
+  `public.folder` in `CFBundleDocumentTypes` with `LSHandlerRank: Alternate`
+  (Finder stays the owner of folders — never make this app their default
+  handler). Drops arrive as `open-file` events, which can fire _before_
+  `app.whenReady` when the drop launches the app: the listener sits at module
+  scope in `main/index.ts`, buffers paths, and a 100ms debounce batches one
+  multi-item drop into a single `addRepos` call. The result is queued in `ipc.ts`
+  (`publishDropResult`) until a renderer claims it via `CH.takeDroppedRepos` —
+  a window may not exist yet, and the renderer's listener attaches after the page
+  loads, so pushing blindly would drop the outcome on the floor. Dock drops
+  cannot be exercised with `pnpm dev` (dev runs Electron.app, whose Info.plist
+  declares no document types) — test them against `pnpm dist`, where
+  `open -a "<app>" <folder>` sends the same event a real drop does.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the repo's
   trunk, and unpushed commits vs upstream. The ahead/behind comparison uses the
   *remote* trunk (`origin/<mainBranch>`) when that remote-tracking ref exists,
