@@ -97,6 +97,8 @@ src/
       App.tsx            Top bar + repo tree + empty state
       api.ts             window.api accessor
       queries.ts         TanStack Query hooks (keys, queries, mutations)
+      creations.tsx      In-flight worktree creations + arrival highlights
+      poof.tsx           Puff-of-smoke layer played over deleted rows
       components/        Modal, RepoNode, WorktreeRow, StatusBadges, dialogs
       styles.css         Brushed-metal skeuomorphic theme (single appearance)
 ```
@@ -177,6 +179,17 @@ src/
   switches). These return `GitOpResult` (`{ ok, message }`) instead of throwing,
   so git's stderr surfaces in the row UI. All ops validate the worktree belongs
   to the repo first (`requireWorktree`).
+- **Row animations**: a created worktree lands with a specular highlight raked
+  across its slat (`.wt-new` in `styles.css`); `CreationsProvider` flags the
+  branch as arriving for `ARRIVAL_MS` after the create resolves, and
+  `WorktreeRow` applies the class. A deleted one leaves in a Dock-style puff of
+  smoke. The deleted row unmounts as soon as the tree refetches, so the cloud
+  can't live in it: `WorktreeRow` measures `.wt-info` _before_ awaiting the
+  delete and, on success, hands the rect to `PoofProvider` (`poof.tsx`), which
+  plays it in a fixed click-through layer. The cloud is seven overlapping,
+  blurred lobes; the _cluster_ is what expands — animating lobes individually
+  tears it into clumps. Both effects are decorative, aria-hidden, and stand
+  down under `prefers-reduced-motion`.
 - Icons are **lucide-react**; icon-only buttons need `btn-icon` plus `title`
   and `aria-label`.
 

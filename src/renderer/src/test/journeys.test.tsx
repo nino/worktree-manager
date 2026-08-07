@@ -272,6 +272,76 @@ describe("delete a worktree (safety ladder)", () => {
   });
 });
 
+describe("row animations", () => {
+  /** The clouds currently playing. Decorative and aria-hidden, so there's no
+   *  accessible handle to query them by. */
+  const clouds = () => document.querySelectorAll(".poof");
+
+  it("lands a freshly created worktree with the arrival highlight", async () => {
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [makeWorktree({ branch: "main", isMain: true })]),
+    ]);
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    const wtPath = "/Users/test/worktrees/app/feat-x";
+    apiMock.createWorktree.mockResolvedValue({
+      worktree: makeWorktree({ branch: "feat/x", path: wtPath }),
+      initStarted: false,
+    });
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [
+        makeWorktree({ branch: "main", isMain: true, path: "/Users/test/worktrees/app/main" }),
+        makeWorktree({ branch: "feat/x", path: wtPath }),
+      ]),
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "+ Worktree" }));
+    await user.type(await screen.findByPlaceholderText("e.g., feature/my-thing"), "feat/x");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // Only the row that just arrived catches the light.
+    const newRow = (await screen.findByText("~/worktrees/app/feat-x")).closest(".wt-row");
+    expect(newRow).toHaveClass("wt-new");
+    expect(screen.getByText("~/worktrees/app/main").closest(".wt-row")).not.toHaveClass("wt-new");
+  });
+
+  it("puffs a deleted worktree away, but not one whose delete was refused", async () => {
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [
+        makeWorktree({ branch: "main", isMain: true, path: "/Users/test/worktrees/app/main" }),
+        makeWorktree({
+          branch: "feature",
+          path: "/Users/test/worktrees/app/feature",
+          status: makeStatus({ hasUnstaged: true }),
+        }),
+      ]),
+    ]);
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    apiMock.deleteWorktree
+      .mockResolvedValueOnce({ ok: false, reason: "dirty", message: "worktree is dirty" })
+      .mockResolvedValueOnce({ ok: true, message: "" });
+
+    await user.click(screen.getByRole("button", { name: "Delete worktree" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    // Refused: the row is still there, so nothing has vanished to puff away.
+    const forceBtn = await screen.findByRole("button", { name: "Force delete — discard changes" });
+    expect(clouds()).toHaveLength(0);
+
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [
+        makeWorktree({ branch: "main", isMain: true, path: "/Users/test/worktrees/app/main" }),
+      ]),
+    ]);
+    await user.click(forceBtn);
+
+    await waitFor(() => expect(clouds()).toHaveLength(1));
+  });
+});
+
 describe("git op errors", () => {
   it("shows git's message in the row when a push is rejected", async () => {
     apiMock.listRepos.mockResolvedValue([makeNode({}, [makeWorktree({ branch: "feature" })])]);

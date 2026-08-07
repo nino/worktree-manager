@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -22,13 +23,28 @@ export interface Creation {
   message?: string;
 }
 
+/** A worktree that has just landed in the tree, still wearing its arrival sheen. */
+interface Arrival {
+  id: number;
+  repoId: string;
+  branch: string;
+}
+
 interface CreationsContextValue {
   creationsFor: (repoId: string) => Creation[];
   create: (params: CreateWorktreeParams) => void;
   dismiss: (id: number) => void;
+  /** True while a just-created worktree's row should play its specular sweep. */
+  isArriving: (repoId: string, branch: string | null) => boolean;
 }
 
 const CreationsContext = createContext<CreationsContextValue | null>(null);
+
+/**
+ * How long a freshly created worktree keeps the `wt-new` class. Must outlast
+ * the `wt-sheen` / `wt-arrive` animations in styles.css.
+ */
+const ARRIVAL_MS = 1400;
 
 // MARK: Provider
 
@@ -41,7 +57,14 @@ const CreationsContext = createContext<CreationsContextValue | null>(null);
 export function CreationsProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const [creations, setCreations] = useState<Creation[]>([]);
+  const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const nextId = useRef(1);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => pending.forEach(clearTimeout);
+  }, []);
 
   const create = useCallback(
     (params: CreateWorktreeParams) => {
@@ -71,6 +94,14 @@ export function CreationsProvider({ children }: { children: ReactNode }) {
           if (result.initStarted) {
             void qc.invalidateQueries({ queryKey: keys.runningCommands });
           }
+          // Mark it as just-arrived so the real row catches the light as it
+          // mounts, then let the highlight lapse on its own.
+          setArrivals((as) => [...as, { id, repoId: params.repoId, branch: params.branch }]);
+          const timer = setTimeout(() => {
+            timers.current.delete(timer);
+            setArrivals((as) => as.filter((a) => a.id !== id));
+          }, ARRIVAL_MS);
+          timers.current.add(timer);
           finish(null);
         })
         .catch((err: unknown) => {
@@ -89,8 +120,10 @@ export function CreationsProvider({ children }: { children: ReactNode }) {
       creationsFor: (repoId) => creations.filter((c) => c.repoId === repoId),
       create,
       dismiss,
+      isArriving: (repoId, branch) =>
+        branch !== null && arrivals.some((a) => a.repoId === repoId && a.branch === branch),
     }),
-    [creations, create, dismiss],
+    [creations, arrivals, create, dismiss],
   );
 
   return <CreationsContext.Provider value={value}>{children}</CreationsContext.Provider>;
