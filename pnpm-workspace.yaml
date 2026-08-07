@@ -17,3 +17,32 @@ allowBuilds:
   # dead weight. pnpm 10 blocked it too; false keeps that behaviour explicit.
   # Flip to true if a Windows target is ever added.
   electron-winstaller: false
+
+# Security overrides. Every entry below pins a *transitive* dependency forward
+# to the first patched release for a GitHub/Dependabot advisory — the direct
+# dependency that pulls it in still declares a range that resolves to the
+# vulnerable version, so plain `pnpm update` can't reach the fix. Each key is
+# scoped to the affected version line (`<pkg>@<vulnerable range>`) so unrelated
+# majors of the same package resolve normally, and every bump is patch-level.
+#
+# Drop an entry once the parent dependency has moved past it on its own:
+# `pnpm why <pkg>` shows the parents, and `pnpm audit` must stay clean after.
+overrides:
+  # GHSA-r292-9mhp-454m — uncatchable stack-overflow DoS on crafted long paths.
+  # Via electron-builder (app-builder-lib, node-gyp).
+  "tar@<7.5.21": "^7.5.21"
+  # GHSA-mh99-v99m-4gvg + GHSA-rgw5-rvv9-x895 — OOM DoS via unbounded brace
+  # expansion. Three major lines are in the tree via minimatch/glob under
+  # electron-builder, so each is pinned to its own patched release.
+  "brace-expansion@<1.1.18": "^1.1.18"
+  "brace-expansion@>=2.0.0 <2.1.4": "^2.1.4"
+  "brace-expansion@>=4.0.0 <5.0.9": "^5.0.9"
+  # GHSA-8xcm-r25x-g524, GHSA-m8rv-5g2x-5cg5, GHSA-v3r7-h72x-cjcm — response
+  # desync, CRLF injection, cookie attribute injection. Via node-gyp.
+  "undici@>=6.0.0 <6.28.0": "^6.28.0"
+  # GHSA-7p8r-x3mc-p8w7 — host confusion via backslash authority introducer.
+  # Via ajv, which electron-store bundles into the packaged main process.
+  "fast-uri@>=3.0.0 <3.1.5": "^3.1.5"
+  # GHSA-5p4m-2wfm-xmqj — quadratic CPU consumption resolving !!omap.
+  # Via electron-builder's builder-util.
+  "js-yaml@>=4.0.0 <4.3.1": "^4.3.1"
