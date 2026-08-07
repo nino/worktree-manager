@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  AddReposResult,
   AppSettings,
   CommandExitEvent,
   CommandOutputEvent,
@@ -15,7 +16,7 @@ import type {
 const CH = {
   getConfig: "config:get",
   setAppSettings: "config:setAppSettings",
-  addRepo: "repo:add",
+  addRepos: "repo:add",
   updateRepo: "repo:update",
   removeRepo: "repo:remove",
   listRepos: "repo:list",
@@ -37,19 +38,22 @@ const CH = {
   openInTerminal: "system:openInTerminal",
   revealInFinder: "system:revealInFinder",
   pickDirectory: "system:pickDirectory",
+  pickDirectories: "system:pickDirectories",
   windowMinimize: "window:minimize",
   windowZoom: "window:zoom",
   windowClose: "window:close",
   windowSetSize: "window:setSize",
   windowFocusChanged: "window:focusChanged",
   reposChanged: "repo:changed",
+  takeDroppedRepos: "repo:takeDropped",
+  reposDropped: "repo:dropped",
 } as const;
 
 const api: WorktreeApi = {
   home: homedir(),
   getConfig: () => ipcRenderer.invoke(CH.getConfig),
   setAppSettings: (settings: AppSettings) => ipcRenderer.invoke(CH.setAppSettings, settings),
-  addRepo: (repoPath: string) => ipcRenderer.invoke(CH.addRepo, repoPath),
+  addRepos: (repoPaths: string[]) => ipcRenderer.invoke(CH.addRepos, repoPaths),
   updateRepo: (repo: RepoConfig) => ipcRenderer.invoke(CH.updateRepo, repo),
   removeRepo: (repoId: string) => ipcRenderer.invoke(CH.removeRepo, repoId),
   listRepos: () => ipcRenderer.invoke(CH.listRepos),
@@ -87,6 +91,7 @@ const api: WorktreeApi = {
   openInTerminal: (targetPath: string) => ipcRenderer.invoke(CH.openInTerminal, targetPath),
   revealInFinder: (targetPath: string) => ipcRenderer.invoke(CH.revealInFinder, targetPath),
   pickDirectory: (title?: string) => ipcRenderer.invoke(CH.pickDirectory, title),
+  pickDirectories: (title?: string) => ipcRenderer.invoke(CH.pickDirectories, title),
   minimizeWindow: () => ipcRenderer.invoke(CH.windowMinimize),
   zoomWindow: () => ipcRenderer.invoke(CH.windowZoom),
   closeWindow: () => ipcRenderer.invoke(CH.windowClose),
@@ -101,6 +106,12 @@ const api: WorktreeApi = {
     const handler = () => listener();
     ipcRenderer.on(CH.reposChanged, handler);
     return () => ipcRenderer.removeListener(CH.reposChanged, handler);
+  },
+  takeDroppedRepos: () => ipcRenderer.invoke(CH.takeDroppedRepos),
+  onReposDropped: (listener: (result: AddReposResult) => void) => {
+    const handler = (_e: unknown, result: AddReposResult) => listener(result);
+    ipcRenderer.on(CH.reposDropped, handler);
+    return () => ipcRenderer.removeListener(CH.reposDropped, handler);
   },
 };
 

@@ -16,6 +16,17 @@ mac:
   icon: build/icon.icns
   extendInfo:
     CFBundleIconName: AppIcon
+    # Lets folders be dropped on the Dock icon (and onto the app in Finder):
+    # Launch Services only highlights the icon for types the app declares.
+    # Drops arrive as `open-file` events, handled in main/index.ts.
+    # Rank "Alternate" keeps Finder the owner of public.folder — this app is
+    # only ever offered as a secondary handler, never the default for folders.
+    CFBundleDocumentTypes:
+      - CFBundleTypeName: Git repository folder
+        CFBundleTypeRole: Viewer
+        LSHandlerRank: Alternate
+        LSItemContentTypes:
+          - public.folder
   extraResources:
     - from: build/Assets.car
       to: Assets.car

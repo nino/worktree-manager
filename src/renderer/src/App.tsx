@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
-import { useConfig, useAddRepo, useRepos, keys } from "./queries";
+import type { AddReposResult } from "@shared/types";
+import { useConfig, useAddRepos, useRepos, keys } from "./queries";
+import { summarizeAddResult, type Notice } from "./format";
 import { api } from "./api";
 import { useRuns } from "./runs";
 import { RepoNode } from "./components/RepoNode";
@@ -27,22 +29,62 @@ function useReposChangedRefresh(): void {
   );
 }
 
+/**
+ * Report repos added by dropping folders on the Dock icon. The main process
+ * handles those adds on its own, so this both drains the outcomes that landed
+ * before this window was listening (a drop can launch the app) and subscribes
+ * to later ones.
+ */
+function useDroppedRepos(onResult: (result: AddReposResult) => void): void {
+  useEffect(() => {
+    const unsubscribe = api.onReposDropped(onResult);
+    void api.takeDroppedRepos().then((results) => results.forEach(onResult));
+    return unsubscribe;
+  }, [onResult]);
+}
+
 export function App() {
+  const qc = useQueryClient();
   const config = useConfig();
   const repos = useRepos();
-  const addRepo = useAddRepo();
+  const addRepos = useAddRepos();
   const active = useWindowActive();
   useReposChangedRefresh();
   const runs = useRuns();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+
+  // Dock drops are added by the main process, so the trees have to be refetched
+  // here rather than by a mutation's onSuccess.
+  const onDropped = useCallback(
+    (result: AddReposResult) => {
+      setNotice(summarizeAddResult(result));
+      void qc.invalidateQueries({ queryKey: keys.config });
+      void qc.invalidateQueries({ queryKey: keys.repos });
+    },
+    [qc],
+  );
+  useDroppedRepos(onDropped);
+
+  // A successful add is confirmed by the repo appearing in the tree, so let its
+  // notice go; failures stay until the next add.
+  useEffect(() => {
+    if (notice?.tone !== "info") return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const onAddRepo = async () => {
-    const dir = await api.pickDirectory("Select a git repository");
-    if (!dir) return;
-    await addRepo.mutateAsync(dir).catch(() => {
-      // error surfaced in the banner below
-    });
+    const dirs = await api.pickDirectories("Select git repositories");
+    if (dirs.length === 0) return;
+    setNotice(null);
+    const result = await addRepos.mutateAsync(dirs).catch((error: Error) => error);
+    setNotice(
+      result instanceof Error
+        ? { tone: "error", text: result.message }
+        : summarizeAddResult(result),
+    );
   };
 
   return (
@@ -84,7 +126,7 @@ export function App() {
           <button
             className="btn btn-sm btn-primary"
             onClick={onAddRepo}
-            disabled={addRepo.isPending}
+            disabled={addRepos.isPending}
           >
             + Add repo
           </button>
@@ -116,8 +158,10 @@ export function App() {
         </div>
       </header>
 
-      {addRepo.isError && (
-        <div className="banner banner-error">{(addRepo.error as Error).message}</div>
+      {notice && (
+        <div className={`banner banner-${notice.tone}`} role="status">
+          {notice.text}
+        </div>
       )}
 
       <main className="tree">
@@ -126,7 +170,9 @@ export function App() {
         {repos.data && repos.data.length === 0 && (
           <div className="welcome">
             <h2>No repositories yet</h2>
-            <p>Add a git repository to see its worktrees here.</p>
+            <p>
+              Add a git repository to see its worktrees here — or drop one on the app's Dock icon.
+            </p>
             <button className="btn btn-primary" onClick={onAddRepo}>
               + Add repo
             </button>

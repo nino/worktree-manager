@@ -17,7 +17,7 @@ export const apiMock: MockedApi = {
   home: "/Users/test",
   getConfig: vi.fn(),
   setAppSettings: vi.fn(),
-  addRepo: vi.fn(),
+  addRepos: vi.fn(),
   updateRepo: vi.fn(),
   removeRepo: vi.fn(),
   listRepos: vi.fn(),
@@ -33,12 +33,15 @@ export const apiMock: MockedApi = {
   openInTerminal: vi.fn(),
   revealInFinder: vi.fn(),
   pickDirectory: vi.fn(),
+  pickDirectories: vi.fn(),
   minimizeWindow: vi.fn(),
   zoomWindow: vi.fn(),
   closeWindow: vi.fn(),
   setWindowSize: vi.fn(),
   onWindowFocusChange: vi.fn(() => () => {}),
   onReposChanged: vi.fn(() => () => {}),
+  takeDroppedRepos: vi.fn(),
+  onReposDropped: vi.fn(() => () => {}),
   startCommand: vi.fn(),
   stopCommand: vi.fn(),
   listRunningCommands: vi.fn(),
@@ -60,9 +63,13 @@ export function resetApiMock(): void {
   apiMock.listRepos.mockResolvedValue([]);
   apiMock.listBranches.mockResolvedValue([]);
   apiMock.pickDirectory.mockResolvedValue(null);
+  apiMock.pickDirectories.mockResolvedValue([]);
   // Window-focus subscription must hand back an unsubscribe fn for React cleanup.
   apiMock.onWindowFocusChange.mockReturnValue(() => {});
   apiMock.onReposChanged.mockReturnValue(() => {});
+  // No Dock drops pending; the subscription hands back an unsubscribe fn.
+  apiMock.takeDroppedRepos.mockResolvedValue([]);
+  apiMock.onReposDropped.mockReturnValue(() => {});
   // No commands running by default; event subscriptions hand back unsubscribers.
   apiMock.listRunningCommands.mockResolvedValue([]);
   apiMock.getCommandBuffer.mockResolvedValue("");

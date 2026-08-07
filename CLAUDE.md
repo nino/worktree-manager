@@ -63,6 +63,7 @@ src/
     ipc.ts               ipcMain handlers; CH channel-name map
     store.ts             electron-store persistence (AppConfig, RepoConfig)
     git.ts               git command runner + pure porcelain parsers
+    repos.ts             add repos by path (picker + Dock drops), per-path errors
     worktrees.ts         create/delete/list orchestration; path building
     system.ts            open in editor / terminal / Finder
     *.test.ts            Vitest unit tests (pure parsers, path logic)
@@ -99,8 +100,29 @@ src/
   Overlapping cycles are skipped; failures are logged, never fatal. After a cycle
   that fetched anything it pushes `CH.reposChanged`, and the renderer invalidates
   the `repos` query (see `useReposChangedRefresh` in `App.tsx`).
-- **Adding a repo** resolves the path to its git root, auto-detects the main
-  branch, and immediately lists existing worktrees.
+- **Adding repos** (`addRepos` in `main/repos.ts`) resolves each path to its git
+  root, auto-detects the main branch, and immediately lists existing worktrees.
+  It is best effort per path — a folder that isn't a repo (or is already added)
+  lands in `AddReposResult.failed` instead of aborting the batch — and runs
+  sequentially because `store.addRepo` is read-modify-write. The picker allows
+  multi-selection (`pickDirectories`), so several repos can be added at once.
+  Outcomes are summarized into the banner under the top bar by
+  `summarizeAddResult` (`renderer/src/format.ts`): any failure makes the notice
+  an error and it stays, a clean add is informational and clears after 5s.
+- **Dock drops**: dragging repo folders onto the app icon adds them. macOS only
+  offers this for declared document types, so `electron-builder.yml` declares
+  `public.folder` in `CFBundleDocumentTypes` with `LSHandlerRank: Alternate`
+  (Finder stays the owner of folders — never make this app their default
+  handler). Drops arrive as `open-file` events, which can fire _before_
+  `app.whenReady` when the drop launches the app: the listener sits at module
+  scope in `main/index.ts`, buffers paths, and a 100ms debounce batches one
+  multi-item drop into a single `addRepos` call. The result is queued in `ipc.ts`
+  (`publishDropResult`) until a renderer claims it via `CH.takeDroppedRepos` —
+  a window may not exist yet, and the renderer's listener attaches after the page
+  loads, so pushing blindly would drop the outcome on the floor. Dock drops
+  cannot be exercised with `pnpm dev` (dev runs Electron.app, whose Info.plist
+  declares no document types) — test them against `pnpm dist`, where
+  `open -a "<app>" <folder>` sends the same event a real drop does.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the repo's
   configured main branch, and unpushed commits vs upstream. Parsing is done by
   pure functions in `git.ts` (`parseWorktreePorcelain`, `parseStatusPorcelainV2`)

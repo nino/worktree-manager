@@ -98,4 +98,6 @@ conventions, and version constraints.
 | Init command     | per repo | _(empty)_                                              |
 
 Adding a repository resolves the picked folder to its primary working tree (even
-if you pick a linked worktree) and lists all existing worktrees immediately.
+if you pick a linked worktree) and lists all existing worktrees immediately. The
+picker takes several folders at once, and you can also drag repository folders
+straight onto the app's Dock icon — including when the app isn't running.
