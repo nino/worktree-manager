@@ -1,0 +1,21 @@
+# Dependabot configuration
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # pnpm workspace at the repo root; "npm" is the ecosystem name Dependabot
+  # uses for pnpm lockfiles too.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      js-dependencies:
+        patterns:
+          - "*"
+
+  # Keep the actions in .github/workflows from going stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
