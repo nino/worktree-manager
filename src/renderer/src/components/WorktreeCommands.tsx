@@ -3,14 +3,14 @@ import { Square } from "lucide-react";
 import { INIT_COMMAND_ID, type RepoConfig, type WorktreeInfo } from "@shared/types";
 import { useRuns } from "../runs";
 
-interface Props {
+const ICON = { size: 13, strokeWidth: 1.75 } as const;
+
+interface WorktreeCommandsProps {
   repo: RepoConfig;
   worktree: WorktreeInfo;
   /** Folder deleted outside the app — running commands makes no sense. */
   disabled?: boolean;
 }
-
-const ICON = { size: 13, strokeWidth: 1.75 } as const;
 
 /**
  * Per-worktree command control: a native popup to start any configured command
@@ -18,7 +18,7 @@ const ICON = { size: 13, strokeWidth: 1.75 } as const;
  * A native <select> is used for the launcher so its popup is never clipped by
  * the repo panel's `overflow: hidden`.
  */
-export function WorktreeCommands({ repo, worktree, disabled }: Props) {
+export function WorktreeCommands({ repo, worktree, disabled }: WorktreeCommandsProps) {
   const runs = useRuns();
   const [error, setError] = useState<string | null>(null);
   // The init run has its own "Initialising" badge (viewable/stoppable from the

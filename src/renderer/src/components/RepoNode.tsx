@@ -9,10 +9,6 @@ import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { RepoSettingsDialog } from "./RepoSettingsDialog";
 import { WorktreeRow } from "./WorktreeRow";
 
-interface Props {
-  node: RepoWithWorktrees;
-}
-
 /** A tree row is either an existing worktree or an in-flight "Creating…" placeholder. */
 type Row = { kind: "worktree"; worktree: WorktreeInfo } | { kind: "pending"; creation: Creation };
 
@@ -44,8 +40,12 @@ function orderedRows(worktrees: WorktreeInfo[], pending: Creation[]): Row[] {
   });
 }
 
+interface RepoNodeProps {
+  node: RepoWithWorktrees;
+}
+
 /** A repo and its worktrees, collapsible. */
-export function RepoNode({ node }: Props) {
+export function RepoNode({ node }: RepoNodeProps) {
   const { repo, worktrees, error, defaultBaseRef } = node;
   const [collapsed, setCollapsed] = useState(false);
   const [creating, setCreating] = useState(false);

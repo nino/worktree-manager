@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 
-interface Props {
+const CONFIRM_MS = 1200;
+
+interface CopyButtonProps {
   /** The real, unabbreviated text to put on the clipboard. */
   text: string;
   /** Tooltip / accessible name, e.g. "Copy path". */
   label: string;
 }
 
-const CONFIRM_MS = 1200;
-
 /** Ghost icon button that copies `text` and flashes a checkmark. */
-export function CopyButton({ text, label }: Props) {
+export function CopyButton({ text, label }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
 

@@ -1,13 +1,13 @@
 import type { ReactElement } from "react";
 import type { WorktreeStatus } from "@shared/types";
 
-interface Props {
+interface StatusBadgesProps {
   status: WorktreeStatus | null;
   mainBranch: string;
 }
 
 /** Compact row of git-status indicators for a worktree. */
-export function StatusBadges({ status, mainBranch }: Props) {
+export function StatusBadges({ status, mainBranch }: StatusBadgesProps) {
   if (!status) return <span className="badge badge-muted">no status</span>;
 
   // The ref the counts were measured against — usually `origin/<main>`. The

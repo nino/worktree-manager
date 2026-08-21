@@ -64,7 +64,7 @@ needs one fails the install with `ERR_PNPM_IGNORED_BUILDS`, and pnpm appends a
   with "Unable to find Electron app at .../out/main/install.js". Don't diagnose
   this by bundle size — `out/main/index.js` is legitimately ~430 kB because
   electron-store (and its `conf`/`ajv` tree) is inlined on purpose, per
-  "Packaging" above. Check instead that the bundle still *imports* electron
+  "Packaging" above. Check instead that the bundle still _imports_ electron
   rather than inlining it:
   `grep -c 'from "electron"' out/main/index.js` (1 = externalized, good).
 - **@vitejs/plugin-react must stay on ^5** (6.x requires vite 8).
@@ -147,7 +147,7 @@ src/
   `open -a "<app>" <folder>` sends the same event a real drop does.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the repo's
   trunk, and unpushed commits vs upstream. The ahead/behind comparison uses the
-  *remote* trunk (`origin/<mainBranch>`) when that remote-tracking ref exists,
+  _remote_ trunk (`origin/<mainBranch>`) when that remote-tracking ref exists,
   else the local branch — see `resolveTrunkRef` in `git.ts`. The ref used is
   returned as `WorktreeStatus.trunkRef` and is what the ↑/↓ badges show, so a
   never-checked-out local trunk can't report a stale 0. `listReposWorktrees`
@@ -196,6 +196,10 @@ src/
 ## Conventions
 
 - Section headers in code use `// MARK:` comments so they show up in the minimap.
+- A React component's props `interface` is named after the component
+  (`FooProps` for component `Foo`) and goes directly before the component it
+  belongs to (a doc comment may sit between) — never separated by other
+  declarations like constants or helpers.
 - All input-field placeholders must start with `e.g.,`.
 - Paths shown in the UI are abbreviated with `~` via `displayPath`
   (`renderer/src/format.ts`, backed by `tildify` in `shared/paths.ts`); keep the

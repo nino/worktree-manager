@@ -1,11 +1,11 @@
 import { Modal } from "./Modal";
 
-interface Props {
+interface HelpDialogProps {
   onClose: () => void;
 }
 
 /** An "About / how it works" dialog explaining the whole app. */
-export function HelpDialog({ onClose }: Props) {
+export function HelpDialog({ onClose }: HelpDialogProps) {
   return (
     <Modal
       title="About Worktree Manager"

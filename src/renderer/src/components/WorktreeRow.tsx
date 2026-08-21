@@ -21,15 +21,15 @@ import { CopyButton } from "./CopyButton";
 import { StatusBadges } from "./StatusBadges";
 import { WorktreeCommands } from "./WorktreeCommands";
 
-interface Props {
+const ICON = { size: 13, strokeWidth: 1.75 } as const;
+
+interface WorktreeRowProps {
   repo: RepoConfig;
   worktree: WorktreeInfo;
 }
 
-const ICON = { size: 13, strokeWidth: 1.75 } as const;
-
 /** A single worktree row: branch selector, path, status, and actions. */
-export function WorktreeRow({ repo, worktree }: Props) {
+export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
   const [confirmStage, setConfirmStage] = useState<"confirm" | "force" | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
   const del = useDeleteWorktree();
