@@ -622,6 +622,14 @@ textarea,
   text-shadow: var(--etch);
 }
 
+.wt-path-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-top: 3px;
+}
+
 .wt-path {
   color: var(--text-dim);
   font-size: 11px;
@@ -629,8 +637,55 @@ textarea,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 3px;
+  min-width: 0;
   text-shadow: var(--etch);
+}
+
+/* MARK: Copy buttons (ghost duplicators beside copyable text)
+
+   Deliberately not a machined key: a raised metal button after every path and
+   branch would out-shout the content it copies. These sit flat until hovered,
+   then dish in slightly like a pressed area of the panel. */
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px 3px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.copy-btn:hover {
+  color: var(--text-dim);
+  background: rgba(0, 0, 0, 0.07);
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+
+.copy-btn:active {
+  background: rgba(0, 0, 0, 0.13);
+}
+
+.copy-btn.copied,
+.copy-btn.copied:hover {
+  color: var(--green);
+}
+
+.copy-btn svg {
+  display: block;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.55));
+}
+
+/* The repo header lays its title out on the text baseline; centre the glyph
+   against the path's x-height instead of hanging it below the line. */
+.repo-title .copy-btn {
+  align-self: center;
 }
 
 .wt-actions {

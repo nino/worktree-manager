@@ -4,6 +4,7 @@ import type { RepoWithWorktrees, WorktreeInfo } from "@shared/types";
 import { slugifyBranch } from "@shared/paths";
 import { useCreations, type Creation } from "../creations";
 import { displayPath } from "../format";
+import { CopyButton } from "./CopyButton";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { RepoSettingsDialog } from "./RepoSettingsDialog";
 import { WorktreeRow } from "./WorktreeRow";
@@ -72,6 +73,7 @@ export function RepoNode({ node }: Props) {
           <span className="repo-path" title={repo.path}>
             {displayPath(repo.path)}
           </span>
+          <CopyButton text={repo.path} label="Copy path" />
         </div>
         <div className="repo-actions">
           <button className="btn btn-sm btn-primary" onClick={() => setCreating(true)}>

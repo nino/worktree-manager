@@ -17,6 +17,7 @@ import { usePoof } from "../poof";
 import { useRuns } from "../runs";
 import { displayPath } from "../format";
 import { BranchPicker } from "./BranchPicker";
+import { CopyButton } from "./CopyButton";
 import { StatusBadges } from "./StatusBadges";
 import { WorktreeCommands } from "./WorktreeCommands";
 
@@ -118,6 +119,9 @@ export function WorktreeRow({ repo, worktree }: Props) {
           ) : (
             <span className="wt-branch">{worktree.branch ?? "(detached)"}</span>
           )}
+          {worktree.branch !== null && (
+            <CopyButton text={worktree.branch} label="Copy branch name" />
+          )}
           {worktree.isMain && <span className="badge badge-main">primary</span>}
           {worktree.locked && <span className="badge badge-muted">locked</span>}
           {missing ? (
@@ -153,8 +157,11 @@ export function WorktreeRow({ repo, worktree }: Props) {
             </button>
           )}
         </div>
-        <div className="wt-path" title={worktree.path}>
-          {displayPath(worktree.path)}
+        <div className="wt-path-row">
+          <span className="wt-path" title={worktree.path}>
+            {displayPath(worktree.path)}
+          </span>
+          <CopyButton text={worktree.path} label="Copy path" />
         </div>
       </div>
 
