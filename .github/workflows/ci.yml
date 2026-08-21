@@ -17,7 +17,7 @@ jobs:
   test:
     runs-on: ubuntu-latest # tests are pure parsers + happy-dom, so no macOS runner needed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6 # version read from packageManager field
 
