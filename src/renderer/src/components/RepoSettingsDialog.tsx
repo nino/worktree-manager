@@ -5,13 +5,13 @@ import { useRemoveRepo, useUpdateRepo } from "../queries";
 import { displayPath } from "../format";
 import { Modal } from "./Modal";
 
-interface Props {
+interface RepoSettingsDialogProps {
   repo: RepoConfig;
   onClose: () => void;
 }
 
 /** Per-repo settings: display name, main branch, init command, commands; removal. */
-export function RepoSettingsDialog({ repo, onClose }: Props) {
+export function RepoSettingsDialog({ repo, onClose }: RepoSettingsDialogProps) {
   const [name, setName] = useState(repo.name);
   const [mainBranch, setMainBranch] = useState(repo.mainBranch);
   const [initCommand, setInitCommand] = useState(repo.initCommand);

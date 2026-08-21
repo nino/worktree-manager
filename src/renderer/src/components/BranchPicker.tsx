@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { fuzzyFilterBranches } from "../fuzzy";
 
-interface Props {
+interface BranchPickerProps {
   /** Branch names fetched for the repo (may omit the current branch). */
   branches: string[];
   /** The worktree's current branch — always kept selectable. */
@@ -20,7 +20,7 @@ interface Props {
  * menu is portalled to `document.body` so the repo panel's `overflow: hidden`
  * can't clip it, and it re-anchors to the trigger while the tree scrolls.
  */
-export function BranchPicker({ branches, current, disabled, onSelect }: Props) {
+export function BranchPicker({ branches, current, disabled, onSelect }: BranchPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);

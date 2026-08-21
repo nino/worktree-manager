@@ -4,13 +4,13 @@ import { useSetAppSettings } from "../queries";
 import { api } from "../api";
 import { Modal } from "./Modal";
 
-interface Props {
+interface SettingsDialogProps {
   config: AppConfig;
   onClose: () => void;
 }
 
 /** Global app settings: worktrees root, editor command. */
-export function SettingsDialog({ config, onClose }: Props) {
+export function SettingsDialog({ config, onClose }: SettingsDialogProps) {
   const [worktreesRoot, setWorktreesRoot] = useState(config.worktreesRoot);
   const [editorCommand, setEditorCommand] = useState(config.editorCommand);
   const save = useSetAppSettings();

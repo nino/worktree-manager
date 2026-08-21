@@ -3,7 +3,7 @@ import type { RepoConfig } from "@shared/types";
 import { useCreations } from "../creations";
 import { Modal } from "./Modal";
 
-interface Props {
+interface CreateWorktreeDialogProps {
   repo: RepoConfig;
   /** Preferred base ref for a new branch (e.g. `origin/main`); see RepoWithWorktrees. */
   defaultBaseRef: string;
@@ -11,7 +11,7 @@ interface Props {
 }
 
 /** Dialog to create a new worktree for a repo. */
-export function CreateWorktreeDialog({ repo, defaultBaseRef, onClose }: Props) {
+export function CreateWorktreeDialog({ repo, defaultBaseRef, onClose }: CreateWorktreeDialogProps) {
   const [branch, setBranch] = useState("");
   const [newBranch, setNewBranch] = useState(true);
   const [baseRef, setBaseRef] = useState(defaultBaseRef);

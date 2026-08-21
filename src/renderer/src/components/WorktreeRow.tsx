@@ -17,18 +17,19 @@ import { usePoof } from "../poof";
 import { useRuns } from "../runs";
 import { displayPath } from "../format";
 import { BranchPicker } from "./BranchPicker";
+import { CopyButton } from "./CopyButton";
 import { StatusBadges } from "./StatusBadges";
 import { WorktreeCommands } from "./WorktreeCommands";
 
-interface Props {
+const ICON = { size: 13, strokeWidth: 1.75 } as const;
+
+interface WorktreeRowProps {
   repo: RepoConfig;
   worktree: WorktreeInfo;
 }
 
-const ICON = { size: 13, strokeWidth: 1.75 } as const;
-
 /** A single worktree row: branch selector, path, status, and actions. */
-export function WorktreeRow({ repo, worktree }: Props) {
+export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
   const [confirmStage, setConfirmStage] = useState<"confirm" | "force" | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
   const del = useDeleteWorktree();
@@ -118,6 +119,9 @@ export function WorktreeRow({ repo, worktree }: Props) {
           ) : (
             <span className="wt-branch">{worktree.branch ?? "(detached)"}</span>
           )}
+          {worktree.branch !== null && (
+            <CopyButton text={worktree.branch} label="Copy branch name" />
+          )}
           {worktree.isMain && <span className="badge badge-main">primary</span>}
           {worktree.locked && <span className="badge badge-muted">locked</span>}
           {missing ? (
@@ -153,8 +157,11 @@ export function WorktreeRow({ repo, worktree }: Props) {
             </button>
           )}
         </div>
-        <div className="wt-path" title={worktree.path}>
-          {displayPath(worktree.path)}
+        <div className="wt-path-row">
+          <span className="wt-path" title={worktree.path}>
+            {displayPath(worktree.path)}
+          </span>
+          <CopyButton text={worktree.path} label="Copy path" />
         </div>
       </div>
 
