@@ -55,8 +55,17 @@
   --gem-green-lo: #14620f;
 
   /* Brushed-aluminium grain: horizontal turbulence streaks, blended `overlay`
-     over the metal gradients so the noise modulates rather than covers. */
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='280'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.004 0.7' numOctaves='4' seed='11' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.16'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='280' height='280' filter='url(%23g)'/%3E%3C/svg%3E");
+     over the metal gradients so the noise modulates rather than covers.
+
+     Baked to PNG rather than left as a live `feTurbulence` SVG. The filter is
+     re-run by the rasteriser for every tile of every element that carries the
+     grain — and ~30 rules do, including every button and worktree row — which
+     made it a third of the paint cost of a window resize. The PNGs are the
+     same filter's output, so the surface is unchanged (mean delta 0.08/255
+     against the live filter); `image-set` keeps retina on the 2x tile. If the
+     texture is ever retuned, edit the filter in scripts/bake-grain.mjs and
+     re-run it rather than hand-editing the PNGs. */
+  --grain: image-set(url("./assets/grain.png") 1x, url("./assets/grain@2x.png") 2x);
   /* Fine machined hairlines layered under the grain — kept faint so they
      read as brushed texture, not scan lines. */
   --brush: repeating-linear-gradient(
@@ -733,7 +742,14 @@ textarea,
    prefers-reduced-motion. */
 
 /* The glint: a soft band of light dragged left-to-right over the whole slat,
-   buttons included. Sits above the row's content but never eats a click. */
+   buttons included. Sits above the row's content but never eats a click.
+
+   Driven by `transform`, not `background-position`: the band crosses a row
+   carrying grain, gradients and a blend mode, and any non-composited property
+   makes the compositor repaint all of that every frame. The travel matches
+   what the old background-position keyframes produced — a 55%-wide band
+   positioned from -45% to 145% moves its left edge across (100% - 55%) of the
+   row, i.e. -20.25% to 65.25% of the row's width — so the glint is unchanged. */
 .wt-new::after {
   content: "";
   position: absolute;
@@ -746,38 +762,59 @@ textarea,
   background-image: var(--sheen);
   background-repeat: no-repeat;
   background-size: 55% 100%;
+  background-position: 0 0;
   animation: wt-sheen 1100ms cubic-bezier(0.3, 0.1, 0.25, 1);
 }
 
 @keyframes wt-sheen {
   from {
-    background-position: -45% 0;
+    transform: translateX(-20.25%);
     opacity: 0;
   }
   18% {
     opacity: 1;
   }
   to {
-    background-position: 145% 0;
+    transform: translateX(65.25%);
     opacity: 0;
   }
 }
 
-/* …over a slat that starts a touch brighter and settles back to the stack. */
-.wt-new {
-  animation: wt-arrive 1100ms ease-out;
+/* …over a slat that starts a touch brighter and settles back to the stack.
+
+   The brightening is a veil that fades out rather than an animated box-shadow.
+   A `box-shadow` keyframe repaints the row (grain, gradients, blend mode and
+   all) on every frame; fading a flat overlay's opacity is composited and costs
+   nothing. `wt-arrive` is kept as the veil's own animation name. */
+.wt-new::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Above the slat's own background, below its content — where the inset
+     shadow used to sit. The row's content is lifted over it just below. */
+  z-index: 0;
+  pointer-events: none;
+  background-color: rgba(255, 255, 255, 0.26);
+  animation: wt-arrive 1100ms ease-out forwards;
+}
+
+/* The veil is positioned, so the row's in-flow content would otherwise paint
+   beneath it. Lift the two content blocks over it by name rather than with
+   `> *`: the delete overlay is a sibling of theirs and is absolutely
+   positioned, and a blanket rule would reset it to `relative` and stop it
+   covering the row. Only applies while the row is arriving. */
+.wt-new > .wt-info,
+.wt-new > .wt-actions {
+  position: relative;
+  z-index: 0;
 }
 
 @keyframes wt-arrive {
   from {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.55),
-      inset 0 0 0 999px rgba(255, 255, 255, 0.26);
+    opacity: 1;
   }
   to {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.55),
-      inset 0 0 0 999px rgba(255, 255, 255, 0);
+    opacity: 0;
   }
 }
 
@@ -846,9 +883,12 @@ textarea,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wt-new,
-  .wt-new::after {
-    animation: none;
+  /* Both flourishes are removed outright rather than left un-animated: the
+     glint and the arrival veil are only ever mid-animation states, so an
+     `animation: none` would park them on the row at full strength. */
+  .wt-new::after,
+  .wt-new::before {
+    display: none;
   }
 
   .poof-layer {
