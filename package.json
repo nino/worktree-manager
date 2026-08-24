@@ -18,6 +18,7 @@
     "format:check": "prettier --check .",
     "dist": "pnpm build && electron-builder --mac --publish never --config electron-builder.yml",
     "install-app": "node scripts/install.mjs",
+    "bake-grain": "node scripts/bake-grain.mjs",
     "screenshot": "electron-vite build && node scripts/screenshot.mjs"
   },
   "devDependencies": {

@@ -30,6 +30,8 @@ pnpm format          # prettier --write .
 pnpm dist            # package macOS .app + .dmg into release/ (electron-builder)
 pnpm screenshot      # regenerate docs/screenshot.png (throwaway demo repos,
                      # sandboxed config via WTM_USER_DATA — never real user data)
+pnpm bake-grain      # re-render the brushed-metal grain tiles into
+                     # src/renderer/src/assets/ (only after retuning the filter)
 ```
 
 ## Packaging
@@ -210,7 +212,19 @@ src/
   `styles.css` (including gradient/texture/shadow-stack tokens); rules below it
   only reference tokens, `color-mix()` of tokens, and `rgba()` light/shade
   overlays — never hard-code a hex outside the token block. The native window
-  background is the fixed desktop charcoal in `main/index.ts`.
+  background is the fixed desktop charcoal in `main/index.ts`. The `--grain`
+  texture is the one non-literal: it is a **baked PNG pair** (1x/2x, chosen by
+  `image-set`), not a live `feTurbulence` SVG, because the rasteriser re-runs a
+  filter for every tile of every element carrying it — ~30 rules, including
+  every button and every worktree row — which cost a third of the paint time of
+  a window resize. `scripts/bake-grain.mjs` holds the filter and is the only
+  place to retune the texture; re-run `pnpm bake-grain` rather than editing the
+  PNGs.
+- **Animation cost**: row flourishes animate `transform` and `opacity` only.
+  Those are composited; anything else (`background-position`, `box-shadow`,
+  `background-color`) repaints the row's whole grain-plus-gradient-plus-blend
+  stack every frame — the arrival animation measured ~9x cheaper once moved onto
+  compositable properties. Keep new animations on that pair.
 - **Text selection**: `body` is `user-select: none` (native-app feel — labels,
   badges, and button captions aren't selectable). Content worth copying opts back
   in through the list in the "Text selection" block of `styles.css`; new
