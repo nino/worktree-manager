@@ -242,6 +242,8 @@ export interface WorktreeApi {
   createWorktree(params: CreateWorktreeParams): Promise<CreateWorktreeResult>;
   deleteWorktree(params: DeleteWorktreeParams): Promise<DeleteWorktreeResult>;
   listBranches(repoId: string): Promise<string[]>;
+  /** Local + remote-tracking branch names, for the create-worktree base-ref picker. */
+  listBaseRefCandidates(repoId: string): Promise<string[]>;
   pushWorktree(repoId: string, worktreePath: string): Promise<GitOpResult>;
   pullWorktree(repoId: string, worktreePath: string): Promise<GitOpResult>;
   pullMainIntoWorktree(repoId: string, worktreePath: string): Promise<GitOpResult>;

@@ -340,6 +340,30 @@ export async function listBranches(repoPath: string): Promise<string[]> {
     .filter(Boolean);
 }
 
+/** Parse `for-each-ref --format=%(refname:short)%09%(symref)`, dropping
+ *  symbolic refs (e.g. origin/HEAD, which is an alias, not a real branch). */
+export function parseRefCandidates(output: string): string[] {
+  const names: string[] = [];
+  for (const line of output.split("\n")) {
+    if (!line.trim()) continue;
+    const [name, symref] = line.split("\t");
+    if (symref) continue;
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** List local branches and remote-tracking branches, for base-ref suggestions. */
+export async function listBaseRefCandidates(repoPath: string): Promise<string[]> {
+  const out = await runGit(repoPath, [
+    "for-each-ref",
+    "--format=%(refname:short)%09%(symref)",
+    "refs/heads",
+    "refs/remotes",
+  ]);
+  return parseRefCandidates(out);
+}
+
 /** Validate a user-supplied branch/ref name; throws a GitError if malformed. */
 export async function assertValidRef(repoPath: string, name: string): Promise<void> {
   // check-ref-format also rejects names starting with "-", closing the

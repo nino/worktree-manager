@@ -17,7 +17,7 @@ import type {
   RepoWithWorktrees,
 } from "@shared/types";
 import * as store from "./store";
-import { assertValidRef, listBranches } from "./git";
+import { assertValidRef, listBaseRefCandidates, listBranches } from "./git";
 import { addRepos } from "./repos";
 import {
   createWorktree,
@@ -45,6 +45,7 @@ export const CH = {
   createWorktree: "worktree:create",
   deleteWorktree: "worktree:delete",
   listBranches: "repo:branches",
+  listBaseRefCandidates: "repo:baseRefCandidates",
   pushWorktree: "worktree:push",
   pullWorktree: "worktree:pull",
   pullMainIntoWorktree: "worktree:pullMain",
@@ -158,6 +159,10 @@ export function registerIpc(): void {
 
   ipcMain.handle(CH.listBranches, (_e, repoId: string): Promise<string[]> => {
     return listBranches(store.getRepo(repoId).path);
+  });
+
+  ipcMain.handle(CH.listBaseRefCandidates, (_e, repoId: string): Promise<string[]> => {
+    return listBaseRefCandidates(store.getRepo(repoId).path);
   });
 
   ipcMain.handle(CH.pushWorktree, (_e, repoId: string, worktreePath: string) =>

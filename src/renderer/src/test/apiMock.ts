@@ -25,6 +25,7 @@ export const apiMock: MockedApi = {
   createWorktree: vi.fn(),
   deleteWorktree: vi.fn(),
   listBranches: vi.fn(),
+  listBaseRefCandidates: vi.fn(),
   pushWorktree: vi.fn(),
   pullWorktree: vi.fn(),
   pullMainIntoWorktree: vi.fn(),
@@ -62,6 +63,7 @@ export function resetApiMock(): void {
   });
   apiMock.listRepos.mockResolvedValue([]);
   apiMock.listBranches.mockResolvedValue([]);
+  apiMock.listBaseRefCandidates.mockResolvedValue([]);
   apiMock.pickDirectory.mockResolvedValue(null);
   apiMock.pickDirectories.mockResolvedValue([]);
   // Window-focus subscription must hand back an unsubscribe fn for React cleanup.

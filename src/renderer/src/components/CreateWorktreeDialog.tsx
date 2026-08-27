@@ -1,7 +1,13 @@
 import { useState } from "react";
 import type { RepoConfig } from "@shared/types";
 import { useCreations } from "../creations";
+import { useBaseRefCandidates } from "../queries";
+import { BaseRefPicker } from "./BaseRefPicker";
 import { Modal } from "./Modal";
+
+// Stable empty-array identity so `BaseRefPicker`'s memoized filtering doesn't
+// re-run every render while the candidate list is still loading.
+const NO_BRANCHES: string[] = [];
 
 interface CreateWorktreeDialogProps {
   repo: RepoConfig;
@@ -16,6 +22,7 @@ export function CreateWorktreeDialog({ repo, defaultBaseRef, onClose }: CreateWo
   const [newBranch, setNewBranch] = useState(true);
   const [baseRef, setBaseRef] = useState(defaultBaseRef);
   const { create } = useCreations();
+  const baseRefCandidates = useBaseRefCandidates(repo.id, newBranch);
 
   // Creation runs in the background: fire it off and close immediately. A
   // "Creating…" placeholder row (and any failure) shows in the tree.
@@ -71,10 +78,12 @@ export function CreateWorktreeDialog({ repo, defaultBaseRef, onClose }: CreateWo
       {newBranch && (
         <label className="field">
           <span>Base ref</span>
-          <input
+          <BaseRefPicker
+            branches={baseRefCandidates.data ?? NO_BRANCHES}
+            loading={baseRefCandidates.isPending}
             value={baseRef}
             placeholder={`e.g., ${defaultBaseRef}`}
-            onChange={(e) => setBaseRef(e.target.value)}
+            onChange={setBaseRef}
           />
         </label>
       )}

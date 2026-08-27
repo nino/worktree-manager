@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseLeftRightCount, parseStatusPorcelainV2, parseWorktreePorcelain } from "./git";
+import {
+  parseLeftRightCount,
+  parseRefCandidates,
+  parseStatusPorcelainV2,
+  parseWorktreePorcelain,
+} from "./git";
 
 describe("parseWorktreePorcelain", () => {
   it("parses multiple worktrees with branches and detached heads", () => {
@@ -108,6 +113,34 @@ describe("parseStatusPorcelainV2", () => {
     const s = parseStatusPorcelainV2("# branch.head (detached)");
     expect(s.detached).toBe(true);
     expect(s.head).toBeNull();
+  });
+});
+
+describe("parseRefCandidates", () => {
+  it("lists local and remote-tracking branches, dropping symbolic refs", () => {
+    const out = [
+      "main\t",
+      "feature/foo\t",
+      "origin/main\t",
+      "origin/feature-x\t",
+      "origin/HEAD\trefs/remotes/origin/main",
+      "",
+    ].join("\n");
+
+    expect(parseRefCandidates(out)).toEqual([
+      "main",
+      "feature/foo",
+      "origin/main",
+      "origin/feature-x",
+    ]);
+  });
+
+  it("returns an empty list for empty output", () => {
+    expect(parseRefCandidates("")).toEqual([]);
+  });
+
+  it("skips blank lines", () => {
+    expect(parseRefCandidates("main\t\n\n\nfeature\t\n")).toEqual(["main", "feature"]);
   });
 });
 
