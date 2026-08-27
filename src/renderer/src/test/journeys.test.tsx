@@ -225,6 +225,116 @@ describe("create a worktree", () => {
     expect(await screen.findByText("~/worktrees/app/feat-x")).toBeInTheDocument();
     expect(await screen.findByText("Initialising…")).toBeInTheDocument();
   });
+
+  it("creates a new branch from a base ref chosen from the dropdown, including a remote branch", async () => {
+    apiMock.listBaseRefCandidates.mockResolvedValue(["main", "origin/main", "origin/feature-x"]);
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    await user.click(screen.getByRole("button", { name: "+ Worktree" }));
+    await user.type(await screen.findByPlaceholderText("e.g., feature/my-thing"), "feat/login");
+
+    const baseRefInput = screen.getByPlaceholderText("e.g., origin/main");
+    await user.click(baseRefInput);
+    await user.clear(baseRefInput);
+    await user.type(baseRefInput, "feature-x");
+    // Picking a suggestion must not bubble a click through to the scrim and
+    // close the dialog — Create must still be there afterward.
+    await user.click(await screen.findByRole("option", { name: "origin/feature-x" }));
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(apiMock.createWorktree).toHaveBeenCalledWith({
+      repoId: "r1",
+      branch: "feat/login",
+      newBranch: true,
+      baseRef: "origin/feature-x",
+    });
+  });
+
+  it("falls back to freeform text as the base ref when nothing in the list matches", async () => {
+    apiMock.listBaseRefCandidates.mockResolvedValue(["main", "origin/main"]);
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    await user.click(screen.getByRole("button", { name: "+ Worktree" }));
+    await user.type(await screen.findByPlaceholderText("e.g., feature/my-thing"), "feat/login");
+
+    const baseRefInput = screen.getByPlaceholderText("e.g., origin/main");
+    await user.click(baseRefInput);
+    await user.clear(baseRefInput);
+    await user.type(baseRefInput, "v1.2.3");
+    await screen.findByText('No matches — press Enter to use "v1.2.3"');
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(apiMock.createWorktree).toHaveBeenCalledWith({
+      repoId: "r1",
+      branch: "feat/login",
+      newBranch: true,
+      baseRef: "v1.2.3",
+    });
+  });
+
+  it("dismisses the suggestion popup on Escape without closing the whole dialog", async () => {
+    apiMock.listBaseRefCandidates.mockResolvedValue([
+      "main",
+      "origin/main",
+      "origin/release-1.2.3",
+    ]);
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    await user.click(screen.getByRole("button", { name: "+ Worktree" }));
+    await user.type(await screen.findByPlaceholderText("e.g., feature/my-thing"), "feat/login");
+
+    const baseRefInput = screen.getByPlaceholderText("e.g., origin/main");
+    await user.click(baseRefInput);
+    await user.clear(baseRefInput);
+    await user.type(baseRefInput, "1.2.3");
+    // A candidate fuzzy-matches "1.2.3", so a suggestion is showing.
+    await screen.findByRole("option", { name: "origin/release-1.2.3" });
+
+    await user.keyboard("{Escape}");
+    // The suggestion list is dismissed, but the dialog itself stays open.
+    expect(screen.queryByRole("option", { name: "origin/release-1.2.3" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument();
+
+    // A second Enter with the popup already dismissed must not silently swap
+    // in the earlier fuzzy match — the typed text stays as the base ref.
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(apiMock.createWorktree).toHaveBeenCalledWith({
+      repoId: "r1",
+      branch: "feat/login",
+      newBranch: true,
+      baseRef: "1.2.3",
+    });
+  });
+});
+
+describe("switch a worktree's branch", () => {
+  it("switches to another branch chosen from the fuzzy picker", async () => {
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [
+        makeWorktree({ branch: "feature", path: "/Users/test/worktrees/app/feature" }),
+      ]),
+    ]);
+    apiMock.listBranches.mockResolvedValue(["feature", "main", "develop"]);
+    apiMock.switchBranch.mockResolvedValue({ ok: true, message: "" });
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    await user.click(await screen.findByRole("button", { name: "Switch branch" }));
+    await user.type(await screen.findByRole("combobox", { name: "Filter branches" }), "dev");
+    await user.click(await screen.findByRole("option", { name: "develop" }));
+
+    expect(apiMock.switchBranch).toHaveBeenCalledWith(
+      "r1",
+      "/Users/test/worktrees/app/feature",
+      "develop",
+    );
+  });
 });
 
 describe("delete a worktree (safety ladder)", () => {

@@ -24,6 +24,7 @@ const CH = {
   createWorktree: "worktree:create",
   deleteWorktree: "worktree:delete",
   listBranches: "repo:branches",
+  listBaseRefCandidates: "repo:baseRefCandidates",
   pushWorktree: "worktree:push",
   pullWorktree: "worktree:pull",
   pullMainIntoWorktree: "worktree:pullMain",
@@ -62,6 +63,7 @@ const api: WorktreeApi = {
     ipcRenderer.invoke(CH.createWorktree, params),
   deleteWorktree: (params: DeleteWorktreeParams) => ipcRenderer.invoke(CH.deleteWorktree, params),
   listBranches: (repoId: string) => ipcRenderer.invoke(CH.listBranches, repoId),
+  listBaseRefCandidates: (repoId: string) => ipcRenderer.invoke(CH.listBaseRefCandidates, repoId),
   pushWorktree: (repoId: string, worktreePath: string) =>
     ipcRenderer.invoke(CH.pushWorktree, repoId, worktreePath),
   pullWorktree: (repoId: string, worktreePath: string) =>

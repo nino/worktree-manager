@@ -16,6 +16,7 @@ export const keys = {
   config: ["config"] as const,
   repos: ["repos"] as const,
   branches: (repoId: string) => ["branches", repoId] as const,
+  baseRefCandidates: (repoId: string) => ["baseRefCandidates", repoId] as const,
   runningCommands: ["runningCommands"] as const,
 };
 
@@ -38,6 +39,18 @@ export function useBranches(repoId: string) {
     queryKey: keys.branches(repoId),
     queryFn: () => api.listBranches(repoId),
     staleTime: 15_000,
+  });
+}
+
+/** Local + remote-tracking branch names, for the create-worktree base-ref picker.
+ *  Pass `enabled: false` while the picker isn't shown (e.g. "Existing branch"
+ *  mode) to skip the git subprocess for data that would go unused. */
+export function useBaseRefCandidates(repoId: string, enabled = true) {
+  return useQuery<string[]>({
+    queryKey: keys.baseRefCandidates(repoId),
+    queryFn: () => api.listBaseRefCandidates(repoId),
+    staleTime: 15_000,
+    enabled,
   });
 }
 
