@@ -41,7 +41,32 @@ pnpm bake-grain      # re-render the brushed-metal grain tiles into
 into `out/` — the packaged app ships no node_modules, which avoids
 electron-builder's pnpm-symlink issues. Consequence: never add a runtime dep to
 "dependencies"; add it to devDependencies and let the bundler inline it. The
-build is unsigned (`identity: null`) — set a real identity before distributing.
+build is signed and notarised in CI — see "Releases" below.
+
+## Releases
+
+Every push to `main` builds a macOS arm64 DMG, signs it with a Developer ID
+certificate, notarises the app and the disk image, staples both tickets, and
+replaces the rolling `latest` GitHub release with it. A downloader can
+double-click it; no right-click → Open, and no network round-trip on first
+launch.
+
+Locally `pnpm dist` signs with whatever Developer ID is in your keychain, or
+warns and leaves the build unsigned if there is none. Do not set
+`CSC_LINK`/`CSC_KEY_PASSWORD` to test the CI path: electron-builder hands
+`security set-key-partition-list` the `.p12` password where the keychain's own
+password belongs, which macOS 26 rejects outright. The workflow sidesteps that
+by building the keychain itself and passing it as `CSC_KEYCHAIN`.
+
+Five repository secrets, under Settings → Secrets and variables → Actions:
+
+| secret                       | what it is                                                                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `MACOS_CERTIFICATE_P12`      | The Developer ID Application certificate _and its private key_, exported from Keychain Access as `.p12`, then base64-encoded. |
+| `MACOS_CERTIFICATE_PASSWORD` | The password set during that export.                                                                                          |
+| `APPLE_API_KEY_P8`           | The whole contents of the `.p8` App Store Connect key, `-----BEGIN PRIVATE KEY-----` line included.                           |
+| `APPLE_API_KEY_ID`           | The ten-character key ID.                                                                                                     |
+| `APPLE_API_ISSUER_ID`        | The issuer UUID.                                                                                                              |
 
 ## pnpm settings
 

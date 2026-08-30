@@ -30,8 +30,12 @@ mac:
   extraResources:
     - from: build/Assets.car
       to: Assets.car
-  # Local/unsigned build; sign with a real identity before distributing.
-  identity: null
+  # Releases are signed with a Developer ID certificate and notarised by
+  # .github/workflows/release.yml. There is no identity pinned here: locally
+  # electron-builder signs with whatever Developer ID is in your keychain, and
+  # warns and leaves the build unsigned when there is none.
+  hardenedRuntime: true
+  notarize: true
   target:
     - target: dmg
       arch: arm64
