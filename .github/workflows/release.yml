@@ -66,7 +66,22 @@ jobs:
           certificate="$RUNNER_TEMP/certificate.p12"
 
           umask 077
-          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          if ! printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate" 2>/dev/null; then
+            echo "::error::MACOS_CERTIFICATE_P12 is not valid base64 — copy it with: base64 -i cert.p12 | pbcopy"
+            exit 1
+          fi
+
+          # A PKCS#12 is DER, so it opens with a SEQUENCE: 0x30 0x82. Reporting
+          # the size and those two bytes turns `security`'s "Unknown format in
+          # import" into a sentence about which end the mistake is at, and
+          # neither of them discloses anything.
+          size=$(wc -c < "$certificate" | tr -d " ")
+          magic=$(head -c 2 "$certificate" | xxd -p)
+          echo "decoded $size bytes, starting $magic (a PKCS#12 starts 3082)"
+          if [ "$magic" != "3082" ] || [ "$size" -lt 1000 ]; then
+            echo "::error::that is not a whole PKCS#12 — re-export from Keychain Access (My Certificates -> Export -> .p12), then: base64 -i cert.p12 | pbcopy"
+            exit 1
+          fi
 
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings "$keychain"
