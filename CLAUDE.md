@@ -45,7 +45,9 @@ build is signed and notarised in CI — see "Releases" below.
 
 ## Releases
 
-Every push to `main` builds a macOS arm64 DMG, signs it with a Developer ID
+Every push to `main` — or a manual run from the Actions tab, which is how to
+retry after a credentials failure without inventing a commit — builds a macOS
+arm64 DMG, signs it with a Developer ID
 certificate, notarises the app and the disk image, staples both tickets, and
 replaces the rolling `latest` GitHub release with it. A downloader can
 double-click it; no right-click → Open, and no network round-trip on first

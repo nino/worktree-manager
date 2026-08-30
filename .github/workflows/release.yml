@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     branches: [main]
+  # Re-run the release without inventing a commit. A run that failed on
+  # credentials rather than on code has nothing to fix in the tree, and the
+  # only other way back to a green release is a push to main.
+  workflow_dispatch:
 
 permissions:
   contents: write
