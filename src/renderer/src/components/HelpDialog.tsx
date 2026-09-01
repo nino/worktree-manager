@@ -121,6 +121,10 @@ export function HelpDialog({ onClose }: HelpDialogProps) {
           downloads it in the background, and swaps it in the next time you quit — or straight away,
           if you take the restart it offers in the title bar.
         </p>
+
+        <p className="credit">
+          A personal project by Nino — <span className="selectable">nino@ninoan.com</span>
+        </p>
       </div>
     </Modal>
   );

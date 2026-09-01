@@ -1550,6 +1550,11 @@ select.branch-select:focus {
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.15);
 }
 
+/* Closing credit line in the About dialog. */
+.help .credit {
+  color: var(--text-faint);
+}
+
 /* Version and updater state, with its control on the right. */
 .update-line {
   display: flex;
