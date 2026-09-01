@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Manage git worktrees across repositories",
   "main": "./out/main/index.js",
-  "author": "nino@plinth.org.uk",
+  "author": "nino@ninoan.com",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
   "scripts": {
