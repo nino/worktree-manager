@@ -5,6 +5,7 @@ import { CH, publishDropResult, registerIpc } from "./ipc";
 import { stopAll } from "./commands";
 import { startAutoFetch, stopAutoFetch } from "./fetcher";
 import { addRepos } from "./repos";
+import { startAutoUpdate, stopAutoUpdate } from "./updater";
 
 // Screenshot/test sandbox: point config storage at a throwaway profile so
 // tooling runs (scripts/screenshot.mjs) never touch the real user's config.
@@ -146,6 +147,16 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
 
+  // Keep the app on the latest signed build from GitHub. The updater outlives
+  // any single window (macOS keeps the app running window-less, and a download
+  // shouldn't be abandoned mid-flight), so it broadcasts to whatever windows
+  // exist rather than being tied to one.
+  startAutoUpdate((status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(CH.updateStatus, status);
+    }
+  });
+
   // Drops that arrived during launch were buffered until now.
   scheduleDropFlush();
 
@@ -159,8 +170,10 @@ app.on("window-all-closed", () => {
 });
 
 // Kill any commands still running so they don't outlive the app as orphans, and
-// stop the background fetch loop.
+// stop the background loops. A downloaded update is not abandoned here: Squirrel
+// installs it as the app goes away (see `autoInstallOnAppQuit` in updater.ts).
 app.on("before-quit", () => {
   stopAll();
   stopAutoFetch();
+  stopAutoUpdate();
 });

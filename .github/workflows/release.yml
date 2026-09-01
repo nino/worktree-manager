@@ -21,6 +21,8 @@ jobs:
     runs-on: macos-latest # arm64
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the version is derived from main's commit count
 
       - uses: pnpm/action-setup@v6 # version read from packageManager field
 
@@ -34,6 +36,28 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # The in-app updater decides there is something to install by comparing
+      # semver, so every release needs a version that is both new and larger
+      # than the one before. main's commit count is exactly that: it only grows,
+      # and re-running this workflow on the same commit stamps the same version,
+      # so a rebuild is never mistaken for an update. The tree keeps 1.0.0 —
+      # nothing is committed back — and dev builds do not update themselves.
+      - name: Stamp the build version
+        run: |
+          # workflow_dispatch offers every branch, and this job replaces the
+          # release installed copies update from. Building anything but main
+          # would publish that branch's code as `latest` *and* stamp it with a
+          # version main might not reach for several pushes — which would freeze
+          # the feed until it caught up. Fail before anything is signed.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the release can only be built from main (got $GITHUB_REF)"
+            exit 1
+          fi
+          VERSION="1.0.$(git rev-list --count HEAD)"
+          npm pkg set version="$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building version $VERSION"
 
       # notarytool wants the App Store Connect key as a file, so the secret has
       # to land on disk. RUNNER_TEMP dies with the runner, and the last step
@@ -161,18 +185,69 @@ jobs:
             exit 1
           fi
 
+      # What the in-app updater reads. electron-builder writes latest-mac.yml
+      # because electron-builder.yml carries a publish config; without it the
+      # release would look fine and no installed copy would ever update.
+      #
+      # Only the zip is checked: it is the file the updater downloads and
+      # verifies (Squirrel.Mac cannot install from a DMG). The DMG's entry in
+      # the same file records its hash from *before* the step above stapled a
+      # notarisation ticket to it, so it no longer matches the uploaded disk
+      # image — nothing reads it, and re-hashing there would mean rewriting
+      # electron-builder's metadata by hand.
+      - name: Verify the update metadata
+        run: |
+          metadata=release/latest-mac.yml
+          if [ ! -f "$metadata" ]; then
+            echo "::error::no $metadata — the app updater has nothing to read"
+            exit 1
+          fi
+          cat "$metadata"
+
+          version=$(sed -n 's/^version: //p' "$metadata" | tr -d "'\"")
+          if [ "$version" != "$VERSION" ]; then
+            echo "::error::update metadata says $version, this build is $VERSION"
+            exit 1
+          fi
+
+          zip=$(sed -n 's/^path: //p' "$metadata" | tr -d "'\"")
+          if [ ! -f "release/$zip" ]; then
+            echo "::error::update metadata points at release/$zip, which was not built"
+            exit 1
+          fi
+
+          # electron-updater refuses a download whose sha512 disagrees, so a
+          # mismatch here is a release that silently never updates anyone.
+          expected=$(sed -n 's/^sha512: //p' "$metadata" | tr -d "'\"")
+          actual=$(openssl dgst -sha512 -binary "release/$zip" | openssl base64 -A)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::sha512 in $metadata does not match release/$zip"
+            exit 1
+          fi
+
+          # Not fatal — it only costs bandwidth. Squirrel fetches just the
+          # changed blocks when the blockmap sits beside the zip, and falls back
+          # to the whole ~150 MB when it doesn't.
+          if [ ! -f "release/$zip.blockmap" ]; then
+            echo "::warning::no release/$zip.blockmap — updates will be full downloads"
+          fi
+
+      # The DMG is what a person downloads; the zip, its blockmap and
+      # latest-mac.yml are what installed copies update from, and they have to
+      # live in the same release for electron-updater to resolve them.
       - name: Publish rolling "latest" release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          shopt -s nullglob
           SHORT_SHA=${GITHUB_SHA:0:7}
+          assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
           # Recreate the rolling release so its tag always points at this commit.
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest \
             --title "Worktree Manager v${VERSION} (${SHORT_SHA})" \
-            --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised macOS arm64 build — double-click to open." \
-            release/*.dmg
+            --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised macOS arm64 build — double-click to open. Installed copies update themselves from here." \
+            "${assets[@]}"
 
       - name: Remove the signing material
         if: always()

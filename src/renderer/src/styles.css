@@ -1210,7 +1210,8 @@ select.branch-select:focus {
   color: var(--text-dim);
 }
 
-.btn-icon svg {
+.btn-icon svg,
+.btn-update svg {
   display: block;
   /* Engrave the icon strokes into the metal. */
   filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.7));
@@ -1260,6 +1261,35 @@ select.branch-select:focus {
       to bottom,
       color-mix(in srgb, var(--danger) 10%, var(--steel-0)),
       color-mix(in srgb, var(--danger) 16%, var(--steel-3))
+    );
+}
+
+/* The update key: Aqua-tinted so a build waiting to be installed reads as news,
+   without out-shouting the primary key beside it. Only shown while one is
+   staged (see the top bar in App.tsx). */
+.btn-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--blue);
+  font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--steel-edge));
+  background-image:
+    var(--grain),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--accent) 10%, var(--steel-0)),
+      color-mix(in srgb, var(--accent) 20%, var(--steel-3))
+    );
+}
+
+.btn-update:hover {
+  background-image:
+    var(--grain),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--accent) 16%, var(--steel-0)),
+      color-mix(in srgb, var(--accent) 28%, var(--steel-3))
     );
 }
 
@@ -1518,6 +1548,14 @@ select.branch-select:focus {
   border: 1px solid var(--steel-edge);
   border-radius: 3px;
   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.15);
+}
+
+/* Version and updater state, with its control on the right. */
+.update-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 /* MARK: Forms */

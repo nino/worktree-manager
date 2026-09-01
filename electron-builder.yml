@@ -2,6 +2,16 @@ appId: uk.org.plinth.worktree-manager
 productName: Worktree Manager
 directories:
   output: release
+# Where the in-app updater looks for new builds: the rolling `latest` release
+# this repo's release workflow rewrites on every push to main. electron-builder
+# never publishes here (`pnpm dist` passes --publish never; the workflow uploads
+# with `gh`), but a publish config is what makes it write the two files the
+# updater needs: `app-update.yml` inside the bundle, naming this feed, and
+# `latest-mac.yml` beside the artifacts, describing the build.
+publish:
+  provider: github
+  owner: nino
+  repo: worktree-manager
 # All runtime code is bundled into out/ by electron-vite; no node_modules needed.
 files:
   - out/**
@@ -9,6 +19,10 @@ files:
 npmRebuild: false
 mac:
   category: public.app-category.developer-tools
+  # Named from the package name rather than the product name: GitHub rewrites
+  # spaces in asset filenames, which would leave latest-mac.yml pointing at URLs
+  # that 404 for the updater.
+  artifactName: ${name}-${version}-${arch}.${ext}
   # icon.icns is the legacy fallback (<= macOS 15). The full-resolution Liquid
   # Glass icon lives in build/Assets.car and is used on macOS 26+ via
   # CFBundleIconName. Both are generated from build/AppIcon.icon by
@@ -38,4 +52,9 @@ mac:
   notarize: true
   target:
     - target: dmg
+      arch: arm64
+    # The updater's payload: Squirrel.Mac only swaps in a zipped .app, so the
+    # DMG is for people and the zip is for the updater. Both wrap the same
+    # signed, notarised bundle.
+    - target: zip
       arch: arm64

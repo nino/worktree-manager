@@ -47,11 +47,21 @@ build is signed and notarised in CI — see "Releases" below.
 
 Every push to `main` — or a manual run from the Actions tab, which is how to
 retry after a credentials failure without inventing a commit — builds a macOS
-arm64 DMG, signs it with a Developer ID
+arm64 DMG and a zip of the same `.app`, signs them with a Developer ID
 certificate, notarises the app and the disk image, staples both tickets, and
-replaces the rolling `latest` GitHub release with it. A downloader can
-double-click it; no right-click → Open, and no network round-trip on first
+replaces the rolling `latest` GitHub release with them. A downloader can
+double-click the DMG; no right-click → Open, and no network round-trip on first
 launch.
+
+The release carries the DMG for people and the zip, its blockmap and
+`latest-mac.yml` for the in-app updater (see "Automatic updates"). The workflow
+stamps the version as `1.0.<commits on main>` into package.json before building
+— the tree itself stays at 1.0.0 — because the updater compares semver: the
+number has to grow with every release, and re-running the workflow on the same
+commit has to produce the _same_ version, or a rebuild would look like an
+update. That is also why the DMG and zip are named from the package name
+(`mac.artifactName`): GitHub rewrites spaces in asset names, and the URLs in
+`latest-mac.yml` have to survive the upload.
 
 Locally `pnpm dist` signs with whatever Developer ID is in your keychain, or
 warns and leaves the build unsigned if there is none. Do not set
@@ -91,10 +101,10 @@ needs one fails the install with `ERR_PNPM_IGNORED_BUILDS`, and pnpm appends a
   With vite 8, electron-vite silently fails to externalize the `electron` package,
   bundling its Node launcher into `out/main/index.js` — the app then dies at startup
   with "Unable to find Electron app at .../out/main/install.js". Don't diagnose
-  this by bundle size — `out/main/index.js` is legitimately ~430 kB because
-  electron-store (and its `conf`/`ajv` tree) is inlined on purpose, per
-  "Packaging" above. Check instead that the bundle still _imports_ electron
-  rather than inlining it:
+  this by bundle size — `out/main/index.js` is legitimately ~1 MB because
+  electron-store (and its `conf`/`ajv` tree) and electron-updater are inlined on
+  purpose, per "Packaging" above. Check instead that the bundle still _imports_
+  electron rather than inlining it:
   `grep -c 'from "electron"' out/main/index.js` (1 = externalized, good).
 - **@vitejs/plugin-react must stay on ^5** (6.x requires vite 8).
 - The `electron` npm package here has **no postinstall script**, so the root
@@ -115,6 +125,7 @@ src/
     repos.ts             add repos by path (picker + Dock drops), per-path errors
     worktrees.ts         create/delete/list orchestration; path building
     system.ts            open in editor / terminal / Finder
+    updater.ts           electron-updater loop against the GitHub release
     *.test.ts            Vitest unit tests (pure parsers, path logic)
   preload/
     index.ts             contextBridge → window.api (typed WorktreeApi)
@@ -151,6 +162,22 @@ src/
   Overlapping cycles are skipped; failures are logged, never fatal. After a cycle
   that fetched anything it pushes `CH.reposChanged`, and the renderer invalidates
   the `repos` query (see `useReposChangedRefresh` in `App.tsx`).
+- **Automatic updates**: `main/updater.ts` drives electron-updater against the
+  rolling `latest` GitHub release. It checks 10s after launch and every 6h
+  (`UPDATE_CHECK_INTERVAL_MS`), downloads a newer build in the background, and
+  lets Squirrel.Mac swap it in on quit (`autoInstallOnAppQuit`) — the top bar
+  offers "Restart to update" to take it sooner. Every state change is pushed as
+  `CH.updateStatus` (`UpdateStatus` in `shared/types.ts`) and cached by
+  `useUpdateStatus`; the About dialog shows the running version and the state in
+  words (`describeUpdate` in `renderer/src/format.ts`) with a "Check now"
+  button. Nothing is fatal: a failed check leaves the app on the version it has.
+  Only packaged builds update — `app-update.yml` (which names the feed) is
+  written into the bundle by electron-builder, so a run from source reports
+  state `"unsupported"` instead. The feed itself is the `publish` block in
+  `electron-builder.yml`; without it electron-builder writes neither that file
+  nor the `latest-mac.yml` the updater reads, and nothing would ever update.
+  Squirrel installs from a **zip**, never a DMG, which is why the release
+  carries both.
 - **Adding repos** (`addRepos` in `main/repos.ts`) resolves each path to its git
   root, auto-detects the main branch, and immediately lists existing worktrees.
   It is best effort per path — a folder that isn't a repo (or is already added)

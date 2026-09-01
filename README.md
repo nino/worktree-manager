@@ -33,6 +33,10 @@ underneath — each with branch, path, live git status, and one-click actions.
 - **Open in editor / terminal / Finder** — editor and terminal commands are
   configurable globally and support a `{path}` placeholder
   (e.g. Ghostty: `open -na Ghostty --args --working-directory={path}`).
+- **Updates itself** — the app checks GitHub for the latest signed build, pulls
+  it down in the background, and swaps it in when you quit; the title bar offers
+  a restart if you'd rather have it now. The About dialog shows the running
+  version and can check on demand.
 - **Persistent config** — worktrees root, editor/terminal commands, and the repo
   list (with per-repo primary branch + init command) survive relaunches.
 - A shamelessly skeuomorphic brushed-metal appearance — machined panels, embossed
@@ -54,7 +58,7 @@ Run `pnpm i && pnpm build && pnpm dist`, and boom, you'll have an app ready in t
 ```sh
 pnpm build     # typecheck + production build into out/
 pnpm start     # preview the production build
-pnpm dist      # package a macOS .app + .dmg into release/
+pnpm dist      # package a macOS .app + .dmg (and the updater's .zip) into release/
 ```
 
 ## Install into /Applications

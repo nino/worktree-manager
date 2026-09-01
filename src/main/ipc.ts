@@ -15,6 +15,7 @@ import type {
   DeleteWorktreeResult,
   RepoConfig,
   RepoWithWorktrees,
+  UpdateStatus,
 } from "@shared/types";
 import * as store from "./store";
 import { assertValidRef, listBaseRefCandidates, listBranches } from "./git";
@@ -31,6 +32,7 @@ import {
 } from "./worktrees";
 import { openInEditor, openInTerminal, revealInFinder } from "./system";
 import { getCommandBuffer, listRunningCommands, startCommand, stopCommand } from "./commands";
+import { checkForUpdates, getUpdateStatus, installUpdate } from "./updater";
 
 // MARK: Channel names
 
@@ -67,8 +69,13 @@ export const CH = {
   windowClose: "window:close",
   windowSetSize: "window:setSize",
   windowFocusChanged: "window:focusChanged",
+  getUpdateStatus: "update:get",
+  checkForUpdates: "update:check",
+  installUpdate: "update:install",
   // Pushed after a background fetch cycle so the renderer refreshes its trees.
   reposChanged: "repo:changed",
+  // Pushed whenever the auto-updater changes state (checking/downloading/ready).
+  updateStatus: "update:status",
   // Dock drops: the renderer drains what it missed, then listens for the rest.
   takeDroppedRepos: "repo:takeDropped",
   reposDropped: "repo:dropped",
@@ -213,6 +220,14 @@ export function registerIpc(): void {
   ipcMain.handle(CH.pickDirectories, (e, title?: string): Promise<string[]> =>
     pickFolders(e, title ?? "Select folders", true),
   );
+
+  // MARK: Automatic updates
+
+  ipcMain.handle(CH.getUpdateStatus, (): UpdateStatus => getUpdateStatus());
+
+  ipcMain.handle(CH.checkForUpdates, (): Promise<UpdateStatus> => checkForUpdates());
+
+  ipcMain.handle(CH.installUpdate, (): void => installUpdate());
 
   // MARK: Window controls (classic close / collapse / zoom boxes)
 

@@ -1,4 +1,49 @@
+import { describeUpdate } from "../format";
+import { useCheckForUpdates, useUpdateStatus } from "../queries";
 import { Modal } from "./Modal";
+import { UpdateButton } from "./UpdateButton";
+
+/**
+ * The running version and what the auto-updater is doing about it. Updates
+ * install themselves on quit, so the only thing to offer here is an early
+ * restart (or a check, for the impatient).
+ */
+function UpdateSection() {
+  const status = useUpdateStatus();
+  const check = useCheckForUpdates();
+  const update = status.data;
+  const checking = update?.state === "checking" || check.isPending;
+
+  // The heading renders before the status arrives so the paragraph below this
+  // section never briefly reads as part of "Settings".
+  return (
+    <>
+      <h3>Version &amp; updates</h3>
+      {update && (
+        <p className="update-line">
+          {/* Selectable as a whole: a failed check puts the updater's own error
+              text here, which is the line worth pasting into a bug report. */}
+          <span className="selectable">
+            Version {update.currentVersion} — {describeUpdate(update)}
+          </span>
+          {update.state === "ready" ? (
+            <UpdateButton status={update} />
+          ) : (
+            <button
+              className="btn btn-sm"
+              onClick={() => check.mutate()}
+              disabled={
+                checking || update.state === "downloading" || update.state === "unsupported"
+              }
+            >
+              {checking ? "Checking…" : "Check now"}
+            </button>
+          )}
+        </p>
+      )}
+    </>
+  );
+}
 
 interface HelpDialogProps {
   onClose: () => void;
@@ -68,6 +113,13 @@ export function HelpDialog({ onClose }: HelpDialogProps) {
         <p>
           The gear button sets the global worktrees root and editor command. Each repo carries its
           own main branch and init command. Everything persists across relaunches.
+        </p>
+
+        <UpdateSection />
+        <p>
+          New builds look after themselves: the app checks GitHub for the latest signed release,
+          downloads it in the background, and swaps it in the next time you quit — or straight away,
+          if you take the restart it offers in the title bar.
         </p>
       </div>
     </Modal>

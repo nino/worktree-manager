@@ -1,4 +1,4 @@
-import type { AddReposResult } from "@shared/types";
+import type { AddReposResult, UpdateStatus } from "@shared/types";
 import { tildify } from "@shared/paths";
 import { api } from "./api";
 
@@ -25,4 +25,32 @@ export function summarizeAddResult(result: AddReposResult): Notice | null {
   for (const failure of failed) parts.push(`${displayPath(failure.path)}: ${failure.message}`);
   if (parts.length === 0) return null;
   return { tone: failed.length > 0 ? "error" : "info", text: parts.join(" · ") };
+}
+
+/**
+ * One line describing where the auto-updater stands, for the About dialog.
+ * The top bar only ever surfaces the "ready" state (as a restart offer), so
+ * this is where a failed check or a download in flight becomes visible.
+ */
+export function describeUpdate(status: UpdateStatus): string {
+  switch (status.state) {
+    case "unsupported":
+      return status.message ?? "Automatic updates are unavailable.";
+    case "checking":
+      return "Checking for updates…";
+    case "downloading": {
+      const what = status.newVersion ? `version ${status.newVersion}` : "an update";
+      return status.percent === undefined
+        ? `Downloading ${what}…`
+        : `Downloading ${what}… ${status.percent}%`;
+    }
+    case "ready":
+      return status.newVersion
+        ? `Version ${status.newVersion} is ready — restart to install it.`
+        : "An update is ready — restart to install it.";
+    case "error":
+      return `Last check failed: ${status.message ?? "unknown error"}`;
+    case "idle":
+      return status.lastCheckedAt ? "Up to date." : "Not checked yet.";
+  }
 }

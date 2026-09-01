@@ -7,6 +7,7 @@ import type {
   RepoConfig,
   RepoWithWorktrees,
   RunningCommand,
+  UpdateStatus,
 } from "@shared/types";
 import { api } from "./api";
 
@@ -18,6 +19,7 @@ export const keys = {
   branches: (repoId: string) => ["branches", repoId] as const,
   baseRefCandidates: (repoId: string) => ["baseRefCandidates", repoId] as const,
   runningCommands: ["runningCommands"] as const,
+  updateStatus: ["updateStatus"] as const,
 };
 
 // MARK: Queries
@@ -61,6 +63,20 @@ export function useRunningCommands() {
     queryFn: () => api.listRunningCommands(),
     // Command start/stop/exit events drive invalidation; poll as a backstop.
     refetchInterval: 10_000,
+  });
+}
+
+/**
+ * The auto-updater's state. Fetched once, to pick up whatever the updater had
+ * reached before this window existed, and kept current after that by the pushes
+ * `useUpdateStatusRefresh` (in `App.tsx`) writes into this key — so reading the
+ * status here costs no extra IPC listener, however many components read it.
+ */
+export function useUpdateStatus() {
+  return useQuery<UpdateStatus>({
+    queryKey: keys.updateStatus,
+    queryFn: () => api.getUpdateStatus(),
+    staleTime: Infinity,
   });
 }
 
@@ -144,4 +160,14 @@ export function useDeleteWorktree() {
     mutationFn: (params: DeleteWorktreeParams) => api.deleteWorktree(params),
     onSettled: refresh,
   });
+}
+
+/**
+ * Ask GitHub for a newer build now (the About dialog's "Check now"). The reply
+ * is deliberately dropped: the check pushes its own state changes, and writing
+ * the state as of the moment it returned would roll a later push back — with
+ * autoDownload on, that reply is "downloading, 0%" while the download runs.
+ */
+export function useCheckForUpdates() {
+  return useMutation({ mutationFn: () => api.checkForUpdates() });
 }
