@@ -1,4 +1,45 @@
+import { api } from "../api";
+import { describeUpdate } from "../format";
+import { useCheckForUpdates, useUpdateStatus } from "../queries";
 import { Modal } from "./Modal";
+
+/**
+ * The running version and what the auto-updater is doing about it. Updates
+ * install themselves on quit, so the only thing to offer here is an early
+ * restart (or a check, for the impatient).
+ */
+function UpdateSection() {
+  const status = useUpdateStatus();
+  const check = useCheckForUpdates();
+  if (!status.data) return null;
+
+  const { state, currentVersion } = status.data;
+  const checking = state === "checking" || check.isPending;
+  return (
+    <>
+      <h3>Version &amp; updates</h3>
+      <p className="update-line">
+        <span>
+          <span className="selectable">Version {currentVersion}</span> —{" "}
+          {describeUpdate(status.data)}
+        </span>
+        {state === "ready" ? (
+          <button className="btn btn-sm btn-update" onClick={() => api.installUpdate()}>
+            Restart to update
+          </button>
+        ) : (
+          <button
+            className="btn btn-sm"
+            onClick={() => check.mutate()}
+            disabled={checking || state === "downloading" || state === "unsupported"}
+          >
+            {checking ? "Checking…" : "Check now"}
+          </button>
+        )}
+      </p>
+    </>
+  );
+}
 
 interface HelpDialogProps {
   onClose: () => void;
@@ -68,6 +109,13 @@ export function HelpDialog({ onClose }: HelpDialogProps) {
         <p>
           The gear button sets the global worktrees root and editor command. Each repo carries its
           own main branch and init command. Everything persists across relaunches.
+        </p>
+
+        <UpdateSection />
+        <p>
+          New builds look after themselves: the app checks GitHub for the latest signed release,
+          downloads it in the background, and swaps it in the next time you quit — or straight away,
+          if you take the restart it offers in the title bar.
         </p>
       </div>
     </Modal>

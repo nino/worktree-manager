@@ -10,6 +10,7 @@ import type {
   DeleteWorktreeParams,
   RepoConfig,
   RepoWithWorktrees,
+  UpdateStatus,
   WorktreeApi,
 } from "@shared/types";
 
@@ -45,7 +46,11 @@ const CH = {
   windowClose: "window:close",
   windowSetSize: "window:setSize",
   windowFocusChanged: "window:focusChanged",
+  getUpdateStatus: "update:get",
+  checkForUpdates: "update:check",
+  installUpdate: "update:install",
   reposChanged: "repo:changed",
+  updateStatus: "update:status",
   takeDroppedRepos: "repo:takeDropped",
   reposDropped: "repo:dropped",
 } as const;
@@ -103,6 +108,14 @@ const api: WorktreeApi = {
     const handler = (_e: unknown, focused: boolean) => listener(focused);
     ipcRenderer.on(CH.windowFocusChanged, handler);
     return () => ipcRenderer.removeListener(CH.windowFocusChanged, handler);
+  },
+  getUpdateStatus: () => ipcRenderer.invoke(CH.getUpdateStatus),
+  checkForUpdates: () => ipcRenderer.invoke(CH.checkForUpdates),
+  installUpdate: () => ipcRenderer.invoke(CH.installUpdate),
+  onUpdateStatus: (listener: (status: UpdateStatus) => void) => {
+    const handler = (_e: unknown, status: UpdateStatus) => listener(status);
+    ipcRenderer.on(CH.updateStatus, handler);
+    return () => ipcRenderer.removeListener(CH.updateStatus, handler);
   },
   onReposChanged: (listener: () => void) => {
     const handler = () => listener();

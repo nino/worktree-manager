@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
+import { CircleFadingArrowUp, HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
 import type { AddReposResult } from "@shared/types";
-import { useConfig, useAddRepos, useRepos, keys } from "./queries";
-import { summarizeAddResult, type Notice } from "./format";
+import { useConfig, useAddRepos, useRepos, useUpdateStatus, keys } from "./queries";
+import { describeUpdate, summarizeAddResult, type Notice } from "./format";
 import { api } from "./api";
 import { useRuns } from "./runs";
 import { RepoNode } from "./components/RepoNode";
@@ -49,6 +49,7 @@ export function App() {
   const repos = useRepos();
   const addRepos = useAddRepos();
   const active = useWindowActive();
+  const update = useUpdateStatus();
   useReposChangedRefresh();
   const runs = useRuns();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -114,6 +115,16 @@ export function App() {
           <span className="app-name">Worktree Manager</span>
         </div>
         <div className="topbar-actions">
+          {update.data?.state === "ready" && (
+            <button
+              className="btn btn-sm btn-update"
+              title={describeUpdate(update.data)}
+              onClick={() => api.installUpdate()}
+            >
+              <CircleFadingArrowUp size={13} strokeWidth={1.75} />
+              Restart to update
+            </button>
+          )}
           <button
             className="btn btn-sm btn-icon"
             title="Refresh"

@@ -43,6 +43,10 @@ export const apiMock: MockedApi = {
   onReposChanged: vi.fn(() => () => {}),
   takeDroppedRepos: vi.fn(),
   onReposDropped: vi.fn(() => () => {}),
+  getUpdateStatus: vi.fn(),
+  checkForUpdates: vi.fn(),
+  installUpdate: vi.fn(),
+  onUpdateStatus: vi.fn(() => () => {}),
   startCommand: vi.fn(),
   stopCommand: vi.fn(),
   listRunningCommands: vi.fn(),
@@ -72,6 +76,10 @@ export function resetApiMock(): void {
   // No Dock drops pending; the subscription hands back an unsubscribe fn.
   apiMock.takeDroppedRepos.mockResolvedValue([]);
   apiMock.onReposDropped.mockReturnValue(() => {});
+  // Nothing to update by default; the status subscription hands back an
+  // unsubscribe fn for React cleanup.
+  apiMock.getUpdateStatus.mockResolvedValue({ state: "idle", currentVersion: "1.0.0" });
+  apiMock.onUpdateStatus.mockReturnValue(() => {});
   // No commands running by default; event subscriptions hand back unsubscribers.
   apiMock.listRunningCommands.mockResolvedValue([]);
   apiMock.getCommandBuffer.mockResolvedValue("");

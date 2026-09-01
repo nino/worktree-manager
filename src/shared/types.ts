@@ -227,6 +227,33 @@ export interface CommandExitEvent {
   signal: string | null;
 }
 
+/**
+ * Where the auto-updater is in its cycle.
+ *
+ * - "unsupported": no update feed to talk to (a dev build run from source).
+ * - "idle": nothing pending; `lastCheckedAt` says when GitHub was last asked.
+ * - "checking": a check is in flight.
+ * - "downloading": a newer build exists and is coming down in the background.
+ * - "ready": the download is staged; restarting installs it.
+ * - "error": the last check or download failed (`message` has the reason).
+ */
+export type UpdateState = "unsupported" | "idle" | "checking" | "downloading" | "ready" | "error";
+
+/** The auto-updater's state, pushed to the renderer whenever it changes. */
+export interface UpdateStatus {
+  state: UpdateState;
+  /** Version of the running app (also shown in the About dialog). */
+  currentVersion: string;
+  /** Version being downloaded or waiting to be installed. */
+  newVersion?: string;
+  /** Download progress, 0–100, while `state` is "downloading". */
+  percent?: number;
+  /** Epoch milliseconds of the last check that completed. */
+  lastCheckedAt?: number;
+  /** Why the last check failed, or why updates are unsupported. */
+  message?: string;
+}
+
 /** Shape of the API exposed to the renderer via the preload bridge. */
 export interface WorktreeApi {
   /** The user's home directory (for `~` display abbreviation). */
@@ -285,6 +312,14 @@ export interface WorktreeApi {
    * fetch, so the renderer can refetch its trees. Returns an unsubscribe fn.
    */
   onReposChanged(listener: () => void): () => void;
+  /** The auto-updater's current state (also carries the running version). */
+  getUpdateStatus(): Promise<UpdateStatus>;
+  /** Ask GitHub for a newer build now; resolves with the state after the check. */
+  checkForUpdates(): Promise<UpdateStatus>;
+  /** Quit and install the downloaded update. No-op unless one is ready. */
+  installUpdate(): Promise<void>;
+  /** Subscribe to updater state changes; returns an unsubscribe fn. */
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
   /**
    * Drain the outcomes of repos dropped on the Dock icon that were handled
    * before this renderer was listening (including drops that launched the app).
