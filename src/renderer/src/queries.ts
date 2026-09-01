@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AppConfig,
@@ -68,13 +67,12 @@ export function useRunningCommands() {
 }
 
 /**
- * The auto-updater's state. The main process pushes every change, so the query
- * is a cache the subscription writes into — it is only ever fetched once, to
- * pick up whatever state the updater had reached before this window existed.
+ * The auto-updater's state. Fetched once, to pick up whatever the updater had
+ * reached before this window existed, and kept current after that by the pushes
+ * `useUpdateStatusRefresh` (in `App.tsx`) writes into this key — so reading the
+ * status here costs no extra IPC listener, however many components read it.
  */
 export function useUpdateStatus() {
-  const qc = useQueryClient();
-  useEffect(() => api.onUpdateStatus((status) => qc.setQueryData(keys.updateStatus, status)), [qc]);
   return useQuery<UpdateStatus>({
     queryKey: keys.updateStatus,
     queryFn: () => api.getUpdateStatus(),
@@ -164,11 +162,12 @@ export function useDeleteWorktree() {
   });
 }
 
-/** Ask GitHub for a newer build now (the About dialog's "Check now"). */
+/**
+ * Ask GitHub for a newer build now (the About dialog's "Check now"). The reply
+ * is deliberately dropped: the check pushes its own state changes, and writing
+ * the state as of the moment it returned would roll a later push back — with
+ * autoDownload on, that reply is "downloading, 0%" while the download runs.
+ */
 export function useCheckForUpdates() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.checkForUpdates(),
-    onSuccess: (status) => qc.setQueryData(keys.updateStatus, status),
-  });
+  return useMutation({ mutationFn: () => api.checkForUpdates() });
 }

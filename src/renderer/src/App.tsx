@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleFadingArrowUp, HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
+import { HelpCircle, RefreshCw, Settings, SquareTerminal } from "lucide-react";
 import type { AddReposResult } from "@shared/types";
 import { useConfig, useAddRepos, useRepos, useUpdateStatus, keys } from "./queries";
-import { describeUpdate, summarizeAddResult, type Notice } from "./format";
+import { summarizeAddResult, type Notice } from "./format";
 import { api } from "./api";
 import { useRuns } from "./runs";
 import { RepoNode } from "./components/RepoNode";
@@ -11,6 +11,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { HelpDialog } from "./components/HelpDialog";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { GrowBox } from "./components/GrowBox";
+import { UpdateButton } from "./components/UpdateButton";
 
 /** Track whether the window is frontmost, so the UI can render the brushed-
  * metal "background window" look (grey gems, faded etching) when it isn't. */
@@ -27,6 +28,12 @@ function useReposChangedRefresh(): void {
     () => api.onReposChanged(() => void qc.invalidateQueries({ queryKey: keys.repos })),
     [qc],
   );
+}
+
+/** Mirror the main process's updater state into the query cache, once. */
+function useUpdateStatusRefresh(): void {
+  const qc = useQueryClient();
+  useEffect(() => api.onUpdateStatus((status) => qc.setQueryData(keys.updateStatus, status)), [qc]);
 }
 
 /**
@@ -49,6 +56,7 @@ export function App() {
   const repos = useRepos();
   const addRepos = useAddRepos();
   const active = useWindowActive();
+  useUpdateStatusRefresh();
   const update = useUpdateStatus();
   useReposChangedRefresh();
   const runs = useRuns();
@@ -115,16 +123,7 @@ export function App() {
           <span className="app-name">Worktree Manager</span>
         </div>
         <div className="topbar-actions">
-          {update.data?.state === "ready" && (
-            <button
-              className="btn btn-sm btn-update"
-              title={describeUpdate(update.data)}
-              onClick={() => api.installUpdate()}
-            >
-              <CircleFadingArrowUp size={13} strokeWidth={1.75} />
-              Restart to update
-            </button>
-          )}
+          {update.data?.state === "ready" && <UpdateButton status={update.data} icon />}
           <button
             className="btn btn-sm btn-icon"
             title="Refresh"

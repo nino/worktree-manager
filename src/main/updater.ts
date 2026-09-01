@@ -59,6 +59,9 @@ function wireEvents(): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  // Each transition clears what it invalidates: the fields are documented per
+  // state (see UpdateStatus), so a stale percent or a stale error message must
+  // not survive into a state that doesn't have one.
   autoUpdater.on("checking-for-update", () => setStatus({ state: "checking" }));
 
   autoUpdater.on("update-not-available", () => {
@@ -67,6 +70,7 @@ function wireEvents(): void {
       lastCheckedAt: Date.now(),
       newVersion: undefined,
       percent: undefined,
+      message: undefined,
     });
   });
 
@@ -77,6 +81,7 @@ function wireEvents(): void {
       newVersion: info.version,
       percent: 0,
       lastCheckedAt: Date.now(),
+      message: undefined,
     });
   });
 
@@ -85,14 +90,18 @@ function wireEvents(): void {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
-    setStatus({ state: "ready", newVersion: info.version, percent: 100 });
+    setStatus({ state: "ready", newVersion: info.version, percent: 100, message: undefined });
   });
 
   // Never fatal: a failed check leaves the app exactly as it was, running the
   // version it already had.
   autoUpdater.on("error", (error) => {
     console.warn("auto-update:", error);
-    setStatus({ state: "error", message: reasonOf(error) });
+    // A staged build stays staged. Squirrel keeps reporting through this event
+    // after the download is in hand, and dropping "ready" would retract the
+    // restart offer for an update that still installs on the next quit.
+    if (status.state === "ready") return;
+    setStatus({ state: "error", message: reasonOf(error), percent: undefined });
   });
 }
 
@@ -113,7 +122,12 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
   wireEvents();
   try {
-    await autoUpdater.checkForUpdates();
+    const result = await autoUpdater.checkForUpdates();
+    // With autoDownload on, the check hands back a download that is already in
+    // flight. electron-updater re-throws its failures after emitting "error",
+    // so the promise has to be claimed here or a failed download lands as an
+    // unhandled rejection in the main process. The event already has the status.
+    void result?.downloadPromise?.catch(() => {});
   } catch (error) {
     // The "error" event has usually fired already; this catches the rest.
     setStatus({ state: "error", message: reasonOf(error) });
@@ -124,6 +138,12 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 /**
  * Quit and let Squirrel swap in the downloaded build. A no-op until one is
  * staged, so a stale renderer can't restart the app for nothing.
+ *
+ * "Ready" runs slightly ahead of Squirrel: electron-updater announces the
+ * download before handing the zip over, and until that handover finishes this
+ * call queues the restart instead of performing it (the app goes down when
+ * Squirrel is done). The button latches into "Restarting…" for that window —
+ * see `UpdateButton` — so the wait reads as progress rather than a dead click.
  */
 export function installUpdate(): void {
   if (status.state !== "ready") return;

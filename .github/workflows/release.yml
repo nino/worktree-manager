@@ -45,13 +45,17 @@ jobs:
       # nothing is committed back — and dev builds do not update themselves.
       - name: Stamp the build version
         run: |
+          # workflow_dispatch offers every branch, and this job replaces the
+          # release installed copies update from. Building anything but main
+          # would publish that branch's code as `latest` *and* stamp it with a
+          # version main might not reach for several pushes — which would freeze
+          # the feed until it caught up. Fail before anything is signed.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the release can only be built from main (got $GITHUB_REF)"
+            exit 1
+          fi
           VERSION="1.0.$(git rev-list --count HEAD)"
-          node -e '
-            const { readFileSync, writeFileSync } = require("fs");
-            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-            pkg.version = process.argv[1];
-            writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-          ' "$VERSION"
+          npm pkg set version="$VERSION"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Building version $VERSION"
 
@@ -193,7 +197,6 @@ jobs:
       # electron-builder's metadata by hand.
       - name: Verify the update metadata
         run: |
-          shopt -s nullglob
           metadata=release/latest-mac.yml
           if [ ! -f "$metadata" ]; then
             echo "::error::no $metadata — the app updater has nothing to read"
@@ -220,6 +223,13 @@ jobs:
           if [ "$expected" != "$actual" ]; then
             echo "::error::sha512 in $metadata does not match release/$zip"
             exit 1
+          fi
+
+          # Not fatal — it only costs bandwidth. Squirrel fetches just the
+          # changed blocks when the blockmap sits beside the zip, and falls back
+          # to the whole ~150 MB when it doesn't.
+          if [ ! -f "release/$zip.blockmap" ]; then
+            echo "::warning::no release/$zip.blockmap — updates will be full downloads"
           fi
 
       # The DMG is what a person downloads; the zip, its blockmap and

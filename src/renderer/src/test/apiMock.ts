@@ -79,6 +79,8 @@ export function resetApiMock(): void {
   // Nothing to update by default; the status subscription hands back an
   // unsubscribe fn for React cleanup.
   apiMock.getUpdateStatus.mockResolvedValue({ state: "idle", currentVersion: "1.0.0" });
+  apiMock.checkForUpdates.mockResolvedValue({ state: "idle", currentVersion: "1.0.0" });
+  apiMock.installUpdate.mockResolvedValue(undefined);
   apiMock.onUpdateStatus.mockReturnValue(() => {});
   // No commands running by default; event subscriptions hand back unsubscribers.
   apiMock.listRunningCommands.mockResolvedValue([]);

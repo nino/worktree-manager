@@ -1,7 +1,7 @@
-import { api } from "../api";
 import { describeUpdate } from "../format";
 import { useCheckForUpdates, useUpdateStatus } from "../queries";
 import { Modal } from "./Modal";
+import { UpdateButton } from "./UpdateButton";
 
 /**
  * The running version and what the auto-updater is doing about it. Updates
@@ -11,32 +11,36 @@ import { Modal } from "./Modal";
 function UpdateSection() {
   const status = useUpdateStatus();
   const check = useCheckForUpdates();
-  if (!status.data) return null;
+  const update = status.data;
+  const checking = update?.state === "checking" || check.isPending;
 
-  const { state, currentVersion } = status.data;
-  const checking = state === "checking" || check.isPending;
+  // The heading renders before the status arrives so the paragraph below this
+  // section never briefly reads as part of "Settings".
   return (
     <>
       <h3>Version &amp; updates</h3>
-      <p className="update-line">
-        <span>
-          <span className="selectable">Version {currentVersion}</span> —{" "}
-          {describeUpdate(status.data)}
-        </span>
-        {state === "ready" ? (
-          <button className="btn btn-sm btn-update" onClick={() => api.installUpdate()}>
-            Restart to update
-          </button>
-        ) : (
-          <button
-            className="btn btn-sm"
-            onClick={() => check.mutate()}
-            disabled={checking || state === "downloading" || state === "unsupported"}
-          >
-            {checking ? "Checking…" : "Check now"}
-          </button>
-        )}
-      </p>
+      {update && (
+        <p className="update-line">
+          {/* Selectable as a whole: a failed check puts the updater's own error
+              text here, which is the line worth pasting into a bug report. */}
+          <span className="selectable">
+            Version {update.currentVersion} — {describeUpdate(update)}
+          </span>
+          {update.state === "ready" ? (
+            <UpdateButton status={update} />
+          ) : (
+            <button
+              className="btn btn-sm"
+              onClick={() => check.mutate()}
+              disabled={
+                checking || update.state === "downloading" || update.state === "unsupported"
+              }
+            >
+              {checking ? "Checking…" : "Check now"}
+            </button>
+          )}
+        </p>
+      )}
     </>
   );
 }
