@@ -17,6 +17,11 @@ interface WorktreeCommandsProps {
  * (or re-view a running one) plus an inline Stop button per running command.
  * A native <select> is used for the launcher so its popup is never clipped by
  * the repo panel's `overflow: hidden`.
+ *
+ * A repo with no configured commands renders nothing at all — a permanently
+ * disabled "No commands" plate is dead weight in every row of every such repo.
+ * Runs already in flight (a command deleted from settings while it ran) keep
+ * their Stop button, so nothing can be left running with no way to stop it.
  */
 export function WorktreeCommands({ repo, worktree, disabled }: WorktreeCommandsProps) {
   const runs = useRuns();
@@ -50,6 +55,9 @@ export function WorktreeCommands({ repo, worktree, disabled }: WorktreeCommandsP
     }
   };
 
+  // Nothing to offer and nothing running: stay out of the row entirely.
+  if (!hasCommands && runningHere.length === 0 && error === null) return null;
+
   return (
     <span className="cmd-runner">
       {runningHere.map((r) => (
@@ -63,24 +71,26 @@ export function WorktreeCommands({ repo, worktree, disabled }: WorktreeCommandsP
           <Square {...ICON} />
         </button>
       ))}
-      <select
-        className="branch-select cmd-select"
-        // Controlled to "" so it always snaps back to the placeholder label.
-        value=""
-        title={hasCommands ? "Run a command" : "No commands configured — add one in repo settings"}
-        aria-label="Run a command"
-        disabled={disabled || !hasCommands}
-        onChange={(e) => void onPick(e.target.value)}
-      >
-        <option value="" disabled hidden>
-          {hasCommands ? "Run…" : "No commands"}
-        </option>
-        {repo.commands.map((c) => (
-          <option key={c.id} value={c.id}>
-            {runs.isRunning(worktree.path, c.id) ? `View ${c.name}` : `Run ${c.name}`}
+      {hasCommands && (
+        <select
+          className="branch-select cmd-select"
+          // Controlled to "" so it always snaps back to the placeholder label.
+          value=""
+          title="Run a command"
+          aria-label="Run a command"
+          disabled={disabled}
+          onChange={(e) => void onPick(e.target.value)}
+        >
+          <option value="" disabled hidden>
+            Run…
           </option>
-        ))}
-      </select>
+          {repo.commands.map((c) => (
+            <option key={c.id} value={c.id}>
+              {runs.isRunning(worktree.path, c.id) ? `View ${c.name}` : `Run ${c.name}`}
+            </option>
+          ))}
+        </select>
+      )}
       {error && <span className="error row-error">{error}</span>}
     </span>
   );

@@ -100,7 +100,7 @@ export function BaseRefPicker({
           <div
             ref={popRef}
             className="branch-picker-pop"
-            style={{ top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 180) }}
+            style={{ top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 260) }}
           >
             <ul
               ref={listRef}

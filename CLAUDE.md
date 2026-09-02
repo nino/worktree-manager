@@ -235,6 +235,19 @@ src/
   switches). These return `GitOpResult` (`{ ok, message }`) instead of throwing,
   so git's stderr surfaces in the row UI. All ops validate the worktree belongs
   to the repo first (`requireWorktree`).
+- **Branch labels**: a branch under a coding agent's prefix shows that agent's
+  mark instead of the prefix text — `claude/…` and `cursor/…` today. The split is
+  `splitToolPrefix` (`renderer/src/branchTool.ts`, pure and unit-tested); the
+  icons live in `components/ToolIcons.tsx`; `BranchLabel` renders both and is
+  used by the row plate, the picker trigger, and every picker option. The prefix
+  text stays in the DOM behind `.sr-only`, so an accessible name and a copied
+  selection still carry the whole branch name, and picker options repeat it in
+  `aria-label`. Agent branches are long, which is why the plate allows 44ch and
+  the picker popup opens at 260px.
+- **Command launcher**: `WorktreeCommands` renders nothing when the repo has no
+  configured commands — no disabled placeholder plate in every row. Runs still
+  in flight keep their Stop button, so a command deleted from settings mid-run
+  can still be stopped.
 - **Row animations**: a created worktree lands with a specular highlight raked
   across its slat (`.wt-new` in `styles.css`); `CreationsProvider` flags the
   branch as arriving for `ARRIVAL_MS` after the create resolves, and
