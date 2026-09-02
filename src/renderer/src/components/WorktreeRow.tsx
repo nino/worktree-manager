@@ -16,6 +16,7 @@ import { useCreations } from "../creations";
 import { usePoof } from "../poof";
 import { useRuns } from "../runs";
 import { displayPath } from "../format";
+import { BranchLabel } from "./BranchLabel";
 import { BranchPicker } from "./BranchPicker";
 import { CopyButton } from "./CopyButton";
 import { StatusBadges } from "./StatusBadges";
@@ -117,7 +118,9 @@ export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
               onSelect={(branch) => runOp("switch", branch)}
             />
           ) : (
-            <span className="wt-branch">{worktree.branch ?? "(detached)"}</span>
+            <span className="wt-branch">
+              {worktree.branch === null ? "(detached)" : <BranchLabel branch={worktree.branch} />}
+            </span>
           )}
           {worktree.branch !== null && (
             <CopyButton text={worktree.branch} label="Copy branch name" />

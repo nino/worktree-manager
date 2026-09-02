@@ -1,4 +1,5 @@
 import { Check } from "lucide-react";
+import { BranchLabel } from "./BranchLabel";
 
 interface BranchOptionProps {
   id: string;
@@ -26,6 +27,9 @@ export function BranchOption({
       role="option"
       aria-selected={active}
       className="branch-picker-option"
+      // The visible label may swap a `claude/` prefix for an icon; name the
+      // option by the full branch so assistive tech and tests see it whole.
+      aria-label={label}
       title={label}
       // Keep focus on the input so click-to-select still fires.
       onMouseDown={(e) => e.preventDefault()}
@@ -35,7 +39,9 @@ export function BranchOption({
       <span className="branch-picker-check" aria-hidden="true">
         {checked && <Check size={12} strokeWidth={2} />}
       </span>
-      <span className="branch-picker-label">{label}</span>
+      <span className="branch-picker-label">
+        <BranchLabel branch={label} />
+      </span>
     </li>
   );
 }

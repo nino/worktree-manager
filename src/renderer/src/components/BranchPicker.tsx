@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { BranchLabel } from "./BranchLabel";
 import { BranchOption } from "./BranchOption";
 import { useFuzzyListbox } from "../useFuzzyListbox";
 
@@ -96,7 +97,7 @@ export function BranchPicker({ branches, current, disabled, onSelect }: BranchPi
         title={`Switch branch (current: ${current})`}
         onClick={() => (open ? hide() : show())}
       >
-        {current}
+        <BranchLabel branch={current} />
       </button>
 
       {open &&
@@ -104,7 +105,7 @@ export function BranchPicker({ branches, current, disabled, onSelect }: BranchPi
           <div
             ref={popRef}
             className="branch-picker-pop"
-            style={{ top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 180) }}
+            style={{ top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 260) }}
           >
             <input
               ref={inputRef}
