@@ -114,15 +114,15 @@ export function RepoNode({ node }: RepoNodeProps) {
               <WorktreeRow key={row.worktree.path} repo={repo} worktree={row.worktree} />
             ) : (
               <div key={`pending-${row.creation.id}`} className="wt-row wt-creating">
-                <div className="wt-info">
-                  <div className="wt-line1">
+                <div className="wt-line1">
+                  <div className="wt-ident">
                     <span className="wt-branch">{row.creation.branch}</span>
                   </div>
+                  <span className="wt-creating-label">
+                    <Loader2 size={13} strokeWidth={1.75} className="spin" />
+                    Creating…
+                  </span>
                 </div>
-                <span className="wt-creating-label">
-                  <Loader2 size={13} strokeWidth={1.75} className="spin" />
-                  Creating…
-                </span>
               </div>
             ),
           )}

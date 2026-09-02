@@ -10,6 +10,10 @@
 :root {
   color-scheme: light;
 
+  /* The system UI face (San Francisco on macOS) rather than Aqua's Lucida
+     Grande: the one deliberate departure from the classic look. */
+  --font-ui: system-ui, -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+
   /* Ink on metal */
   --text: #17181a;
   --text-dim: #3a3b3e;
@@ -189,7 +193,7 @@ body,
 body {
   background: var(--desktop-lo);
   color: var(--text);
-  font-family: "Lucida Grande", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -531,14 +535,16 @@ textarea,
   flex-direction: column;
 }
 
-/* Each row is its own slat: top edge catches the light, bottom edge shades. */
+/* Each row is its own slat: top edge catches the light, bottom edge shades.
+   Inside, two full-width lines stack: branch plate + status tags, then path +
+   action buttons — each line puts its identity on the left and its controls
+   on the right, so tags and buttons never compete for the same line. */
 .wt-row {
   position: relative;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 9px 12px 9px 26px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 12px 7px 14px;
   background-image:
     var(--grain),
     linear-gradient(
@@ -560,7 +566,7 @@ textarea,
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-left: 26px;
+  padding-left: 14px;
   font-size: 11px;
   color: var(--text-dim);
   background: color-mix(in srgb, var(--steel-2) 88%, transparent);
@@ -603,21 +609,38 @@ textarea,
     inset 0 0 0 999px color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
-.wt-info {
-  flex: 1;
+.wt-line1,
+.wt-line2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   min-width: 0;
 }
 
-.wt-line1 {
+/* Branch plate + its copy button: the left half of line one, and the anchor
+   the departure poof is centred on. */
+.wt-ident {
   display: flex;
   align-items: center;
   gap: 7px;
-  flex-wrap: nowrap;
   min-width: 0;
 }
 
-.wt-line1 .badge,
-.wt-line1 .badges {
+/* Status tags, right-aligned; wrap onto a second line rather than push the
+   branch plate off screen when there are many. */
+.wt-tags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 60%;
+}
+
+.wt-tags .badge,
+.wt-tags .badges {
   flex-shrink: 0;
 }
 
@@ -642,8 +665,8 @@ textarea,
   display: flex;
   align-items: center;
   gap: 2px;
+  flex: 1;
   min-width: 0;
-  margin-top: 3px;
 }
 
 .wt-path {
@@ -810,8 +833,8 @@ textarea,
    `> *`: the delete overlay is a sibling of theirs and is absolutely
    positioned, and a blanket rule would reset it to `relative` and stop it
    covering the row. Only applies while the row is arriving. */
-.wt-new > .wt-info,
-.wt-new > .wt-actions {
+.wt-new > .wt-line1,
+.wt-new > .wt-line2 {
   position: relative;
   z-index: 0;
 }
@@ -1091,7 +1114,10 @@ select.branch-select:focus {
   gap: 4px;
 }
 
-.row-error {
+/* Confirmations, hints and errors sit under the two lines, spanning the slat.
+   The row stacks its children, so stretching is the default; only the command
+   launcher's inline error still needs to claim its own line. */
+.cmd-runner .row-error {
   flex-basis: 100%;
 }
 
@@ -1844,7 +1870,7 @@ code.path-code {
 /* The launcher reuses the popup-plate look of the branch selector, but in the
    UI face rather than the monospace name plate. */
 .cmd-select {
-  font-family: "Lucida Grande", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
   font-weight: 600;
   min-width: 5ch;
   max-width: 14ch;

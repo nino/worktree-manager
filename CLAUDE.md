@@ -248,6 +248,14 @@ src/
   configured commands — no disabled placeholder plate in every row. Runs still
   in flight keep their Stop button, so a command deleted from settings mid-run
   can still be stopped.
+- **Worktree row layout**: each row is two full-width lines (`.wt-line1`,
+  `.wt-line2` in `WorktreeRow.tsx`). Line one holds the branch picker + copy
+  button on the left (`.wt-ident`, also the anchor for the departure poof) and
+  the status tags right-aligned (`.wt-tags`); line two holds the path on the
+  left and the action buttons on the right. Tags and buttons never share a line,
+  which is what keeps long agent branch names, several badges and every button
+  visible at once. Keep new per-row indicators in `.wt-tags` and new per-row
+  controls in `.wt-actions`.
 - **Row animations**: a created worktree lands with a specular highlight raked
   across its slat (`.wt-new` in `styles.css`); `CreationsProvider` flags the
   branch as arriving for `ARRIVAL_MS` after the create resolves, and
@@ -274,8 +282,11 @@ src/
   (`renderer/src/format.ts`, backed by `tildify` in `shared/paths.ts`); keep the
   full path in the `title` tooltip. Inputs hold real, unabbreviated paths.
 - **Theming**: the UI is a single skeuomorphic "brushed metal" appearance (there
-  is no dark variant — the `@media (prefers-color-scheme: dark)` block re-asserts
-  the same look). Every color literal lives in the `:root` token block of
+  is no dark variant). The UI face is the system font (`--font-ui`, `system-ui`
+  — San Francisco on macOS), the one deliberate departure from classic Aqua;
+  name plates, paths and terminal output stay monospace. The
+  `@media (prefers-color-scheme: dark)` block re-asserts the same look. Every
+  color literal lives in the `:root` token block of
   `styles.css` (including gradient/texture/shadow-stack tokens); rules below it
   only reference tokens, `color-mix()` of tokens, and `rgba()` light/shade
   overlays — never hard-code a hex outside the token block. The native window

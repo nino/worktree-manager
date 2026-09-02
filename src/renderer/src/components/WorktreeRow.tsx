@@ -29,7 +29,13 @@ interface WorktreeRowProps {
   worktree: WorktreeInfo;
 }
 
-/** A single worktree row: branch selector, path, status, and actions. */
+/**
+ * A single worktree row, laid out as two full-width lines: branch selector on
+ * the left of the first with the status tags right-aligned, path on the left of
+ * the second with the action buttons right-aligned. Splitting tags and buttons
+ * across the two lines is what keeps a long branch name, a handful of badges
+ * and every button on screen at once.
+ */
 export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
   const [confirmStage, setConfirmStage] = useState<"confirm" | "force" | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
@@ -39,8 +45,8 @@ export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
   const runs = useRuns();
   const { poof } = usePoof();
   const { isArriving } = useCreations();
-  // The row's identity block — where the puff of smoke is centred, and stable
-  // whether or not a confirmation panel is expanded below it.
+  // The branch plate — where the puff of smoke is centred, and stable whether
+  // or not a confirmation panel is expanded below it.
   const infoRef = useRef<HTMLDivElement>(null);
   const runningHere = runs.runningFor(worktree.path);
   // The auto-started init run gets its own "Initialising" badge; keep it out of
@@ -108,8 +114,8 @@ export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
 
   return (
     <div className={`wt-row${worktree.isMain ? " wt-main" : ""}${arriving ? " wt-new" : ""}`}>
-      <div className="wt-info" ref={infoRef}>
-        <div className="wt-line1">
+      <div className="wt-line1">
+        <div className="wt-ident" ref={infoRef}>
           {worktree.branch !== null && branches.data ? (
             <BranchPicker
               branches={branches.data}
@@ -125,6 +131,8 @@ export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
           {worktree.branch !== null && (
             <CopyButton text={worktree.branch} label="Copy branch name" />
           )}
+        </div>
+        <div className="wt-tags">
           {worktree.isMain && <span className="badge badge-main">primary</span>}
           {worktree.locked && <span className="badge badge-muted">locked</span>}
           {missing ? (
@@ -160,85 +168,87 @@ export function WorktreeRow({ repo, worktree }: WorktreeRowProps) {
             </button>
           )}
         </div>
+      </div>
+
+      <div className="wt-line2">
         <div className="wt-path-row">
           <span className="wt-path" title={worktree.path}>
             {displayPath(worktree.path)}
           </span>
           <CopyButton text={worktree.path} label="Copy path" />
         </div>
-      </div>
-
-      <div className="wt-actions">
-        <WorktreeCommands repo={repo} worktree={worktree} disabled={missing} />
-        <span className="btn-group">
-          <button
-            className="btn btn-sm btn-icon"
-            title="Push"
-            aria-label="Push"
-            disabled={busy || missing}
-            onClick={() => runOp("push")}
-          >
-            <ArrowUpFromLine {...ICON} />
-          </button>
-          <button
-            className="btn btn-sm btn-icon"
-            title="Pull (fast-forward only)"
-            aria-label="Pull"
-            disabled={busy || missing}
-            onClick={() => runOp("pull")}
-          >
-            <ArrowDownToLine {...ICON} />
-          </button>
-          <button
-            className="btn btn-sm btn-icon"
-            title={`Pull ${repo.mainBranch} into this branch`}
-            aria-label={`Pull ${repo.mainBranch} into this branch`}
-            disabled={busy || missing}
-            onClick={() => runOp("pullMain")}
-          >
-            <GitMerge {...ICON} />
-          </button>
-        </span>
-        <span className="btn-group">
-          <button
-            className="btn btn-sm btn-icon"
-            title="Open in editor"
-            aria-label="Open in editor"
-            disabled={missing}
-            onClick={() => api.openInEditor(worktree.path)}
-          >
-            <Code {...ICON} />
-          </button>
-          <button
-            className="btn btn-sm btn-icon"
-            title="Open in terminal"
-            aria-label="Open in terminal"
-            disabled={missing}
-            onClick={() => api.openInTerminal(worktree.path)}
-          >
-            <SquareTerminal {...ICON} />
-          </button>
-          <button
-            className="btn btn-sm btn-icon"
-            title="Reveal in Finder"
-            aria-label="Reveal in Finder"
-            disabled={missing}
-            onClick={() => api.revealInFinder(worktree.path)}
-          >
-            <FolderOpen {...ICON} />
-          </button>
-        </span>
-        {!worktree.isMain && confirmStage === null && (
-          <button
-            className="btn btn-sm btn-icon btn-danger-ghost"
-            title="Delete worktree"
-            aria-label="Delete worktree"
-            disabled={busy}
-            onClick={() => setConfirmStage("confirm")}
-          >
-            <Trash2 {...ICON} />
-          </button>
-        )}
+        <div className="wt-actions">
+          <WorktreeCommands repo={repo} worktree={worktree} disabled={missing} />
+          <span className="btn-group">
+            <button
+              className="btn btn-sm btn-icon"
+              title="Push"
+              aria-label="Push"
+              disabled={busy || missing}
+              onClick={() => runOp("push")}
+            >
+              <ArrowUpFromLine {...ICON} />
+            </button>
+            <button
+              className="btn btn-sm btn-icon"
+              title="Pull (fast-forward only)"
+              aria-label="Pull"
+              disabled={busy || missing}
+              onClick={() => runOp("pull")}
+            >
+              <ArrowDownToLine {...ICON} />
+            </button>
+            <button
+              className="btn btn-sm btn-icon"
+              title={`Pull ${repo.mainBranch} into this branch`}
+              aria-label={`Pull ${repo.mainBranch} into this branch`}
+              disabled={busy || missing}
+              onClick={() => runOp("pullMain")}
+            >
+              <GitMerge {...ICON} />
+            </button>
+          </span>
+          <span className="btn-group">
+            <button
+              className="btn btn-sm btn-icon"
+              title="Open in editor"
+              aria-label="Open in editor"
+              disabled={missing}
+              onClick={() => api.openInEditor(worktree.path)}
+            >
+              <Code {...ICON} />
+            </button>
+            <button
+              className="btn btn-sm btn-icon"
+              title="Open in terminal"
+              aria-label="Open in terminal"
+              disabled={missing}
+              onClick={() => api.openInTerminal(worktree.path)}
+            >
+              <SquareTerminal {...ICON} />
+            </button>
+            <button
+              className="btn btn-sm btn-icon"
+              title="Reveal in Finder"
+              aria-label="Reveal in Finder"
+              disabled={missing}
+              onClick={() => api.revealInFinder(worktree.path)}
+            >
+              <FolderOpen {...ICON} />
+            </button>
+          </span>
+          {!worktree.isMain && confirmStage === null && (
+            <button
+              className="btn btn-sm btn-icon btn-danger-ghost"
+              title="Delete worktree"
+              aria-label="Delete worktree"
+              disabled={busy}
+              onClick={() => setConfirmStage("confirm")}
+            >
+              <Trash2 {...ICON} />
+            </button>
+          )}
+        </div>
       </div>
 
       {confirmStage === "confirm" && (

@@ -32,7 +32,14 @@ function fail(message) {
   process.exit(1);
 }
 
-if (process.platform !== "darwin") fail("macOS only (launches the .app Electron binary).");
+// macOS is the target; Linux works too (under Xvfb), with fonts and window
+// chrome that differ from a Mac — fine for reviewing a layout, not for the
+// published README image.
+const ELECTRON_BIN = {
+  darwin: "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+  linux: "node_modules/electron/dist/electron",
+}[process.platform];
+if (!ELECTRON_BIN) fail(`unsupported platform ${process.platform} (macOS or Linux).`);
 if (!existsSync(OUT_MAIN)) fail("no production build in out/ — run `pnpm screenshot`.");
 if (existsSync(DEMO) && !existsSync(MARKER)) {
   fail(`${DEMO} exists but wasn't created by this script — move it out of the way first.`);
@@ -191,8 +198,16 @@ function seedProfile(repos) {
 
 async function capture(userData) {
   const app = await electron.launch({
-    executablePath: join(ROOT, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"),
-    args: [ROOT],
+    executablePath: join(ROOT, ELECTRON_BIN),
+    // Chromium refuses to start its sandbox as root (CI containers); nothing
+    // untrusted is loaded here, so drop it in that one case.
+    args: [
+      ROOT,
+      // A Retina Mac renders at 2x on its own; Xvfb has no HiDPI display, so
+      // ask Chromium for the same density and the image matches either way.
+      "--force-device-scale-factor=2",
+      ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : []),
+    ],
     env: { ...process.env, WTM_USER_DATA: userData },
     timeout: 30_000,
   });
