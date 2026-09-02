@@ -29,7 +29,8 @@ pnpm typecheck       # tsc --noEmit for node + web projects
 pnpm format          # prettier --write .
 pnpm dist            # package macOS .app + .dmg into release/ (electron-builder)
 pnpm screenshot      # regenerate docs/screenshot.png (throwaway demo repos,
-                     # sandboxed config via WTM_USER_DATA — never real user data)
+                     # sandboxed config via WTM_USER_DATA — never real user data;
+                     # on Linux see .claude/skills/screenshot/SKILL.md)
 pnpm bake-grain      # re-render the brushed-metal grain tiles into
                      # src/renderer/src/assets/ (only after retuning the filter)
 ```
