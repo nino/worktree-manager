@@ -203,6 +203,9 @@ async function capture(userData) {
     // untrusted is loaded here, so drop it in that one case.
     args: [
       ROOT,
+      // A Retina Mac renders at 2x on its own; Xvfb has no HiDPI display, so
+      // ask Chromium for the same density and the image matches either way.
+      "--force-device-scale-factor=2",
       ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     ],
     env: { ...process.env, WTM_USER_DATA: userData },
