@@ -94,20 +94,23 @@ function buildDemoRepos() {
   commit(rocket, "Heat-shield checks");
   git(rocket, "push", "-q", "origin", "main");
 
-  // feature/onboarding-flow: ahead 3 / behind 2, clean, no upstream.
-  const onboarding = join(DEMO, "worktrees", "rocket-app", "feature-onboarding-flow");
-  git(rocket, "worktree", "add", "-q", "-b", "feature/onboarding-flow", onboarding, "main~2");
+  // claude/onboarding-flow: ahead 3 / behind 2, clean, no upstream. Named
+  // like the branches a coding agent leaves behind, so the shot shows the
+  // `claude/` prefix drawn as its icon.
+  const onboarding = join(DEMO, "worktrees", "rocket-app", "claude-onboarding-flow");
+  git(rocket, "worktree", "add", "-q", "-b", "claude/onboarding-flow", onboarding, "main~2");
   for (const step of ["welcome screen", "profile form", "sample project"]) {
     appendFileSync(join(onboarding, "onboarding.md"), `- ${step}\n`);
     commit(onboarding, `Onboarding: ${step}`);
   }
 
-  // fix/login-crash: 1 unpushed commit, unstaged edit, untracked file.
-  const loginFix = join(DEMO, "worktrees", "rocket-app", "fix-login-crash");
-  git(rocket, "worktree", "add", "-q", "-b", "fix/login-crash", loginFix, "main");
+  // cursor/fix-login-crash: 1 unpushed commit, unstaged edit, untracked file
+  // — the other agent prefix, so both icons appear in the shot.
+  const loginFix = join(DEMO, "worktrees", "rocket-app", "cursor-fix-login-crash");
+  git(rocket, "worktree", "add", "-q", "-b", "cursor/fix-login-crash", loginFix, "main");
   write(loginFix, "fix.md", "Guard against null session on resume.\n");
   commit(loginFix, "Guard against null session");
-  git(loginFix, "push", "-q", "-u", "origin", "fix/login-crash");
+  git(loginFix, "push", "-q", "-u", "origin", "cursor/fix-login-crash");
   appendFileSync(join(loginFix, "fix.md"), "Handle expired refresh tokens too.\n");
   commit(loginFix, "Handle expired tokens");
   appendFileSync(join(loginFix, "src", "main.ts"), "// TODO: retry once\n");
