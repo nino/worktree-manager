@@ -321,6 +321,27 @@ textarea,
   text-shadow: var(--etch);
 }
 
+.topbar-search {
+  flex: 1 1 120px;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  -webkit-app-region: no-drag;
+}
+
+.topbar-search input {
+  width: 100%;
+  max-width: 260px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.topbar-search input[type="search"] {
+  /* Chromium's native search-field chrome would otherwise override the
+     brushed-metal well. */
+  -webkit-appearance: none;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -420,6 +441,11 @@ textarea,
   flex-shrink: 0;
 }
 
+.repo.search-empty {
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+}
+
 /* Repo header: a polished top rail holding a sunken title trough. */
 .repo-head {
   display: flex;
@@ -444,6 +470,10 @@ textarea,
   font-size: 10px;
   width: 18px;
   padding: 0 2px;
+}
+
+.disclosure:disabled {
+  color: var(--disabled);
 }
 
 /* The sunken trough: pressed into the rail, grip dots left, ridges right. */

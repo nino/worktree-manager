@@ -6,6 +6,8 @@ import { useConfig, useAddRepos, useRepos, useUpdateStatus, keys } from "./queri
 import { summarizeAddResult, type Notice } from "./format";
 import { api } from "./api";
 import { useRuns } from "./runs";
+import { useCreations } from "./creations";
+import { repoHasMatch } from "./worktreeSearch";
 import { RepoNode } from "./components/RepoNode";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { HelpDialog } from "./components/HelpDialog";
@@ -60,9 +62,11 @@ export function App() {
   const update = useUpdateStatus();
   useReposChangedRefresh();
   const runs = useRuns();
+  const { creationsFor } = useCreations();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [query, setQuery] = useState("");
 
   // Dock drops are added by the main process, so the trees have to be refetched
   // here rather than by a mutation's onSuccess.
@@ -121,6 +125,15 @@ export function App() {
             />
           </span>
           <span className="app-name">Worktree Manager</span>
+        </div>
+        <div className="topbar-search">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search"
+            aria-label="Search worktrees"
+          />
         </div>
         <div className="topbar-actions">
           {update.data?.state === "ready" && <UpdateButton status={update.data} icon />}
@@ -188,8 +201,18 @@ export function App() {
             </button>
           </div>
         )}
+        {repos.data &&
+          repos.data.length > 0 &&
+          query.trim() &&
+          // A repo's own error, or an in-flight/failed creation, is content it
+          // shows regardless of the query — RepoNode keeps such a repo expanded,
+          // so this banner must agree rather than calling it "no matches" too.
+          !repos.data.some(
+            (node) =>
+              repoHasMatch(query, node) || node.error || creationsFor(node.repo.id).length > 0,
+          ) && <p className="empty">No worktrees match &quot;{query.trim()}&quot;.</p>}
         {repos.data?.map((node) => (
-          <RepoNode key={node.repo.id} node={node} />
+          <RepoNode key={node.repo.id} node={node} query={query} />
         ))}
       </main>
 
