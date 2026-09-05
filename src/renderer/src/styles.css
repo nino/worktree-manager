@@ -322,11 +322,13 @@ textarea,
 }
 
 .topbar-search {
+  /* Stretches across the whole middle of the bar, so it must stay draggable;
+     only the field itself opts out, or the empty metal either side of it
+     stops moving the window. */
   flex: 1 1 120px;
   min-width: 0;
   display: flex;
   justify-content: center;
-  -webkit-app-region: no-drag;
 }
 
 .topbar-search input {
@@ -334,6 +336,7 @@ textarea,
   max-width: 260px;
   min-width: 0;
   font-size: 12px;
+  -webkit-app-region: no-drag;
 }
 
 .topbar-search input[type="search"] {
