@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, Settings2, X } from "lucide-react";
 import type { RepoWithWorktrees, WorktreeInfo } from "@shared/types";
 import { slugifyBranch } from "@shared/paths";
 import { useCreations, type Creation } from "../creations";
 import { displayPath } from "../format";
+import { filterWorktrees } from "../worktreeSearch";
 import { CopyButton } from "./CopyButton";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { RepoSettingsDialog } from "./RepoSettingsDialog";
@@ -42,10 +43,12 @@ function orderedRows(worktrees: WorktreeInfo[], pending: Creation[]): Row[] {
 
 interface RepoNodeProps {
   node: RepoWithWorktrees;
+  /** Current search query, filtering this repo's worktrees by branch/path. */
+  query: string;
 }
 
 /** A repo and its worktrees, collapsible. */
-export function RepoNode({ node }: RepoNodeProps) {
+export function RepoNode({ node, query }: RepoNodeProps) {
   const { repo, worktrees, error, defaultBaseRef } = node;
   const [collapsed, setCollapsed] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -55,20 +58,30 @@ export function RepoNode({ node }: RepoNodeProps) {
   const pending = creations.filter((c) => c.status === "creating");
   const failures = creations.filter((c) => c.status === "error");
 
+  const isSearching = query.trim().length > 0;
+  const visibleWorktrees = useMemo(() => filterWorktrees(query, worktrees), [query, worktrees]);
+  const hasVisibleContent =
+    visibleWorktrees.length > 0 || pending.length > 0 || failures.length > 0 || Boolean(error);
+  const effectiveCollapsed = isSearching ? !hasVisibleContent : collapsed;
+
   return (
-    <section className="repo">
+    <section className={`repo${isSearching && !hasVisibleContent ? " search-empty" : ""}`}>
       <header className="repo-head">
         <button
           className="disclosure"
-          aria-label={collapsed ? "Expand" : "Collapse"}
+          aria-label={effectiveCollapsed ? "Expand" : "Collapse"}
+          disabled={isSearching}
           onClick={() => setCollapsed((c) => !c)}
         >
-          {collapsed ? "▸" : "▾"}
+          {effectiveCollapsed ? "▸" : "▾"}
         </button>
-        <div className="repo-title" onClick={() => setCollapsed((c) => !c)}>
+        <div className="repo-title" onClick={() => !isSearching && setCollapsed((c) => !c)}>
           <span className="repo-name">{repo.name}</span>
           <span className="repo-meta">
-            {repo.mainBranch} · {worktrees.length} worktree{worktrees.length === 1 ? "" : "s"}
+            {repo.mainBranch} ·{" "}
+            {isSearching
+              ? `${visibleWorktrees.length} of ${worktrees.length} worktree${worktrees.length === 1 ? "" : "s"}`
+              : `${worktrees.length} worktree${worktrees.length === 1 ? "" : "s"}`}
           </span>
           <span className="repo-path" title={repo.path}>
             {displayPath(repo.path)}
@@ -90,11 +103,13 @@ export function RepoNode({ node }: RepoNodeProps) {
         </div>
       </header>
 
-      {!collapsed && (
+      {!effectiveCollapsed && (
         <div className="wt-list">
           {error && <p className="error">{error}</p>}
-          {!error && worktrees.length === 0 && pending.length === 0 && (
-            <p className="empty">No worktrees found.</p>
+          {!error && visibleWorktrees.length === 0 && pending.length === 0 && (
+            <p className="empty">
+              {isSearching ? "No matching worktrees." : "No worktrees found."}
+            </p>
           )}
           {failures.map((c) => (
             <div key={c.id} className="banner banner-error wt-create-error">
@@ -109,7 +124,7 @@ export function RepoNode({ node }: RepoNodeProps) {
               </button>
             </div>
           ))}
-          {orderedRows(worktrees, pending).map((row) =>
+          {orderedRows(visibleWorktrees, pending).map((row) =>
             row.kind === "worktree" ? (
               <WorktreeRow key={row.worktree.path} repo={repo} worktree={row.worktree} />
             ) : (

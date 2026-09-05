@@ -452,6 +452,80 @@ describe("row animations", () => {
   });
 });
 
+describe("search worktrees", () => {
+  beforeEach(() => {
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [
+        makeWorktree({ branch: "main", isMain: true, path: "/Users/test/worktrees/app/main" }),
+        makeWorktree({ branch: "fix-login", path: "/Users/test/worktrees/app/fix-login" }),
+      ]),
+      makeNode({ id: "r2", name: "api", path: "/Users/test/dev/api" }, [
+        makeWorktree({ branch: "feature-x", path: "/Users/test/worktrees/api/feature-x" }),
+      ]),
+    ]);
+  });
+
+  it("filters rows within a repo, leaving non-matching repos to recede", async () => {
+    const { user } = renderApp();
+    await screen.findByText("app");
+    await screen.findByText("api");
+
+    await user.type(screen.getByRole("searchbox", { name: "Search worktrees" }), "login");
+
+    // The matching row stays, the non-matching one in the same repo disappears.
+    expect(screen.getByText("fix-login")).toBeInTheDocument();
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
+    // The repo with no matches at all recedes rather than disappearing.
+    expect(screen.getByText("api").closest(".repo")).toHaveClass("search-empty");
+    expect(screen.queryByText("feature-x")).not.toBeInTheDocument();
+  });
+
+  it("shows a global empty state when nothing matches anywhere", async () => {
+    const { user } = renderApp();
+    await screen.findByText("app");
+
+    await user.type(screen.getByRole("searchbox", { name: "Search worktrees" }), "no-such-branch");
+
+    expect(await screen.findByText('No worktrees match "no-such-branch".')).toBeInTheDocument();
+  });
+
+  it("restores everything on clearing the query without disturbing a manual collapse", async () => {
+    const { user } = renderApp();
+    await screen.findByText("app");
+    await screen.findByText("api");
+
+    // Manually collapse "api" before searching.
+    const apiHeader = screen.getByText("api").closest(".repo-head") as HTMLElement;
+    await user.click(within(apiHeader).getByRole("button", { name: "Collapse" }));
+    expect(screen.queryByText("feature-x")).not.toBeInTheDocument();
+
+    const search = screen.getByRole("searchbox", { name: "Search worktrees" });
+    await user.type(search, "login");
+    expect(screen.getByText("fix-login")).toBeInTheDocument();
+
+    await user.clear(search);
+
+    // "main" is back, and "api" is still collapsed exactly as the user left it.
+    expect(await screen.findByText("main")).toBeInTheDocument();
+    expect(screen.queryByText("feature-x")).not.toBeInTheDocument();
+  });
+
+  it("keeps a repo's listing error visible even when the query matches nothing there", async () => {
+    apiMock.listRepos.mockResolvedValue([
+      makeNode({}, [makeWorktree({ branch: "fix-login" })]),
+      { ...makeNode({ id: "r2", name: "api", path: "/Users/test/dev/api" }, []), error: "boom" },
+    ]);
+    const { user } = renderApp();
+    await screen.findByText("boom");
+
+    await user.type(screen.getByRole("searchbox", { name: "Search worktrees" }), "login");
+
+    // "boom" would vanish if the search collapsed the errored repo along with
+    // every other repo that has no matching worktree.
+    expect(screen.getByText("boom")).toBeInTheDocument();
+  });
+});
+
 describe("git op errors", () => {
   it("shows git's message in the row when a push is rejected", async () => {
     apiMock.listRepos.mockResolvedValue([makeNode({}, [makeWorktree({ branch: "feature" })])]);
