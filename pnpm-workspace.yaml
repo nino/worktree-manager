@@ -40,9 +40,23 @@ overrides:
   # GHSA-8xcm-r25x-g524, GHSA-m8rv-5g2x-5cg5, GHSA-v3r7-h72x-cjcm — response
   # desync, CRLF injection, cookie attribute injection. Via node-gyp.
   "undici@>=6.0.0 <6.28.0": "^6.28.0"
-  # GHSA-7p8r-x3mc-p8w7 — host confusion via backslash authority introducer.
+  # GHSA-7p8r-x3mc-p8w7 (backslash authority introducer), GHSA-5jgf-p345-68v8
+  # and GHSA-jqff-g426-hqxp (host confusion via skipped IDN canonicalization /
+  # percent-encoded scheme), GHSA-f65p-4m7j-42xc and GHSA-fph4-wmhf-6fwf (SSRF
+  # via IPv6 normalization / repeated hostname percent-decoding).
   # Via ajv, which electron-store bundles into the packaged main process.
-  "fast-uri@>=3.0.0 <3.1.5": "^3.1.5"
+  "fast-uri@>=3.0.0 <3.1.6": "^3.1.6"
   # GHSA-5p4m-2wfm-xmqj — quadratic CPU consumption resolving !!omap.
   # Via electron-builder's builder-util.
   "js-yaml@>=4.0.0 <4.3.1": "^4.3.1"
+  # GHSA-2v37-7h3g-55p8 — custom generators loop indefinitely when size is 0.
+  # Via vitest (through @testing-library/jest-dom's peer).
+  "nanoid@<3.3.18": "^3.3.18"
+  # GHSA-c83g-rgw3-j3cx + GHSA-73wf-gq98-2v4g — unbounded query cache (OOM)
+  # and prototype write via untrusted custom stats. Via @babel/core under
+  # @vitejs/plugin-react.
+  "browserslist@<4.28.7": "^4.28.7"
+  # GHSA-6gmq-8vp8-gcm6 — XML fragment injection via an invalid
+  # EntityReference name during serialization. Via @electron/osx-sign under
+  # electron-builder.
+  "@xmldom/xmldom@>=0.7.0 <0.8.15": "^0.8.15"
