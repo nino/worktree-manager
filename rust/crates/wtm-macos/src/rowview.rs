@@ -189,7 +189,8 @@ fn well_sides(well: NSRect) {
 }
 
 /// Inner shadow along one edge of the well: a short gradient from shade to
-/// clear, `angle` giving the direction it fades in (−90 = downwards).
+/// clear. `angle` is NSGradient's, in unflipped coordinates: rows are flipped,
+/// so 90 fades downwards on screen and −90 upwards; 0 and 180 are unaffected.
 fn inner_shadow(rect: NSRect, angle: f64, strength: f64) {
     inner_shadow_to(rect, angle, strength, 0.0);
 }
@@ -308,7 +309,7 @@ fn draw(bounds: NSRect, style: RowStyle) {
                     NSSize::new(cw - 2.0, 1.0),
                 ))
                 .fill();
-                inner_shadow_to(well, -90.0, 0.10, 0.03);
+                inner_shadow_to(well, 90.0, 0.10, 0.03);
                 well_sides(well);
             }
             card_border().setStroke();
@@ -356,7 +357,7 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 // over its lead-in, this finishes the fade.
                 inner_shadow(
                     NSRect::new(well.origin, NSSize::new(well.size.width, 3.0)),
-                    -90.0,
+                    90.0,
                     0.03,
                 );
             }
@@ -366,7 +367,7 @@ fn draw(bounds: NSRect, style: RowStyle) {
                         NSPoint::new(x + 1.0, well_bottom - 4.0),
                         NSSize::new(cw - 2.0, 4.0),
                     ),
-                    90.0,
+                    -90.0,
                     0.05,
                 );
             }
