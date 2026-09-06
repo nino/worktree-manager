@@ -25,11 +25,12 @@ use crate::dialogs;
 use crate::util::{label, mono_label, ns, secondary_label, symbol};
 
 use crate::outline::CONTENT_START;
-use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET, WELL_LEAD};
+use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
 
 /// Row heights include the card geometry drawn by `RowView`: the gap above a
-/// card for headers, the plate gaps for children.
-pub const REPO_ROW_HEIGHT: f64 = CARD_GAP + 50.0 + WELL_LEAD;
+/// card for headers, the plate gaps for children. A card's first and last
+/// child rows are taller still (see `set_lead` and `LAST_ROW_EXTRA`).
+pub const REPO_ROW_HEIGHT: f64 = CARD_GAP + 50.0;
 pub const WORKTREE_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 50.0;
 pub const PENDING_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 36.0;
 
@@ -82,10 +83,18 @@ fn spacer(mtm: MainThreadMarker) -> Retained<NSView> {
 }
 
 /// Pin `content` to all four edges of `cell` with `(leading, trailing, top,
-/// bottom)` insets.
-fn pin(cell: &NSView, content: &NSView, insets: (f64, f64, f64, f64)) {
+/// bottom)` insets. Returns the top constraint, whose constant moves the
+/// content down in a card's first row (see `set_lead`).
+fn pin(
+    cell: &NSView,
+    content: &NSView,
+    insets: (f64, f64, f64, f64),
+) -> Retained<NSLayoutConstraint> {
     cell.addSubview(content);
     let (l, t, top, bottom) = insets;
+    let top_c = content
+        .topAnchor()
+        .constraintEqualToAnchor_constant(&cell.topAnchor(), top);
     let c = [
         content
             .leadingAnchor()
@@ -93,9 +102,7 @@ fn pin(cell: &NSView, content: &NSView, insets: (f64, f64, f64, f64)) {
         content
             .trailingAnchor()
             .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -t),
-        content
-            .topAnchor()
-            .constraintEqualToAnchor_constant(&cell.topAnchor(), top),
+        top_c.clone(),
         // Bottom is a floor, not a pin: a card's last row is taller than its
         // plate (see `LAST_ROW_EXTRA`), and content must stay put in the plate.
         content
@@ -103,6 +110,13 @@ fn pin(cell: &NSView, content: &NSView, insets: (f64, f64, f64, f64)) {
             .constraintLessThanOrEqualToAnchor_constant(&cell.bottomAnchor(), -bottom),
     ];
     NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&c));
+    top_c
+}
+
+/// Cells on a plate: their content follows the plate down by the well's
+/// lead-in when they are a card's first row.
+pub trait PlateCell {
+    fn set_lead(&self, lead: f64);
 }
 
 /// A borderless SF Symbol button.
@@ -268,7 +282,7 @@ impl RepoCell {
         row.addArrangedSubview(&spacer(mtm));
         row.addArrangedSubview(&new_wt);
         row.addArrangedSubview(&settings);
-        pin(&this, &row, HEADER_INSETS);
+        let _ = pin(&this, &row, HEADER_INSETS);
         this
     }
 
@@ -330,6 +344,7 @@ pub struct WorktreeCellIvars {
     /// Set while the popup is being filled so a programmatic selection never
     /// looks like a user's switch request.
     filling: Cell<bool>,
+    top: RefCell<Option<Retained<NSLayoutConstraint>>>,
 }
 
 define_class!(
@@ -499,6 +514,7 @@ impl WorktreeCell {
             reveal: reveal.clone(),
             delete: delete.clone(),
             filling: Cell::new(false),
+            top: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, WORKTREE_ROW_HEIGHT))]
@@ -555,7 +571,7 @@ impl WorktreeCell {
             .widthAnchor()
             .constraintEqualToAnchor(&col.widthAnchor())
             .setActive(true);
-        pin(&this, &col, PLATE_INSETS);
+        *this.ivars().top.borrow_mut() = Some(pin(&this, &col, PLATE_INSETS));
         this
     }
 
@@ -655,11 +671,20 @@ impl WorktreeCell {
     }
 }
 
+impl PlateCell for WorktreeCell {
+    fn set_lead(&self, lead: f64) {
+        if let Some(c) = self.ivars().top.borrow().as_ref() {
+            c.setConstant(PLATE_INSETS.2 + lead);
+        }
+    }
+}
+
 // MARK: Pending creation row
 
 pub struct PendingCellIvars {
     app: App,
     id: Cell<u64>,
+    top: RefCell<Option<Retained<NSLayoutConstraint>>>,
     branch: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
     status: Retained<NSTextField>,
@@ -696,6 +721,7 @@ impl PendingCell {
         let this = mtm.alloc::<Self>().set_ivars(PendingCellIvars {
             app,
             id: Cell::new(0),
+            top: RefCell::new(None),
             branch: branch.clone(),
             spinner: spinner.clone(),
             status: status.clone(),
@@ -713,7 +739,7 @@ impl PendingCell {
         line.addArrangedSubview(&status);
         line.addArrangedSubview(&spacer(mtm));
         line.addArrangedSubview(&dismiss);
-        pin(&this, &line, PLATE_INSETS);
+        *this.ivars().top.borrow_mut() = Some(pin(&this, &line, PLATE_INSETS));
         this
     }
 
@@ -735,6 +761,14 @@ impl PendingCell {
                     .setTextColor(Some(&NSColor::secondaryLabelColor()));
                 iv.dismiss.setHidden(true);
             }
+        }
+    }
+}
+
+impl PlateCell for PendingCell {
+    fn set_lead(&self, lead: f64) {
+        if let Some(c) = self.ivars().top.borrow().as_ref() {
+            c.setConstant(PLATE_INSETS.2 + lead);
         }
     }
 }

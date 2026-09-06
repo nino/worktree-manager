@@ -7,14 +7,20 @@
 //! Colours are all system colours or blends of them, so light and dark
 //! appearance both work; the gradient and highlight are the nod to Aqua.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+
+use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{
-    NSBezierPath, NSColor, NSGradient, NSGraphicsContext, NSShadow, NSTableRowView,
+use objc2::runtime::AnyObject;
+use objc2::{
+    define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_app_kit::{
+    NSBezierPath, NSBitmapImageRep, NSColor, NSGradient, NSGraphicsContext, NSShadow,
+    NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
+};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 /// Space above each card (between cards).
 pub const CARD_GAP: f64 = 12.0;
@@ -24,10 +30,11 @@ const CARD_RADIUS: f64 = 10.0;
 /// Horizontal inset of a worktree plate inside its card.
 pub const PLATE_INSET: f64 = 10.0;
 /// Padding at the top and bottom of the well (band → first plate, last
-/// plate → card bottom). The header row carries the top part below its
-/// band, the last child row carries the bottom part below its plate.
+/// plate → card bottom). The first child row carries the top part above its
+/// plate, the last child row the bottom part below its plate.
 pub const WELL_PAD: f64 = 10.0;
-/// The well's lead-in below the header band.
+/// The well's lead-in below the header band, carried by the first child row
+/// so the header's height never changes when it opens or closes.
 pub const WELL_LEAD: f64 = WELL_PAD - PLATE_GAP;
 /// Vertical gap around a worktree plate (between plates and to the card edges).
 pub const PLATE_GAP: f64 = 4.0;
@@ -44,13 +51,18 @@ pub enum RowStyle {
     /// Repo header. `closed`: no rows follow (collapsed or empty), so the
     /// card's bottom edge is drawn here too.
     Header { closed: bool },
-    /// A worktree/pending row. `first`: continues the well's top shadow;
-    /// `last`: closes the card underneath the plate.
+    /// A worktree/pending row. `first`: carries the well's lead-in under the
+    /// band; `last`: closes the card underneath the plate.
     Child { first: bool, last: bool },
 }
 
 pub struct RowViewIvars {
     style: Cell<RowStyle>,
+    /// Repo id of the card this row belongs to.
+    owner: RefCell<String>,
+    /// A rendering of the whole row, shown in place of its subviews while
+    /// the outline slides the row away (see `set_snapshot`).
+    snapshot: RefCell<Option<Retained<NSBitmapImageRep>>>,
 }
 
 define_class!(
@@ -69,8 +81,52 @@ define_class!(
         #[unsafe(method(drawSelectionInRect:))]
         fn draw_selection(&self, _dirty: NSRect) {}
 
+        /// While a snapshot is set the row is a plain image layer (see
+        /// `set_snapshot`).
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            self.ivars().snapshot.borrow().is_some()
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            self.apply_snapshot();
+        }
+
         #[unsafe(method(drawSeparatorInRect:))]
         fn draw_separator(&self, _dirty: NSRect) {}
+
+        /// A collapse moves the card's rows out of the outline into a clip
+        /// view, slides them away, and drops them from there. That last
+        /// removal is when the header can close. A row leaving the outline
+        /// directly is either about to enter that clip view (the animated
+        /// case) or gone for good (no animation, or recycled): a short
+        /// delay tells the two apart.
+        #[unsafe(method(viewWillMoveToSuperview:))]
+        fn view_will_move_to_superview(&self, superview: Option<&NSView>) {
+            if superview.is_some() || !matches!(self.ivars().style.get(), RowStyle::Child { .. }) {
+                return;
+            }
+            let in_outline = unsafe { self.superview() }
+                .map(|sv| sv.isKindOfClass(objc2_app_kit::NSTableView::class()))
+                .unwrap_or(true);
+            if !in_outline {
+                crate::controller::child_row_leaving(&self.ivars().owner.borrow());
+                return;
+            }
+            let mtm = MainThreadMarker::from(self);
+            let me = MainThreadBound::new(self.retain(), mtm);
+            let _ = DispatchQueue::main().after(
+                DispatchTime::NOW.time(50_000_000),
+                move || {
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    let me = me.get(mtm);
+                    if unsafe { me.superview() }.is_none() {
+                        crate::controller::child_row_leaving(&me.ivars().owner.borrow());
+                    }
+                },
+            );
+        }
     }
 );
 
@@ -80,11 +136,61 @@ impl RowView {
     pub fn new(style: RowStyle, mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>().set_ivars(RowViewIvars {
             style: Cell::new(style),
+            owner: RefCell::new(String::new()),
+            snapshot: RefCell::new(None),
         });
-        let this: Retained<Self> = unsafe {
-            msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, 40.0))]
-        };
+        let frame = NSRect::new(NSPoint::ZERO, NSSize::new(400.0, 40.0));
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this
+    }
+
+    /// Collapsing a card, the outline moves its rows into a clip view and
+    /// slides them away — but never lets anything draw in there, so text and
+    /// card slices would vanish for the animation and only image layers
+    /// survive. So before the move each row is rendered to a bitmap that
+    /// becomes the row layer's contents, and its subviews are hidden. `None`
+    /// restores the live row (the outline reuses row views).
+    pub fn set_snapshot(&self, rep: Option<Retained<NSBitmapImageRep>>) {
+        let has = rep.is_some();
+        let had = self.ivars().snapshot.borrow().is_some();
+        if !has && !had {
+            return;
+        }
+        *self.ivars().snapshot.borrow_mut() = rep;
+        for sv in self.subviews().iter() {
+            sv.setHidden(has);
+        }
+        self.setLayerContentsRedrawPolicy(if has {
+            NSViewLayerContentsRedrawPolicy::Never
+        } else {
+            NSViewLayerContentsRedrawPolicy::DuringViewResize
+        });
+        self.apply_snapshot();
+        self.setNeedsDisplay(true);
+    }
+
+    fn apply_snapshot(&self) {
+        let Some(layer) = self.layer() else { return };
+        let snapshot = self.ivars().snapshot.borrow();
+        unsafe {
+            let image: *mut AnyObject = match snapshot.as_ref() {
+                Some(rep) => msg_send![&**rep, CGImage],
+                None => std::ptr::null_mut(),
+            };
+            let _: () = msg_send![&*layer, setContents: image];
+        }
+    }
+
+    pub fn set_owner(&self, repo_id: &str) {
+        *self.ivars().owner.borrow_mut() = repo_id.to_string();
+    }
+
+    pub fn owner(&self) -> String {
+        self.ivars().owner.borrow().clone()
+    }
+
+    pub fn style(&self) -> RowStyle {
+        self.ivars().style.get()
     }
 
     /// Returns true when the style changed.
@@ -243,15 +349,13 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 path.fill();
             }
             // Aqua-style header: a soft vertical gradient over the header band
-            // plus a bright hairline along the top edge.
-            // The band's path runs past the row bottom when the card is open,
-            // so only its top corners are rounded (the rest is clipped).
-            // When open, the band stops WELL_LEAD short of the row bottom and
-            // the well begins there, shaded along its top edge.
-            let band_bottom = if closed { h } else { h - WELL_LEAD };
+            // plus a bright hairline along the top edge. The band fills the row
+            // to its bottom edge; when the card is open its path runs past the
+            // row bottom so only its top corners are rounded (the rest is
+            // clipped), and the first child row carries the well's lead-in.
             let band = NSRect::new(
                 NSPoint::new(x + 1.0, CARD_GAP + 1.0),
-                NSSize::new(cw - 2.0, band_bottom - CARD_GAP - 1.0 + extra.max(0.0)),
+                NSSize::new(cw - 2.0, h - CARD_GAP - 1.0 + extra),
             );
             let band_path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
@@ -292,31 +396,14 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 .colorWithAlphaComponent(0.35)
                 .setFill();
             NSBezierPath::bezierPathWithRect(hairline).fill();
-            if !closed {
-                let well = NSRect::new(
-                    NSPoint::new(x + 1.0, band_bottom),
-                    NSSize::new(cw - 2.0, h - band_bottom),
-                );
-                well_fill().setFill();
-                NSBezierPath::bezierPathWithRect(well).fill();
-                // Separator between the band and the well, then the well's
-                // inner shadow fading downwards from it.
-                NSColor::separatorColor()
-                    .colorWithAlphaComponent(0.4)
-                    .setFill();
-                NSBezierPath::bezierPathWithRect(NSRect::new(
-                    NSPoint::new(x + 1.0, band_bottom - 1.0),
-                    NSSize::new(cw - 2.0, 1.0),
-                ))
-                .fill();
-                inner_shadow_to(well, 90.0, 0.10, 0.03);
-                well_sides(well);
-            }
             card_border().setStroke();
             path.setLineWidth(1.0);
             path.stroke();
         }
         RowStyle::Child { first, last } => {
+            // The first row is WELL_LEAD taller: the well's lead-in below the
+            // band, before its plate.
+            let lead = if first { WELL_LEAD } else { 0.0 };
             // Card body: a rounded rect taller than the row so the sides run
             // straight; for the last row its bottom corners are in view.
             let top = -(r + 2.0);
@@ -353,12 +440,23 @@ fn draw(bounds: NSRect, style: RowStyle) {
             NSBezierPath::bezierPathWithRect(well).fill();
             well_sides(well);
             if first {
-                // The top shadow's tail: the header row fades 0.10 → 0.03
-                // over its lead-in, this finishes the fade.
+                // Separator between the band and the well, then the well's
+                // inner shadow fading downwards from it.
+                NSColor::separatorColor()
+                    .colorWithAlphaComponent(0.4)
+                    .setFill();
+                NSBezierPath::bezierPathWithRect(NSRect::new(
+                    well.origin,
+                    NSSize::new(well.size.width, 1.0),
+                ))
+                .fill();
                 inner_shadow(
-                    NSRect::new(well.origin, NSSize::new(well.size.width, 3.0)),
+                    NSRect::new(
+                        NSPoint::new(x + 1.0, 1.0),
+                        NSSize::new(cw - 2.0, lead + 3.0),
+                    ),
                     90.0,
-                    0.03,
+                    0.10,
                 );
             }
             if last {
@@ -378,14 +476,14 @@ fn draw(bounds: NSRect, style: RowStyle) {
             path.stroke();
 
             // The worktree plate, raised on a drop shadow.
-            // The last row is LAST_ROW_EXTRA taller than the others; its plate
-            // keeps the normal height and the extra becomes bottom padding.
+            // The first and last rows are taller than the others; the plate
+            // keeps the normal height and the extra is the well's padding.
             let room = if last { LAST_ROW_EXTRA } else { 0.0 };
             let plate = NSRect::new(
-                NSPoint::new(x + PLATE_INSET + 0.5, PLATE_GAP + 0.5),
+                NSPoint::new(x + PLATE_INSET + 0.5, PLATE_GAP + lead + 0.5),
                 NSSize::new(
                     cw - 2.0 * PLATE_INSET - 1.0,
-                    h - 2.0 * PLATE_GAP - 1.0 - room,
+                    h - 2.0 * PLATE_GAP - 1.0 - room - lead,
                 ),
             );
             let plate_path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(

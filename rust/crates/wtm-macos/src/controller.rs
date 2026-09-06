@@ -30,7 +30,8 @@ use wtm_core::model::Tone;
 use wtm_core::{Action, App, Event, Model};
 
 use crate::cells::{
-    PendingCell, RepoCell, WorktreeCell, PENDING_ROW_HEIGHT, REPO_ROW_HEIGHT, WORKTREE_ROW_HEIGHT,
+    PendingCell, PlateCell, RepoCell, WorktreeCell, PENDING_ROW_HEIGHT, REPO_ROW_HEIGHT,
+    WORKTREE_ROW_HEIGHT,
 };
 use crate::dialogs;
 use crate::items::{ItemKind, WTMItem};
@@ -298,17 +299,20 @@ define_class!(
             let Some(item) = item.downcast_ref::<WTMItem>() else {
                 return PENDING_ROW_HEIGHT;
             };
+            // Heights never change on expand or collapse: the header is one
+            // height open or closed, and a card's first and last rows carry
+            // the well's padding — known when they are inserted.
             let base = match item.kind() {
-                ItemKind::Repo { .. } => REPO_ROW_HEIGHT,
+                ItemKind::Repo { .. } => return REPO_ROW_HEIGHT,
                 ItemKind::Worktree { .. } => WORKTREE_ROW_HEIGHT,
                 ItemKind::Pending { .. } => PENDING_ROW_HEIGHT,
             };
-            let style = self.row_style(_o, item);
-            match style {
-                RowStyle::Child { last: true, .. } => base + LAST_ROW_EXTRA,
-                // A closed card has no well, so no lead-in below the band.
-                RowStyle::Header { closed: true } => base - WELL_LEAD,
-                _ => base,
+            match self.row_style(_o, item) {
+                RowStyle::Child { first, last } => {
+                    base + if first { WELL_LEAD } else { 0.0 }
+                        + if last { LAST_ROW_EXTRA } else { 0.0 }
+                }
+                RowStyle::Header { .. } => base,
             }
         }
 
@@ -323,23 +327,97 @@ define_class!(
             self.make_row_view(outline, item)
         }
 
-        #[unsafe(method(outlineViewItemDidExpand:))]
-        fn did_expand(&self, n: &NSNotification) {
+        /// The card opens on the first frame of the expansion: its header
+        /// loses the rounded bottom as the rows start unrolling beneath it.
+        #[unsafe(method(outlineViewItemWillExpand:))]
+        fn will_expand(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
                 self.ivars().collapsed.borrow_mut().remove(&id);
+                self.sync_header_style(&id);
             }
-            self.sync_row_styles_later();
         }
 
-        #[unsafe(method(outlineViewItemDidCollapse:))]
-        fn did_collapse(&self, n: &NSNotification) {
+        /// The card stays open while its rows slide away; it closes when the
+        /// last of them leaves the outline (see `child_row_leaving`).
+        #[unsafe(method(outlineViewItemWillCollapse:))]
+        fn will_collapse(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
                 self.ivars().collapsed.borrow_mut().insert(id);
             }
+            // The rows about to slide away can no longer draw (see
+            // `RowView::set_snapshot`): freeze each one as an image first.
+            if let (Some(outline), Some(obj)) = (
+                self.ivars().outline.borrow().clone(),
+                n.userInfo().and_then(|i| i.objectForKey(&*ns("NSObject"))),
+            ) {
+                let row = unsafe { outline.rowForItem(Some(&obj)) };
+                if row >= 0 {
+                    let count = obj
+                        .downcast_ref::<WTMItem>()
+                        .and_then(|i| self.ivars().tree.borrow().children.get(&i.kind().key()).map(|c| c.len()))
+                        .unwrap_or(0) as NSInteger;
+                    for r in row + 1..=row + count {
+                        if let Some(v) = outline.rowViewAtRow_makeIfNecessary(r, false) {
+                            if let Some(v) = v.downcast_ref::<RowView>() {
+                                let bounds = v.bounds();
+                                if let Some(rep) = v.bitmapImageRepForCachingDisplayInRect(bounds) {
+                                    v.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+                                    v.set_snapshot(Some(rep));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[unsafe(method(outlineViewItemDidExpand:))]
+        fn did_expand(&self, _n: &NSNotification) {
             self.sync_row_styles_later();
         }
     }
 );
+
+/// Whether any child row view of `repo_id`'s card is still in the outline
+/// (it no longer has the rows, but keeps their views while they slide away).
+fn rows_lingering(outline: &NSOutlineView, repo_id: &str) -> bool {
+    let is_child_of = |v: &NSView| {
+        v.downcast_ref::<RowView>()
+            .map(|r| matches!(r.style(), RowStyle::Child { .. }) && r.owner() == repo_id)
+            .unwrap_or(false)
+    };
+    outline.subviews().iter().any(|v| {
+        if v.downcast_ref::<RowView>().is_some() {
+            is_child_of(&v)
+        } else {
+            // The outline's clip view for rows sliding away.
+            v.subviews().iter().any(|w| is_child_of(&w))
+        }
+    })
+}
+
+/// Called by a child row view as it leaves the outline: if it was the last
+/// of its card's rows, the header can now draw its closed bottom edge.
+pub fn child_row_leaving(repo_id: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(c) = controller(mtm) else {
+        return;
+    };
+    if c.ivars().collapsed.borrow().contains(repo_id) {
+        c.sync_header_style(repo_id);
+    }
+}
+
+fn set_cell_lead(cell: &NSView, first: bool) {
+    let lead = if first { WELL_LEAD } else { 0.0 };
+    if let Some(c) = cell.downcast_ref::<WorktreeCell>() {
+        c.set_lead(lead);
+    } else if let Some(c) = cell.downcast_ref::<PendingCell>() {
+        c.set_lead(lead);
+    }
+}
 
 /// The repo id carried by an expand/collapse notification.
 fn expanded_repo_id(n: &NSNotification) -> Option<String> {
@@ -405,16 +483,18 @@ impl Controller {
     fn row_style(&self, outline: &NSOutlineView, item: &WTMItem) -> RowStyle {
         let tree = self.ivars().tree.borrow();
         match item.kind() {
-            ItemKind::Repo { .. } => {
+            ItemKind::Repo { repo_id } => {
                 let has_children = tree
                     .children
                     .get(&item.kind().key())
                     .map(|c| !c.is_empty())
                     .unwrap_or(false);
-                let expanded = unsafe { outline.isItemExpanded(Some(item)) };
-                RowStyle::Header {
-                    closed: !(has_children && expanded),
-                }
+                // A collapsing card is still open while its rows are on their
+                // way out: the outline keeps their views until the slide ends.
+                let open = has_children
+                    && (!self.ivars().collapsed.borrow().contains(&repo_id)
+                        || rows_lingering(outline, &repo_id));
+                RowStyle::Header { closed: !open }
             }
             ItemKind::Worktree { repo_id, .. } | ItemKind::Pending { repo_id, .. } => {
                 let key = ItemKind::Repo { repo_id }.key();
@@ -448,8 +528,39 @@ impl Controller {
                     v
                 }
             };
+        view.set_snapshot(None);
+        view.set_owner(item.kind().repo_id());
         view.set_style(style);
         Some(Retained::into_super(view))
+    }
+
+    /// Re-tag one card's header row, e.g. when the card opens or closes.
+    /// Only a redraw: header heights never change.
+    fn sync_header_style(&self, repo_id: &str) {
+        let Some(outline) = self.ivars().outline.borrow().clone() else {
+            return;
+        };
+        let key = ItemKind::Repo {
+            repo_id: repo_id.to_string(),
+        }
+        .key();
+        let Some(item) = self.ivars().items.borrow().get(&key).cloned() else {
+            return;
+        };
+        let row = unsafe { outline.rowForItem(Some(&item)) };
+        if row < 0 {
+            return;
+        }
+        let style = self.row_style(&outline, &item);
+        if let Some(v) = outline.rowViewAtRow_makeIfNecessary(row, false) {
+            if let Some(v) = v.downcast_ref::<RowView>() {
+                if v.set_style(style) {
+                    // Drawn now, not on the next pass: a card closing as its
+                    // last sliding row is dropped must change in that frame.
+                    v.displayIfNeeded();
+                }
+            }
+        }
     }
 
     /// Expand/collapse notifications arrive mid-operation, where the outline
@@ -483,6 +594,11 @@ impl Controller {
             if let Some(v) = outline.rowViewAtRow_makeIfNecessary(row, false) {
                 if let Some(v) = v.downcast_ref::<RowView>() {
                     heights_changed |= v.set_style(style);
+                }
+            }
+            if let RowStyle::Child { first, .. } = style {
+                if let Some(cell) = outline.viewAtColumn_row_makeIfNecessary(0, row, false) {
+                    set_cell_lead(&cell, first);
                 }
             }
         }
@@ -550,6 +666,9 @@ impl Controller {
                     model.busy_for(&path),
                     &model.home,
                 );
+                if let RowStyle::Child { first, .. } = self.row_style(outline, item) {
+                    cell.set_lead(if first { WELL_LEAD } else { 0.0 });
+                }
                 Some(Retained::into_super(Retained::into_super(cell)))
             }
             ItemKind::Pending { id, .. } => {
@@ -561,6 +680,9 @@ impl Controller {
                     None => PendingCell::new(app.clone(), mtm),
                 };
                 cell.configure(p);
+                if let RowStyle::Child { first, .. } = self.row_style(outline, item) {
+                    cell.set_lead(if first { WELL_LEAD } else { 0.0 });
+                }
                 Some(Retained::into_super(Retained::into_super(cell)))
             }
         }

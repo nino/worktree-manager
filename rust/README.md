@@ -63,6 +63,19 @@ views after every structural change so the last plate closes the card.
 Selection is off: every control lives in the rows. `WTM_APPEARANCE=dark|light`
 forces an appearance for checking both looks.
 
+**Expand and collapse, frame by frame.** Row heights never change when a card
+opens or closes: the header is one height either way and the first and last
+child rows carry the well's padding, so the outline's own slide animation is
+never interrupted by a height note. The header flips to its open look in
+`outlineViewItemWillExpand:`, before the first frame. Collapsing is harder:
+AppKit moves the removed row views into a clip view and slides them away but
+never lets them draw in there, so text and card slices would vanish for the
+animation. `outlineViewItemWillCollapse:` therefore renders each row to a
+bitmap that becomes the row layer's contents (`RowView::set_snapshot`), and the
+header keeps its open look until the last of those rows is dropped from the
+clip view (`viewWillMoveToSuperview:` → `child_row_leaving`), drawn in that
+same frame.
+
 **Instant launch.** The last listing is written to `snapshot.json`; at the
 next launch the tree is on screen before any git process has started, then
 replaced as real listings land (repo rows show a spinner until then).
