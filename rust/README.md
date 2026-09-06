@@ -69,6 +69,13 @@ when the app is deactivated. A `claude/` or
 16-unit grid as the web app's SVGs) by `branchlabel.rs`, in both the button
 and the list; matching, tooltips and the dispatched value keep the whole name.
 
+**Tooltips.** The row icons carry no label, so they explain themselves
+quickly: `tooltip.rs` shows a small panel of its own 250ms after the pointer
+settles on an `IconButton` (and at once while another tooltip is up), driven
+by the buttons' tracking areas. The system's own tooltips take about a second
+and a half and AppKit will not shorten that, so those buttons set no
+`toolTip` at all.
+
 **Keyboard.** The arrow keys move the outline's selection through repos and
 worktrees; the row draws it as an accent-coloured glow around the header band
 or the plate (`rowview::draw_selection`) rather than as a system highlight.

@@ -22,7 +22,7 @@ use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, 
 
 use crate::badge::{badges_for, Badge};
 use crate::branchlabel::branch_label;
-use crate::button::{Button, PillButton};
+use crate::button::{Button, IconButton, PillButton};
 use crate::dialogs;
 use crate::util::{label, mono_label, ns, secondary_label, symbol, symbol_raised};
 
@@ -128,14 +128,13 @@ pub trait PlateCell {
 }
 
 /// A borderless SF Symbol button.
-fn icon_button(sym: &str, tooltip: &str, mtm: MainThreadMarker) -> Retained<Button> {
+fn icon_button(sym: &str, tooltip: &str, mtm: MainThreadMarker) -> Retained<IconButton> {
     let image = symbol(sym, tooltip).unwrap_or_default();
-    let b = Button::with_image(&image, mtm);
+    let b = IconButton::new(&image, tooltip, mtm);
     b.setBezelStyle(NSBezelStyle::AccessoryBarAction);
     b.setBordered(false);
     b.setImagePosition(NSCellImagePosition::ImageOnly);
     b.setControlSize(NSControlSize::Small);
-    b.setToolTip(Some(&ns(tooltip)));
     b.setSymbolConfiguration(Some(
         &NSImageSymbolConfiguration::configurationWithPointSize_weight(12.0, crate::util::MEDIUM),
     ));
@@ -330,19 +329,19 @@ pub struct WorktreeCellIvars {
     /// The branch button: its title is the branch (or "(detached)"), a click
     /// opens the fuzzy picker.
     picker: Retained<PillButton>,
-    copy_branch: Retained<Button>,
+    copy_branch: Retained<IconButton>,
     badges: Retained<NSStackView>,
     badge_views: RefCell<Vec<Retained<Badge>>>,
     spinner: Retained<NSProgressIndicator>,
     busy: Retained<NSTextField>,
     path_label: Retained<NSTextField>,
-    push: Retained<Button>,
-    pull: Retained<Button>,
-    merge: Retained<Button>,
-    editor: Retained<Button>,
-    terminal: Retained<Button>,
-    reveal: Retained<Button>,
-    delete: Retained<Button>,
+    push: Retained<IconButton>,
+    pull: Retained<IconButton>,
+    merge: Retained<IconButton>,
+    editor: Retained<IconButton>,
+    terminal: Retained<IconButton>,
+    reveal: Retained<IconButton>,
+    delete: Retained<IconButton>,
     top: RefCell<Option<Retained<NSLayoutConstraint>>>,
 }
 
@@ -665,10 +664,8 @@ impl WorktreeCell {
         }
         iv.delete.setEnabled(!is_busy);
         iv.delete.setHidden(w.is_main);
-        iv.merge.setToolTip(Some(&ns(&format!(
-            "Pull {} into this branch",
-            repo.main_branch
-        ))));
+        iv.merge
+            .set_hint(&format!("Pull {} into this branch", repo.main_branch));
     }
 }
 
@@ -689,7 +686,7 @@ pub struct PendingCellIvars {
     branch: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
     status: Retained<NSTextField>,
-    dismiss: Retained<Button>,
+    dismiss: Retained<IconButton>,
 }
 
 define_class!(

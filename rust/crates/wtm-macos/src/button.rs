@@ -6,12 +6,21 @@
 //!
 //! [`PillButton`] adds a drawn bezel for the branch picker: a small rounded
 //! control with a shaded, grained face, so it reads as something to click
-//! rather than as the branch name in bold.
+//! rather than as the branch name in bold. [`IconButton`] is the glyph-only
+//! kind, which explains itself through a quick tooltip of our own (see
+//! `tooltip`) rather than the system's slow one.
+
+use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{define_class, msg_send, ClassType, MainThreadMarker, MainThreadOnly, Message};
-use objc2_app_kit::{NSBezierPath, NSButton, NSColor, NSGradient, NSImage, NSView};
+use objc2::{
+    define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+};
+use objc2_app_kit::{
+    NSBezierPath, NSButton, NSColor, NSEvent, NSGradient, NSImage, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 define_class!(
@@ -49,6 +58,76 @@ define_class!(
         }
     }
 );
+
+pub struct IconButtonIvars {
+    hint: RefCell<String>,
+}
+
+define_class!(
+    #[unsafe(super(Button))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "WTMIconButton"]
+    #[ivars = IconButtonIvars]
+    pub struct IconButton;
+
+    impl IconButton {
+        /// Tracks the whole button, and follows it as rows scroll.
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+            for area in self.trackingAreas().iter() {
+                self.removeTrackingArea(&area);
+            }
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    MainThreadMarker::from(self).alloc(),
+                    NSRect::ZERO,
+                    NSTrackingAreaOptions::MouseEnteredAndExited
+                        | NSTrackingAreaOptions::ActiveInActiveApp
+                        | NSTrackingAreaOptions::InVisibleRect,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _e: &NSEvent) {
+            crate::tooltip::schedule(self, &self.ivars().hint.borrow());
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _e: &NSEvent) {
+            crate::tooltip::hide();
+        }
+
+        /// A tooltip that stayed up over a button being clicked would sit on
+        /// top of whatever the click opens.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            crate::tooltip::hide();
+            let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+        }
+    }
+);
+
+impl IconButton {
+    pub fn new(image: &NSImage, hint: &str, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(IconButtonIvars {
+            hint: RefCell::new(hint.to_string()),
+        });
+        let this: Retained<Self> = unsafe {
+            msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(20.0, 20.0))]
+        };
+        this.setImage(Some(image));
+        this
+    }
+
+    pub fn set_hint(&self, hint: &str) {
+        *self.ivars().hint.borrow_mut() = hint.to_string();
+    }
+}
 
 define_class!(
     #[unsafe(super(Button))]

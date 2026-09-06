@@ -18,6 +18,7 @@ pub mod platform;
 pub mod rowview;
 pub mod settings;
 pub mod toolicon;
+pub mod tooltip;
 pub mod util;
 
 pub use platform::{app_dirs, MacPlatform};
