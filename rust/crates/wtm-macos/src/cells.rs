@@ -10,7 +10,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont,
+    NSAccessibility, NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont,
     NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
     NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
     NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
@@ -655,6 +655,9 @@ impl WorktreeCell {
         ));
         iv.picker
             .setToolTip(Some(&ns(&format!("Switch branch (current: {shown})"))));
+        // The title may draw an agent prefix as a mark, which would otherwise
+        // drop those words from the name assistive technology reads out.
+        iv.picker.setAccessibilityLabel(Some(&ns(shown)));
         iv.picker.setEnabled(enabled);
         for b in [&iv.push, &iv.pull, &iv.merge] {
             b.setEnabled(enabled);

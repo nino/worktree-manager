@@ -18,7 +18,7 @@ use objc2::{
     define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSBezierPath, NSButton, NSColor, NSEvent, NSGradient, NSImage, NSTrackingArea,
+    NSAccessibility, NSBezierPath, NSButton, NSColor, NSEvent, NSGradient, NSImage, NSTrackingArea,
     NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
@@ -115,17 +115,22 @@ define_class!(
 impl IconButton {
     pub fn new(image: &NSImage, hint: &str, mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>().set_ivars(IconButtonIvars {
-            hint: RefCell::new(hint.to_string()),
+            hint: RefCell::new(String::new()),
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(20.0, 20.0))]
         };
         this.setImage(Some(image));
+        this.set_hint(hint);
         this
     }
 
+    /// The tooltip text, which is also the button's accessibility help — the
+    /// system tooltip used to provide that, and these buttons no longer set
+    /// one. (Their name comes from the symbol's accessibility description.)
     pub fn set_hint(&self, hint: &str) {
         *self.ivars().hint.borrow_mut() = hint.to_string();
+        self.setAccessibilityHelp(Some(&crate::util::ns(hint)));
     }
 }
 
