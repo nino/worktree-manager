@@ -5,6 +5,7 @@
 //! the core depends on it. The executable calls [`run`] with a core `App`.
 
 pub mod badge;
+pub mod button;
 pub mod cells;
 pub mod controller;
 pub mod dialogs;

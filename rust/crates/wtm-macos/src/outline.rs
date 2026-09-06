@@ -3,9 +3,10 @@
 //! not moved (the outline lays those out itself); the cells' leading insets
 //! account for the chevron instead (`cells.rs`).
 
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::NSOutlineView;
+use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSEventType, NSOutlineView};
 use objc2_foundation::{NSInteger, NSPoint, NSRect};
 
 use crate::rowview::CARD_MARGIN;
@@ -26,6 +27,26 @@ define_class!(
         fn frame_of_outline_cell(&self, row: NSInteger) -> NSRect {
             let r: NSRect = unsafe { msg_send![super(self), frameOfOutlineCellAtRow: row] };
             NSRect::new(NSPoint::new(r.origin.x + CHEVRON_SHIFT, r.origin.y), r.size)
+        }
+
+        /// The outline is the window's key view for the whole tree, but
+        /// nothing acts on it directly: focus arriving by Tab is passed on to
+        /// the first button in the rows (the last one when tabbing backwards).
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            let mtm = MainThreadMarker::from(self);
+            let tab = NSApplication::sharedApplication(mtm)
+                .currentEvent()
+                .filter(|e| e.r#type() == NSEventType::KeyDown && e.keyCode() == 48)
+                .map(|e| !e.modifierFlags().contains(NSEventModifierFlags::Shift));
+            if let Some(forward) = tab {
+                // Not while the first-responder change is still in progress.
+                DispatchQueue::main().exec_async(move || {
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    crate::controller::focus_first_row_control(forward, mtm);
+                });
+            }
+            unsafe { msg_send![super(self), becomeFirstResponder] }
         }
     }
 );

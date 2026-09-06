@@ -29,6 +29,7 @@ use objc2_foundation::{
 use wtm_core::model::Tone;
 use wtm_core::{Action, App, Event, Model};
 
+use crate::button::Button;
 use crate::cells::{
     PendingCell, PlateCell, RepoCell, WorktreeCell, PENDING_ROW_HEIGHT, REPO_ROW_HEIGHT,
     WORKTREE_ROW_HEIGHT,
@@ -377,6 +378,96 @@ define_class!(
         }
     }
 );
+
+// MARK: Keyboard focus through the rows
+
+/// The focusable buttons of one row's cell, in reading order.
+fn row_controls(outline: &NSOutlineView, row: NSInteger, make: bool) -> Vec<Retained<NSView>> {
+    fn collect(view: &NSView, out: &mut Vec<Retained<NSView>>) {
+        for sv in view.subviews().iter() {
+            if let Some(b) = sv.downcast_ref::<Button>() {
+                if b.isEnabled() && !b.isHiddenOrHasHiddenAncestor() {
+                    out.push(sv.clone());
+                }
+            } else {
+                collect(&sv, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if make {
+        outline.scrollRowToVisible(row);
+    }
+    if let Some(cell) = outline.viewAtColumn_row_makeIfNecessary(0, row, make) {
+        collect(&cell, &mut out);
+    }
+    out
+}
+
+/// The key view before or after `from`, one of the row buttons: the next
+/// button in its row, else the first in a following row (brought into view),
+/// else whatever follows the outline in the window's loop.
+pub fn key_view(from: &NSView, forward: bool) -> Option<Retained<NSView>> {
+    let mtm = MainThreadMarker::new()?;
+    let outline = controller(mtm)?.ivars().outline.borrow().clone()?;
+    let row = outline.rowForView(from);
+    if row < 0 {
+        return None;
+    }
+    let controls = row_controls(&outline, row, false);
+    let idx = controls
+        .iter()
+        .position(|c| std::ptr::eq(Retained::as_ptr(c), from))?;
+    let n = outline.numberOfRows();
+    if forward {
+        if let Some(c) = controls.get(idx + 1) {
+            return Some(c.clone());
+        }
+        for r in row + 1..n {
+            if let Some(c) = row_controls(&outline, r, true).into_iter().next() {
+                return Some(c);
+            }
+        }
+        unsafe { outline.nextValidKeyView() }
+    } else {
+        if idx > 0 {
+            return Some(controls[idx - 1].clone());
+        }
+        for r in (0..row).rev() {
+            if let Some(c) = row_controls(&outline, r, true).into_iter().last() {
+                return Some(c);
+            }
+        }
+        unsafe { outline.previousValidKeyView() }
+    }
+}
+
+/// Tab landed on the outline: move focus to the first row button (or the
+/// last, tabbing backwards).
+pub fn focus_first_row_control(forward: bool, mtm: MainThreadMarker) {
+    let Some(c) = controller(mtm) else { return };
+    let (Some(outline), Some(window)) = (c.ivars().outline.borrow().clone(), c.window()) else {
+        return;
+    };
+    let n = outline.numberOfRows();
+    let rows: Box<dyn Iterator<Item = NSInteger>> = if forward {
+        Box::new(0..n)
+    } else {
+        Box::new((0..n).rev())
+    };
+    for r in rows {
+        let controls = row_controls(&outline, r, true);
+        let pick = if forward {
+            controls.first()
+        } else {
+            controls.last()
+        };
+        if let Some(v) = pick {
+            window.makeFirstResponder(Some(v));
+            return;
+        }
+    }
+}
 
 /// Whether any child row view of `repo_id`'s card is still in the outline
 /// (it no longer has the rows, but keeps their views while they slide away).

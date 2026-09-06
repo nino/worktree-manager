@@ -243,11 +243,11 @@ fn grain() -> Retained<NSColor> {
                     state ^= state << 5;
                     state
                 };
-                for _ in 0..2600 {
+                for _ in 0..3400 {
                     let x = (next() % 256) as f64 * 0.5;
                     let y = (next() % 256) as f64 * 0.5;
                     let light = next() % 2 == 0;
-                    let alpha = 0.04 + (next() % 5) as f64 * 0.012;
+                    let alpha = 0.07 + (next() % 5) as f64 * 0.02;
                     let c = if light {
                         NSColor::whiteColor()
                     } else {

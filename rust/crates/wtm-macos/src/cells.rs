@@ -21,6 +21,7 @@ use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
 use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, WorktreeInfo};
 
 use crate::badge::{badges_for, Badge};
+use crate::button::Button;
 use crate::dialogs;
 use crate::util::{label, mono_label, ns, secondary_label, symbol};
 
@@ -120,9 +121,9 @@ pub trait PlateCell {
 }
 
 /// A borderless SF Symbol button.
-fn icon_button(sym: &str, tooltip: &str, mtm: MainThreadMarker) -> Retained<NSButton> {
+fn icon_button(sym: &str, tooltip: &str, mtm: MainThreadMarker) -> Retained<Button> {
     let image = symbol(sym, tooltip).unwrap_or_default();
-    let b = unsafe { NSButton::buttonWithImage_target_action(&image, None, None, mtm) };
+    let b = Button::with_image(&image, mtm);
     b.setBezelStyle(NSBezelStyle::AccessoryBarAction);
     b.setBordered(false);
     b.setImagePosition(NSCellImagePosition::ImageOnly);
@@ -247,14 +248,7 @@ impl RepoCell {
 
         let copy = icon_button("doc.on.doc", "Copy path", mtm);
         wire(&copy, target, sel!(copyPath:));
-        let new_wt = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &ns("New Worktree"),
-                Some(target),
-                Some(sel!(newWorktree:)),
-                mtm,
-            )
-        };
+        let new_wt = Button::with_title(&ns("New Worktree"), Some(target), sel!(newWorktree:), mtm);
         new_wt.setControlSize(NSControlSize::Small);
         new_wt.setBezelStyle(NSBezelStyle::Push);
         new_wt.setFont(Some(&NSFont::systemFontOfSize(11.0)));
@@ -328,19 +322,19 @@ pub struct WorktreeCellIvars {
     branches: RefCell<Vec<String>>,
     popup: Retained<NSPopUpButton>,
     detached: Retained<NSTextField>,
-    copy_branch: Retained<NSButton>,
+    copy_branch: Retained<Button>,
     badges: Retained<NSStackView>,
     badge_views: RefCell<Vec<Retained<Badge>>>,
     spinner: Retained<NSProgressIndicator>,
     busy: Retained<NSTextField>,
     path_label: Retained<NSTextField>,
-    push: Retained<NSButton>,
-    pull: Retained<NSButton>,
-    merge: Retained<NSButton>,
-    editor: Retained<NSButton>,
-    terminal: Retained<NSButton>,
-    reveal: Retained<NSButton>,
-    delete: Retained<NSButton>,
+    push: Retained<Button>,
+    pull: Retained<Button>,
+    merge: Retained<Button>,
+    editor: Retained<Button>,
+    terminal: Retained<Button>,
+    reveal: Retained<Button>,
+    delete: Retained<Button>,
     /// Set while the popup is being filled so a programmatic selection never
     /// looks like a user's switch request.
     filling: Cell<bool>,
@@ -688,7 +682,7 @@ pub struct PendingCellIvars {
     branch: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
     status: Retained<NSTextField>,
-    dismiss: Retained<NSButton>,
+    dismiss: Retained<Button>,
 }
 
 define_class!(
