@@ -25,11 +25,11 @@ use crate::dialogs;
 use crate::util::{label, mono_label, ns, secondary_label, symbol};
 
 use crate::outline::CONTENT_START;
-use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
+use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET, WELL_LEAD};
 
 /// Row heights include the card geometry drawn by `RowView`: the gap above a
 /// card for headers, the plate gaps for children.
-pub const REPO_ROW_HEIGHT: f64 = CARD_GAP + 50.0;
+pub const REPO_ROW_HEIGHT: f64 = CARD_GAP + 50.0 + WELL_LEAD;
 pub const WORKTREE_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 50.0;
 pub const PENDING_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 36.0;
 
@@ -38,12 +38,12 @@ pub const PENDING_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 36.0;
 /// the disclosure column, which `OutlineView` moves inside the card, so the
 /// leading inset is what remains to reach the plate's own padding.
 const HEADER_INSETS: (f64, f64, f64, f64) =
-    (CONTENT_START, CARD_MARGIN + 14.0, CARD_GAP + 7.0, 7.0);
+    (CONTENT_START, CARD_MARGIN + 14.0, CARD_GAP + 9.0, 7.0);
 const PLATE_INSETS: (f64, f64, f64, f64) = (
-    CONTENT_START,
     CARD_MARGIN + PLATE_INSET + 12.0,
-    PLATE_GAP + 5.0,
-    PLATE_GAP + 5.0,
+    CARD_MARGIN + PLATE_INSET + 12.0,
+    PLATE_GAP + 8.0,
+    PLATE_GAP + 8.0,
 );
 
 // MARK: Shared building blocks

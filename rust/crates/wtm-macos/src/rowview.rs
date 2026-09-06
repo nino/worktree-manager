@@ -22,15 +22,21 @@ pub const CARD_GAP: f64 = 12.0;
 pub const CARD_MARGIN: f64 = 14.0;
 const CARD_RADIUS: f64 = 10.0;
 /// Horizontal inset of a worktree plate inside its card.
-pub const PLATE_INSET: f64 = 12.0;
+pub const PLATE_INSET: f64 = 10.0;
+/// Padding at the top and bottom of the well (band → first plate, last
+/// plate → card bottom). The header row carries the top part below its
+/// band, the last child row carries the bottom part below its plate.
+pub const WELL_PAD: f64 = 10.0;
+/// The well's lead-in below the header band.
+pub const WELL_LEAD: f64 = WELL_PAD - PLATE_GAP;
 /// Vertical gap around a worktree plate (between plates and to the card edges).
 pub const PLATE_GAP: f64 = 4.0;
 const PLATE_RADIUS: f64 = 7.0;
 /// Room left under a card's bottom edge for its shadow.
-const CARD_BOTTOM_ROOM: f64 = 4.0;
+pub const CARD_BOTTOM_ROOM: f64 = 4.0;
 /// Extra height of a card's last row: padding between the last plate and the
 /// card's bottom edge, so it matches the padding between plates.
-pub const LAST_ROW_EXTRA: f64 = PLATE_GAP + CARD_BOTTOM_ROOM;
+pub const LAST_ROW_EXTRA: f64 = WELL_PAD - PLATE_GAP + CARD_BOTTOM_ROOM;
 
 /// Which slice of a card a row draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,12 +109,28 @@ fn card_border() -> Retained<NSColor> {
     NSColor::separatorColor().colorWithAlphaComponent(0.55)
 }
 
-/// Worktree plates: the window ground, slightly toned towards the card so the
-/// step reads as depth rather than a hole.
-fn plate_fill() -> Retained<NSColor> {
+/// The well the plates sit in: the window ground, toned a little towards the
+/// card, so it reads as recessed under the raised plates.
+fn well_fill() -> Retained<NSColor> {
     NSColor::windowBackgroundColor()
-        .blendedColorWithFraction_ofColor(0.35, &NSColor::controlBackgroundColor())
+        .blendedColorWithFraction_ofColor(0.25, &NSColor::controlBackgroundColor())
         .unwrap_or_else(NSColor::windowBackgroundColor)
+}
+
+/// Plates are raised: the card colour, lifted by a drop shadow.
+fn plate_fill() -> Retained<NSColor> {
+    NSColor::controlBackgroundColor()
+}
+
+/// Inner shadow along one edge of the well: a short gradient from shade to
+/// clear, `angle` giving the direction it fades in (−90 = downwards).
+fn inner_shadow(rect: NSRect, angle: f64, strength: f64) {
+    let from = NSColor::blackColor().colorWithAlphaComponent(strength);
+    let to = NSColor::blackColor().colorWithAlphaComponent(0.0);
+    let mtm = MainThreadMarker::new().expect("drawing happens on the main thread");
+    if let Some(g) = NSGradient::initWithStartingColor_endingColor(mtm.alloc(), &from, &to) {
+        g.drawInRect_angle(rect, angle);
+    }
 }
 
 fn shadow(blur: f64, dy: f64, alpha: f64) {
@@ -153,9 +175,12 @@ fn draw(bounds: NSRect, style: RowStyle) {
             // plus a bright hairline along the top edge.
             // The band's path runs past the row bottom when the card is open,
             // so only its top corners are rounded (the rest is clipped).
+            // When open, the band stops WELL_LEAD short of the row bottom and
+            // the well begins there, shaded along its top edge.
+            let band_bottom = if closed { h } else { h - WELL_LEAD };
             let band = NSRect::new(
                 NSPoint::new(x + 1.0, CARD_GAP + 1.0),
-                NSSize::new(cw - 2.0, h - CARD_GAP - 1.0 + extra),
+                NSSize::new(cw - 2.0, band_bottom - CARD_GAP - 1.0 + extra.max(0.0)),
             );
             let band_path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
@@ -188,15 +213,23 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 .setFill();
             NSBezierPath::bezierPathWithRect(hairline).fill();
             if !closed {
-                // Separator between the header band and the plates below.
+                let well = NSRect::new(
+                    NSPoint::new(x + 1.0, band_bottom),
+                    NSSize::new(cw - 2.0, h - band_bottom),
+                );
+                well_fill().setFill();
+                NSBezierPath::bezierPathWithRect(well).fill();
+                // Separator between the band and the well, then the well's
+                // inner shadow fading downwards from it.
                 NSColor::separatorColor()
                     .colorWithAlphaComponent(0.4)
                     .setFill();
                 NSBezierPath::bezierPathWithRect(NSRect::new(
-                    NSPoint::new(x + 1.0, h - 1.0),
+                    NSPoint::new(x + 1.0, band_bottom - 1.0),
                     NSSize::new(cw - 2.0, 1.0),
                 ))
                 .fill();
+                inner_shadow(well, -90.0, 0.10);
             }
             card_border().setStroke();
             path.setLineWidth(1.0);
@@ -230,7 +263,40 @@ fn draw(bounds: NSRect, style: RowStyle) {
             path.setLineWidth(1.0);
             path.stroke();
 
-            // The worktree plate.
+            // The well: recessed ground with shading down both sides.
+            let well_bottom = if last { h - CARD_BOTTOM_ROOM - 1.0 } else { h };
+            let well = NSRect::new(
+                NSPoint::new(x + 1.0, 0.0),
+                NSSize::new(cw - 2.0, well_bottom),
+            );
+            well_fill().setFill();
+            NSBezierPath::bezierPathWithRect(well).fill();
+            let side = 5.0;
+            inner_shadow(
+                NSRect::new(well.origin, NSSize::new(side, well.size.height)),
+                0.0,
+                0.06,
+            );
+            inner_shadow(
+                NSRect::new(
+                    NSPoint::new(x + cw - 1.0 - side, 0.0),
+                    NSSize::new(side, well.size.height),
+                ),
+                180.0,
+                0.06,
+            );
+            if last {
+                inner_shadow(
+                    NSRect::new(
+                        NSPoint::new(x + 1.0, well_bottom - 4.0),
+                        NSSize::new(cw - 2.0, 4.0),
+                    ),
+                    90.0,
+                    0.05,
+                );
+            }
+
+            // The worktree plate, raised on a drop shadow.
             // The last row is LAST_ROW_EXTRA taller than the others; its plate
             // keeps the normal height and the extra becomes bottom padding.
             let room = if last { LAST_ROW_EXTRA } else { 0.0 };
@@ -246,8 +312,11 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 PLATE_RADIUS,
                 PLATE_RADIUS,
             );
+            NSGraphicsContext::saveGraphicsState_class();
+            shadow(3.0, 1.0, 0.12);
             plate_fill().setFill();
             plate_path.fill();
+            NSGraphicsContext::restoreGraphicsState_class();
             // A faint highlight along the plate's top edge, like a machined bevel.
             let bevel = NSRect::new(
                 NSPoint::new(plate.origin.x + 1.0, plate.origin.y + 0.5),
