@@ -259,16 +259,15 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 card_fill().setFill();
                 path.fill();
             }
-            card_border().setStroke();
-            path.setLineWidth(1.0);
-            path.stroke();
-
-            // The well: recessed ground with shading down both sides.
+            // The well: recessed ground with shading down both sides, clipped
+            // to the card so its bottom corners follow the card's radius.
             let well_bottom = if last { h - CARD_BOTTOM_ROOM - 1.0 } else { h };
             let well = NSRect::new(
                 NSPoint::new(x + 1.0, 0.0),
                 NSSize::new(cw - 2.0, well_bottom),
             );
+            NSGraphicsContext::saveGraphicsState_class();
+            path.addClip();
             well_fill().setFill();
             NSBezierPath::bezierPathWithRect(well).fill();
             let side = 5.0;
@@ -295,6 +294,11 @@ fn draw(bounds: NSRect, style: RowStyle) {
                     0.05,
                 );
             }
+            NSGraphicsContext::restoreGraphicsState_class();
+            // The border goes on last so the well never covers it.
+            card_border().setStroke();
+            path.setLineWidth(1.0);
+            path.stroke();
 
             // The worktree plate, raised on a drop shadow.
             // The last row is LAST_ROW_EXTRA taller than the others; its plate
@@ -313,7 +317,7 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 PLATE_RADIUS,
             );
             NSGraphicsContext::saveGraphicsState_class();
-            shadow(3.0, 1.0, 0.12);
+            shadow(4.0, 1.5, 0.16);
             plate_fill().setFill();
             plate_path.fill();
             NSGraphicsContext::restoreGraphicsState_class();
