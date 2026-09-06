@@ -227,7 +227,7 @@ fn well_fill() -> Retained<NSColor> {
 /// The grain tile: a few thousand half-point specks of black and white at
 /// low alpha, baked once and tiled by Core Graphics as a pattern colour.
 /// Cheap to draw and appearance-neutral.
-fn grain() -> Retained<NSColor> {
+pub(crate) fn grain() -> Retained<NSColor> {
     thread_local! {
         static GRAIN: std::cell::OnceCell<Retained<NSColor>> = const { std::cell::OnceCell::new() };
     }

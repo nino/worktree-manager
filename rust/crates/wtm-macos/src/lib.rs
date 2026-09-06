@@ -5,6 +5,7 @@
 //! the core depends on it. The executable calls [`run`] with a core `App`.
 
 pub mod badge;
+pub mod branchlabel;
 pub mod button;
 pub mod cells;
 pub mod controller;
@@ -16,6 +17,7 @@ pub mod picker;
 pub mod platform;
 pub mod rowview;
 pub mod settings;
+pub mod toolicon;
 pub mod util;
 
 pub use platform::{app_dirs, MacPlatform};

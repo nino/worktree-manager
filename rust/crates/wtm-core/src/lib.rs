@@ -13,6 +13,7 @@
 //! behind the traits in `wtm-platform`.
 
 pub mod app;
+pub mod branch_tool;
 pub mod command;
 pub mod config;
 pub mod fetcher;

@@ -4,7 +4,7 @@
 //! chooses, Escape or a click outside closes. Works for detached worktrees
 //! too, which the old popup could not offer.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -12,19 +12,21 @@ use objc2::{
     define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSControl, NSControlTextEditingDelegate, NSFont, NSFontAttributeName, NSLayoutConstraint,
-    NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSTableCellView, NSTableColumn,
-    NSTableRowView, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
-    NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
-    NSTextView, NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSColor, NSControl, NSControlTextEditingDelegate, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSLayoutConstraint, NSPopover, NSPopoverBehavior,
+    NSPopoverDelegate, NSScrollView, NSTableCellView, NSTableColumn, NSTableRowView, NSTableView,
+    NSTableViewDataSource, NSTableViewDelegate, NSTableViewSelectionHighlightStyle,
+    NSTableViewStyle, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSUserInterfaceItemIdentification, NSView, NSViewController,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSIndexSet, NSInteger, NSMutableAttributedString,
-    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSRectEdge, NSSize,
-    NSString,
+    NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge,
+    NSSize, NSString,
 };
 use wtm_core::fuzzy::{fuzzy_filter, Match};
 
+use crate::branchlabel::branch_label;
 use crate::util::{label, ns, REGULAR, SEMIBOLD};
 
 const WIDTH: f64 = 300.0;
@@ -45,6 +47,8 @@ pub struct BranchPickerIvars {
     all: Vec<String>,
     current: Option<String>,
     filtered: RefCell<Vec<(usize, Match)>>,
+    /// The row the text was last drawn selected for.
+    selected: Cell<NSInteger>,
     on_choose: Box<dyn Fn(String)>,
 }
 
@@ -73,6 +77,21 @@ define_class!(
     }
 
     unsafe impl NSTableViewDelegate for BranchPicker {
+        /// Selected rows draw their text white, so both the row that lost the
+        /// selection and the one that gained it are rebuilt.
+        #[unsafe(method(tableViewSelectionDidChange:))]
+        fn selection_did_change(&self, _n: &NSNotification) {
+            let iv = self.ivars();
+            let now = iv.table.selectedRow();
+            let was = iv.selected.replace(now);
+            let rows = NSMutableIndexSet::new();
+            for r in [was, now].into_iter().filter(|r| *r >= 0) {
+                rows.addIndex(r as usize);
+            }
+            iv.table
+                .reloadDataForRowIndexes_columnIndexes(&rows, &NSIndexSet::indexSetWithIndex(0));
+        }
+
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn view_for_row(&self, t: &NSTableView, _c: Option<&NSTableColumn>, row: NSInteger) -> Option<Retained<NSView>> {
             self.make_row_view(t, row)
@@ -202,6 +221,7 @@ pub fn show(
         all,
         current: current.map(str::to_string),
         filtered: RefCell::new(Vec::new()),
+        selected: Cell::new(-1),
         on_choose: Box::new(on_choose),
     });
     let this: Retained<BranchPicker> = unsafe { msg_send![super(this), init] };
@@ -338,52 +358,47 @@ impl BranchPicker {
         }
     }
 
-    /// The row's text: a check mark for the current branch, the name in
-    /// monospace with the matched characters emphasised.
+    /// The row's text: a check mark for the current branch, the name with an
+    /// agent prefix drawn as its mark, and the matched characters emphasised.
+    /// A selected row's text is white, so it is rebuilt when selection moves.
     fn label_for_row(&self, row: NSInteger) -> Option<Retained<NSAttributedString>> {
         let iv = self.ivars();
-        let filtered = iv.filtered.borrow();
-        let (index, m) = filtered.get(row as usize)?;
-        let name = &iv.all[*index];
-        let is_current = iv.current.as_deref() == Some(name.as_str());
-        let prefix = if is_current { "✓ " } else { "   " };
-        let text = format!("{prefix}{name}");
+        let (name, matched) = {
+            let filtered = iv.filtered.borrow();
+            let (index, m) = filtered.get(row as usize)?;
+            (iv.all[*index].clone(), m.positions.clone())
+        };
+        let selected = iv.table.selectedRow() == row;
+        let ink = if selected {
+            NSColor::alternateSelectedControlTextColor()
+        } else {
+            NSColor::labelColor()
+        };
         let font = NSFont::monospacedSystemFontOfSize_weight(12.0, REGULAR);
         let bold = NSFont::monospacedSystemFontOfSize_weight(12.0, SEMIBOLD);
+        let label = branch_label(&name, &font, &ink, Some((&bold, &matched)));
+        let text = NSMutableAttributedString::initWithAttributedString(
+            NSMutableAttributedString::alloc(),
+            &label,
+        );
+        let is_current = iv.current.as_deref() == Some(name.as_str());
         let attrs = unsafe {
             NSDictionary::from_retained_objects::<NSString>(
-                &[NSFontAttributeName],
-                &[Retained::into_super(Retained::into_super(font))],
+                &[NSFontAttributeName, NSForegroundColorAttributeName],
+                &[
+                    Retained::into_super(Retained::into_super(font)),
+                    Retained::into_super(Retained::into_super(ink)),
+                ],
             )
         };
-        let s = unsafe {
+        let check = unsafe {
             NSMutableAttributedString::initWithString_attributes(
                 NSMutableAttributedString::alloc(),
-                &ns(&text),
+                &ns(if is_current { "✓ " } else { "   " }),
                 Some(&attrs),
             )
         };
-        // Positions are char indices into the name; the string is UTF-16.
-        let utf16_offsets: Vec<usize> = name
-            .chars()
-            .scan(prefix.encode_utf16().count(), |acc, c| {
-                let here = *acc;
-                *acc += c.len_utf16();
-                Some(here)
-            })
-            .collect();
-        let bold_attrs = unsafe {
-            NSDictionary::from_retained_objects::<NSString>(
-                &[NSFontAttributeName],
-                &[Retained::into_super(Retained::into_super(bold))],
-            )
-        };
-        for p in &m.positions {
-            if let Some(&off) = utf16_offsets.get(*p) {
-                let len = name.chars().nth(*p).map(char::len_utf16).unwrap_or(1);
-                unsafe { s.addAttributes_range(&bold_attrs, NSRange::new(off, len)) };
-            }
-        }
-        Some(Retained::into_super(s))
+        text.insertAttributedString_atIndex(&check, 0);
+        Some(Retained::into_super(text))
     }
 }

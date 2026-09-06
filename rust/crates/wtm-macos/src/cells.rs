@@ -21,7 +21,8 @@ use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, WorktreeInfo};
 
 use crate::badge::{badges_for, Badge};
-use crate::button::Button;
+use crate::branchlabel::branch_label;
+use crate::button::{Button, PillButton};
 use crate::dialogs;
 use crate::util::{label, mono_label, ns, secondary_label, symbol, symbol_raised};
 
@@ -42,8 +43,10 @@ pub const PENDING_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 36.0;
 const HEADER_INSETS: (f64, f64, f64, f64) =
     (CONTENT_START, CARD_MARGIN + 14.0, CARD_GAP + 9.0, 7.0);
 /// How far the branch button's chevrons are lifted so they centre on the
-/// branch name rather than on its line box (see `symbol_raised`).
+/// branch name rather than on its line box, and how far they sit from it
+/// (see `symbol_raised`).
 const CHEVRON_LIFT: f64 = 1.25;
+const CHEVRON_GAP: f64 = 3.0;
 
 const PLATE_INSETS: (f64, f64, f64, f64) = (
     CARD_MARGIN + PLATE_INSET + 12.0,
@@ -326,7 +329,7 @@ pub struct WorktreeCellIvars {
     branches: RefCell<Vec<String>>,
     /// The branch button: its title is the branch (or "(detached)"), a click
     /// opens the fuzzy picker.
-    picker: Retained<Button>,
+    picker: Retained<PillButton>,
     copy_branch: Retained<Button>,
     badges: Retained<NSStackView>,
     badge_views: RefCell<Vec<Retained<Badge>>>,
@@ -436,7 +439,7 @@ impl WorktreeCell {
     }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
-        let picker = Button::with_title(&ns(""), None, sel!(pickBranch:), mtm);
+        let picker = PillButton::with_title(&ns(""), None, sel!(pickBranch:), mtm);
         picker.setBordered(false);
         picker.setControlSize(NSControlSize::Small);
         picker.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
@@ -448,6 +451,7 @@ impl WorktreeCell {
             "Switch branch",
             9.0,
             crate::util::SEMIBOLD,
+            CHEVRON_GAP,
             CHEVRON_LIFT,
         ) {
             picker.setImage(Some(&chevrons));
@@ -627,9 +631,27 @@ impl WorktreeCell {
         }
         let missing = w.prunable;
         let is_busy = busy.is_some();
-        iv.picker.setEnabled(!is_busy && !missing);
+        // The branch button: an agent prefix is drawn as that agent's mark, so
+        // the title is attributed and carries its own colour — which means the
+        // disabled look has to be chosen here rather than left to AppKit.
+        let enabled = !is_busy && !missing;
+        let ink = if enabled {
+            NSColor::labelColor()
+        } else {
+            NSColor::disabledControlTextColor()
+        };
+        let shown = w.branch.as_deref().unwrap_or("(detached)");
+        iv.picker.setAttributedTitle(&branch_label(
+            shown,
+            &NSFont::monospacedSystemFontOfSize_weight(12.0, crate::util::SEMIBOLD),
+            &ink,
+            None,
+        ));
+        iv.picker
+            .setToolTip(Some(&ns(&format!("Switch branch (current: {shown})"))));
+        iv.picker.setEnabled(enabled);
         for b in [&iv.push, &iv.pull, &iv.merge] {
-            b.setEnabled(!is_busy && !missing);
+            b.setEnabled(enabled);
         }
         for b in [&iv.editor, &iv.terminal, &iv.reveal] {
             b.setEnabled(!missing);

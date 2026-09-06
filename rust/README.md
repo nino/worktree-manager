@@ -54,11 +54,14 @@ structure changes reload one repo's children; only a query change or a repo
 added/removed triggers `reloadData`. Cell views are recycled through
 `makeViewWithIdentifier:` and re-configured in place (badge views are reused).
 
-**Branch picker.** The branch name in each plate is a button (`(detached)`
-for a detached HEAD) that opens a popover (`picker.rs`): a filter field over a
-list ranked by `wtm_core::fuzzy` — the same subsequence match and ordering as
-the Electron app — with ↑/↓, Return and Escape handled in the field's
-delegate. Choosing dispatches `Action::Switch`.
+**Branch picker.** The branch name in each plate is a small bezelled button
+(`(detached)` for a detached HEAD) that opens a popover (`picker.rs`): a filter
+field over a list ranked by `wtm_core::fuzzy` — the same subsequence match and
+ordering as the Electron app — with ↑/↓, Return and Escape handled in the
+field's delegate. Choosing dispatches `Action::Switch`. A `claude/` or
+`cursor/` prefix is drawn as that agent's mark (`toolicon.rs`, the same
+16-unit grid as the web app's SVGs) by `branchlabel.rs`, in both the button
+and the list; matching, tooltips and the dispatched value keep the whole name.
 
 **Keyboard.** Row buttons are `button.rs`'s subclass: they accept focus
 without Full Keyboard Access, and resolve their previous/next key view through

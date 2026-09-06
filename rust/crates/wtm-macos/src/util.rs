@@ -22,15 +22,17 @@ pub fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(name), Some(&ns(description)))
 }
 
-/// An SF Symbol at `size`/`weight`, raised by `dy` points: a button centres
-/// its image on the title's line box, which includes descender space the
-/// text beside it may not use, leaving the symbol looking low. The lift is
-/// baked into the image (padding under it) so no layout maths depends on it.
+/// An SF Symbol at `size`/`weight`, with `lead` points of space before it and
+/// raised by `dy`: a button centres its image on the title's line box, which
+/// includes descender space the text beside it may not use, leaving the symbol
+/// looking low, and butts it right up against the title. Both are baked into
+/// the image as padding, so no layout maths depends on them.
 pub fn symbol_raised(
     name: &str,
     description: &str,
     size: f64,
     weight: f64,
+    lead: f64,
     dy: f64,
 ) -> Option<Retained<NSImage>> {
     let base = symbol(name, description)?;
@@ -38,11 +40,11 @@ pub fn symbol_raised(
     let base = base.imageWithSymbolConfiguration(&config)?;
     let inner = base.size();
     let handler = RcBlock::new(move |_rect: NSRect| -> Bool {
-        base.drawInRect(NSRect::new(NSPoint::new(0.0, 2.0 * dy), inner));
+        base.drawInRect(NSRect::new(NSPoint::new(lead, 2.0 * dy), inner));
         Bool::YES
     });
     let padded = NSImage::imageWithSize_flipped_drawingHandler(
-        NSSize::new(inner.width, inner.height + 2.0 * dy),
+        NSSize::new(inner.width + lead, inner.height + 2.0 * dy),
         false,
         &handler,
     );
