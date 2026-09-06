@@ -35,7 +35,7 @@ use crate::cells::{
 use crate::dialogs;
 use crate::items::{ItemKind, WTMItem};
 use crate::outline::OutlineView;
-use crate::rowview::{RowStyle, RowView, LAST_ROW_EXTRA};
+use crate::rowview::{RowStyle, RowView, LAST_ROW_EXTRA, WELL_LEAD};
 use crate::util::{ns, secondary_label, symbol};
 
 static CONTROLLER: OnceLock<MainThreadBound<Retained<Controller>>> = OnceLock::new();
@@ -306,6 +306,8 @@ define_class!(
             let style = self.row_style(_o, item);
             match style {
                 RowStyle::Child { last: true, .. } => base + LAST_ROW_EXTRA,
+                // A closed card has no well, so no lead-in below the band.
+                RowStyle::Header { closed: true } => base - WELL_LEAD,
                 _ => base,
             }
         }
