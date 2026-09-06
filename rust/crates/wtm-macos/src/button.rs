@@ -63,6 +63,18 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), drawRect: dirty] };
         }
 
+        /// The focus ring follows the bezel; without this AppKit rings the
+        /// chevrons alone, which is all the button's image cell knows about.
+        #[unsafe(method(drawFocusRingMask))]
+        fn draw_focus_ring_mask(&self) {
+            pill_path(self.bounds()).fill();
+        }
+
+        #[unsafe(method(focusRingMaskBounds))]
+        fn focus_ring_mask_bounds(&self) -> NSRect {
+            self.bounds()
+        }
+
         /// Room for the bezel around the title.
         #[unsafe(method(intrinsicContentSize))]
         fn intrinsic_content_size(&self) -> NSSize {
@@ -77,17 +89,21 @@ const PILL_PAD_X: f64 = 7.0;
 const PILL_PAD_Y: f64 = 1.5;
 const PILL_RADIUS: f64 = 5.0;
 
-/// The bezel: a face shaded from light at the top and grained like the repo
-/// header band, with a bevel hairline and a border; darker while pressed.
-/// Buttons are unflipped, so y grows upwards here.
-fn draw_pill(bounds: NSRect, enabled: bool, pressed: bool) {
-    let alpha = if enabled { 1.0 } else { 0.45 };
+fn pill_path(bounds: NSRect) -> Retained<NSBezierPath> {
     let rect = NSRect::new(
         NSPoint::new(0.5, 0.5),
         NSSize::new(bounds.size.width - 1.0, bounds.size.height - 1.0),
     );
-    let path =
-        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, PILL_RADIUS, PILL_RADIUS);
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, PILL_RADIUS, PILL_RADIUS)
+}
+
+/// The bezel: a face shaded from dark at the top down to the plate's own
+/// colour, grained like the repo header band, with a bevel hairline and a
+/// border; darker while pressed. Buttons are unflipped, so y grows upwards.
+fn draw_pill(bounds: NSRect, enabled: bool, pressed: bool) {
+    let alpha = if enabled { 1.0 } else { 0.45 };
+    let path = pill_path(bounds);
+    let rect = path.bounds();
     let base = NSColor::controlBackgroundColor();
     let shade = |amount: f64| {
         base.blendedColorWithFraction_ofColor(amount, &NSColor::blackColor())
@@ -95,9 +111,9 @@ fn draw_pill(bounds: NSRect, enabled: bool, pressed: bool) {
             .colorWithAlphaComponent(alpha)
     };
     let (top, bottom) = if pressed {
-        (shade(0.10), shade(0.18))
+        (shade(0.20), shade(0.12))
     } else {
-        (shade(0.0), shade(0.09))
+        (shade(0.09), shade(0.0))
     };
     let mtm = MainThreadMarker::new().expect("drawing happens on the main thread");
     if let Some(g) = NSGradient::initWithStartingColor_endingColor(mtm.alloc(), &bottom, &top) {
@@ -115,7 +131,7 @@ fn draw_pill(bounds: NSRect, enabled: bool, pressed: bool) {
         .setFill();
     NSBezierPath::bezierPathWithRect(bevel).fill();
     NSColor::separatorColor()
-        .colorWithAlphaComponent(0.5 * alpha)
+        .colorWithAlphaComponent(0.32 * alpha)
         .setStroke();
     path.setLineWidth(1.0);
     path.stroke();

@@ -123,6 +123,11 @@ define_class!(
         #[unsafe(method(popoverDidClose:))]
         fn popover_did_close(&self, _n: &NSNotification) {
             CURRENT.with(|c| c.borrow_mut().take());
+            // The popover took the keyboard; hand it back to the tree rather
+            // than leaving the window with no first responder.
+            if let Some(mtm) = MainThreadMarker::new() {
+                crate::controller::focus_tree(mtm);
+            }
         }
     }
 );

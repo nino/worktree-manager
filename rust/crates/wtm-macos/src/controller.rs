@@ -143,9 +143,8 @@ define_class!(
         /// ⌘T: the branch picker for the selected worktree.
         #[unsafe(method(switchBranch:))]
         fn switch_branch(&self, _s: Option<&AnyObject>) {
-            if let Some(cell) = self.selected_worktree_cell() {
-                cell.open_picker();
-            }
+            let mtm = MainThreadMarker::from(self);
+            open_selected_picker(mtm);
         }
 
         #[unsafe(method(focusSearch:))]
@@ -481,6 +480,30 @@ pub fn key_view(from: &NSView, forward: bool) -> Option<Retained<NSView>> {
             }
         }
         unsafe { outline.previousValidKeyView() }
+    }
+}
+
+/// Open the branch picker for the selected worktree, if one is selected.
+/// Returns whether it opened.
+pub fn open_selected_picker(mtm: MainThreadMarker) -> bool {
+    let Some(c) = controller(mtm) else {
+        return false;
+    };
+    match c.selected_worktree_cell() {
+        Some(cell) => {
+            cell.open_picker();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Put the keyboard back on the tree, so the arrow keys move the selection
+/// again — where focus belongs after a popover or a row control is done.
+pub fn focus_tree(mtm: MainThreadMarker) {
+    let Some(c) = controller(mtm) else { return };
+    if let (Some(window), Some(outline)) = (c.window(), c.ivars().outline.borrow().clone()) {
+        window.makeFirstResponder(Some(&outline));
     }
 }
 

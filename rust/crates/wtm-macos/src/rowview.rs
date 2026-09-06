@@ -221,7 +221,7 @@ fn card_fill() -> Retained<NSColor> {
 /// Strokes are the separator colour, thinned: they should outline, not draw
 /// attention.
 fn card_border() -> Retained<NSColor> {
-    NSColor::separatorColor().colorWithAlphaComponent(0.55)
+    NSColor::separatorColor().colorWithAlphaComponent(0.42)
 }
 
 /// The well the plates sit in: the window ground, toned a little towards the
@@ -478,7 +478,7 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                 // Separator between the band and the well, then the well's
                 // inner shadow fading downwards from it.
                 NSColor::separatorColor()
-                    .colorWithAlphaComponent(0.4)
+                    .colorWithAlphaComponent(0.3)
                     .setFill();
                 NSBezierPath::bezierPathWithRect(NSRect::new(
                     well.origin,
@@ -539,7 +539,7 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
             NSColor::whiteColor().colorWithAlphaComponent(0.3).setFill();
             NSBezierPath::bezierPathWithRect(bevel).fill();
             NSColor::separatorColor()
-                .colorWithAlphaComponent(0.45)
+                .colorWithAlphaComponent(0.34)
                 .setStroke();
             plate_path.setLineWidth(1.0);
             plate_path.stroke();

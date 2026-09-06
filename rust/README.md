@@ -66,8 +66,10 @@ and the list; matching, tooltips and the dispatched value keep the whole name.
 **Keyboard.** The arrow keys move the outline's selection through repos and
 worktrees; the row draws it as an accent-coloured glow around the header band
 or the plate (`rowview::draw_selection`) rather than as a system highlight.
-⌘N creates a worktree in the selected repo and ⌘T opens the selected
-worktree's branch picker; both are validated against the selection. Row
+Space or ⌘T opens the selected worktree's branch picker and ⌘N creates a
+worktree in the selected repo; the menu items are validated against the
+selection. A popover hands the keyboard back to the tree when it closes
+(`controller::focus_tree`), so the arrow keys keep working after a switch. Row
 buttons are `button.rs`'s subclass: they accept focus without Full Keyboard
 Access, and resolve their previous/next key view through the rows
 (`controller::key_view`), bringing off-screen rows into view, so Tab walks
