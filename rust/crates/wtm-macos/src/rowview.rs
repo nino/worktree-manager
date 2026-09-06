@@ -114,7 +114,7 @@ fn card_border() -> Retained<NSColor> {
 /// card, so it reads as recessed under the raised plates.
 fn well_fill() -> Retained<NSColor> {
     NSColor::windowBackgroundColor()
-        .blendedColorWithFraction_ofColor(0.05, &NSColor::blackColor())
+        .blendedColorWithFraction_ofColor(0.02, &NSColor::blackColor())
         .unwrap_or_else(NSColor::windowBackgroundColor)
 }
 
