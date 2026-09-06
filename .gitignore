@@ -7,3 +7,5 @@ dist-electron
 .DS_Store
 .vite
 release
+# Rust rewrite build output (see rust/README.md)
+rust/target/

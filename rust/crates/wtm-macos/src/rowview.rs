@@ -1,0 +1,265 @@
+//! Row backgrounds that give the flat outline a visible hierarchy: every repo
+//! is a raised card (header with a soft gradient and a top highlight, straight
+//! sides down its worktrees, rounded and shadowed bottom), and every worktree
+//! sits on its own inset plate inside the card. Each row draws its own slice
+//! of the card, so the outline's virtualisation and row reuse are untouched.
+//!
+//! Colours are all system colours or blends of them, so light and dark
+//! appearance both work; the gradient and highlight are the nod to Aqua.
+
+use std::cell::Cell;
+
+use objc2::rc::Retained;
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSBezierPath, NSColor, NSGradient, NSGraphicsContext, NSShadow, NSTableRowView,
+};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+/// Space above each card (between cards).
+pub const CARD_GAP: f64 = 12.0;
+/// Horizontal margin of the cards inside the outline.
+pub const CARD_MARGIN: f64 = 14.0;
+const CARD_RADIUS: f64 = 10.0;
+/// Horizontal inset of a worktree plate inside its card.
+pub const PLATE_INSET: f64 = 12.0;
+/// Vertical gap around a worktree plate (between plates and to the card edges).
+pub const PLATE_GAP: f64 = 4.0;
+const PLATE_RADIUS: f64 = 7.0;
+/// Room left under a card's bottom edge for its shadow.
+const CARD_BOTTOM_ROOM: f64 = 4.0;
+/// Extra height of a card's last row: padding between the last plate and the
+/// card's bottom edge, so it matches the padding between plates.
+pub const LAST_ROW_EXTRA: f64 = PLATE_GAP + CARD_BOTTOM_ROOM;
+
+/// Which slice of a card a row draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStyle {
+    /// Repo header. `closed`: no rows follow (collapsed or empty), so the
+    /// card's bottom edge is drawn here too.
+    Header { closed: bool },
+    /// A worktree/pending row. `last`: closes the card underneath the plate.
+    Child { last: bool },
+}
+
+pub struct RowViewIvars {
+    style: Cell<RowStyle>,
+}
+
+define_class!(
+    #[unsafe(super(NSTableRowView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "WTMRowView"]
+    #[ivars = RowViewIvars]
+    pub struct RowView;
+
+    impl RowView {
+        #[unsafe(method(drawBackgroundInRect:))]
+        fn draw_background(&self, _dirty: NSRect) {
+            draw(self.bounds(), self.ivars().style.get());
+        }
+
+        #[unsafe(method(drawSelectionInRect:))]
+        fn draw_selection(&self, _dirty: NSRect) {}
+
+        #[unsafe(method(drawSeparatorInRect:))]
+        fn draw_separator(&self, _dirty: NSRect) {}
+    }
+);
+
+impl RowView {
+    pub const IDENTIFIER: &'static str = "wtm.row";
+
+    pub fn new(style: RowStyle, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(RowViewIvars {
+            style: Cell::new(style),
+        });
+        let this: Retained<Self> = unsafe {
+            msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, 40.0))]
+        };
+        this
+    }
+
+    /// Returns true when the style changed.
+    pub fn set_style(&self, style: RowStyle) -> bool {
+        if self.ivars().style.get() == style {
+            return false;
+        }
+        self.ivars().style.set(style);
+        self.setNeedsDisplay(true);
+        true
+    }
+}
+
+// MARK: Palette
+
+fn card_fill() -> Retained<NSColor> {
+    NSColor::controlBackgroundColor()
+}
+
+/// Strokes are the separator colour, thinned: they should outline, not draw
+/// attention.
+fn card_border() -> Retained<NSColor> {
+    NSColor::separatorColor().colorWithAlphaComponent(0.55)
+}
+
+/// Worktree plates: the window ground, slightly toned towards the card so the
+/// step reads as depth rather than a hole.
+fn plate_fill() -> Retained<NSColor> {
+    NSColor::windowBackgroundColor()
+        .blendedColorWithFraction_ofColor(0.35, &NSColor::controlBackgroundColor())
+        .unwrap_or_else(NSColor::windowBackgroundColor)
+}
+
+fn shadow(blur: f64, dy: f64, alpha: f64) {
+    let s = NSShadow::new();
+    s.setShadowColor(Some(&NSColor::blackColor().colorWithAlphaComponent(alpha)));
+    s.setShadowBlurRadius(blur);
+    s.setShadowOffset(NSSize::new(0.0, -dy));
+    s.set();
+}
+
+// MARK: Drawing
+
+/// Rows are flipped (y grows downward), as `NSTableRowView` is.
+fn draw(bounds: NSRect, style: RowStyle) {
+    let w = bounds.size.width;
+    let h = bounds.size.height;
+    let x = CARD_MARGIN;
+    let cw = w - 2.0 * CARD_MARGIN;
+    // Half-pixel alignment keeps 1px strokes crisp.
+    let r = CARD_RADIUS;
+    match style {
+        RowStyle::Header { closed } => {
+            // The card starts CARD_GAP below the row top; when open it extends
+            // past the row bottom (clipped) so only the top corners round.
+            let extra = if closed { 0.0 } else { r + 2.0 };
+            let rect = NSRect::new(
+                NSPoint::new(x + 0.5, CARD_GAP + 0.5),
+                NSSize::new(cw - 1.0, h - CARD_GAP - 1.0 + extra),
+            );
+            let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, r, r);
+            if closed {
+                NSGraphicsContext::saveGraphicsState_class();
+                shadow(3.0, 1.0, 0.14);
+                card_fill().setFill();
+                path.fill();
+                NSGraphicsContext::restoreGraphicsState_class();
+            } else {
+                card_fill().setFill();
+                path.fill();
+            }
+            // Aqua-style header: a soft vertical gradient over the header band
+            // plus a bright hairline along the top edge.
+            // The band's path runs past the row bottom when the card is open,
+            // so only its top corners are rounded (the rest is clipped).
+            let band = NSRect::new(
+                NSPoint::new(x + 1.0, CARD_GAP + 1.0),
+                NSSize::new(cw - 2.0, h - CARD_GAP - 1.0 + extra),
+            );
+            let band_path =
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
+            // Pale blue, Aqua's signature: the card colour tinted towards the
+            // system blue, deeper at the top and fading towards the plates.
+            let base = card_fill();
+            let blue = NSColor::systemBlueColor();
+            let top = base
+                .blendedColorWithFraction_ofColor(0.16, &blue)
+                .unwrap_or_else(|| base.clone());
+            let bottom = base
+                .blendedColorWithFraction_ofColor(0.05, &blue)
+                .unwrap_or_else(|| base.clone());
+            // A bright hairline along the top edge, the Aqua bevel.
+            let hairline = NSRect::new(
+                NSPoint::new(x + r, CARD_GAP + 1.0),
+                NSSize::new(cw - 2.0 * r, 1.0),
+            );
+            if let Some(g) = NSGradient::initWithStartingColor_endingColor(
+                MainThreadMarker::new()
+                    .expect("drawing happens on the main thread")
+                    .alloc(),
+                &top,
+                &bottom,
+            ) {
+                g.drawInBezierPath_angle(&band_path, -90.0);
+            }
+            NSColor::whiteColor()
+                .colorWithAlphaComponent(0.35)
+                .setFill();
+            NSBezierPath::bezierPathWithRect(hairline).fill();
+            if !closed {
+                // Separator between the header band and the plates below.
+                NSColor::separatorColor()
+                    .colorWithAlphaComponent(0.4)
+                    .setFill();
+                NSBezierPath::bezierPathWithRect(NSRect::new(
+                    NSPoint::new(x + 1.0, h - 1.0),
+                    NSSize::new(cw - 2.0, 1.0),
+                ))
+                .fill();
+            }
+            card_border().setStroke();
+            path.setLineWidth(1.0);
+            path.stroke();
+        }
+        RowStyle::Child { last } => {
+            // Card body: a rounded rect taller than the row so the sides run
+            // straight; for the last row its bottom corners are in view.
+            let top = -(r + 2.0);
+            let bottom = if last {
+                h - CARD_BOTTOM_ROOM - 0.5
+            } else {
+                h + r + 2.0
+            };
+            let rect = NSRect::new(
+                NSPoint::new(x + 0.5, top),
+                NSSize::new(cw - 1.0, bottom - top),
+            );
+            let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, r, r);
+            if last {
+                NSGraphicsContext::saveGraphicsState_class();
+                shadow(3.0, 1.0, 0.14);
+                card_fill().setFill();
+                path.fill();
+                NSGraphicsContext::restoreGraphicsState_class();
+            } else {
+                card_fill().setFill();
+                path.fill();
+            }
+            card_border().setStroke();
+            path.setLineWidth(1.0);
+            path.stroke();
+
+            // The worktree plate.
+            // The last row is LAST_ROW_EXTRA taller than the others; its plate
+            // keeps the normal height and the extra becomes bottom padding.
+            let room = if last { LAST_ROW_EXTRA } else { 0.0 };
+            let plate = NSRect::new(
+                NSPoint::new(x + PLATE_INSET + 0.5, PLATE_GAP + 0.5),
+                NSSize::new(
+                    cw - 2.0 * PLATE_INSET - 1.0,
+                    h - 2.0 * PLATE_GAP - 1.0 - room,
+                ),
+            );
+            let plate_path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                plate,
+                PLATE_RADIUS,
+                PLATE_RADIUS,
+            );
+            plate_fill().setFill();
+            plate_path.fill();
+            // A faint highlight along the plate's top edge, like a machined bevel.
+            let bevel = NSRect::new(
+                NSPoint::new(plate.origin.x + 1.0, plate.origin.y + 0.5),
+                NSSize::new(plate.size.width - 2.0, 1.0),
+            );
+            NSColor::whiteColor().colorWithAlphaComponent(0.3).setFill();
+            NSBezierPath::bezierPathWithRect(bevel).fill();
+            NSColor::separatorColor()
+                .colorWithAlphaComponent(0.45)
+                .setStroke();
+            plate_path.setLineWidth(1.0);
+            plate_path.stroke();
+        }
+    }
+}

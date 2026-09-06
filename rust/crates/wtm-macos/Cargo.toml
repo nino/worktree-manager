@@ -1,0 +1,17 @@
+[package]
+name = "wtm-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "macOS backend: AppKit UI and platform services via objc2"
+
+[dependencies]
+wtm-core = { workspace = true }
+wtm-platform = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSString", "NSObject", "NSNotification", "NSDictionary", "NSURL", "NSGeometry", "NSValue", "NSEnumerator", "NSThread", "NSRunLoop", "NSDate", "NSUserDefaults", "NSAttributedString", "NSProcessInfo", "NSBundle", "NSNotification", "NSIndexSet", "NSRange"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSResponder", "NSView", "NSControl", "NSButton", "NSButtonCell", "NSCell", "NSTextField", "NSTextFieldCell", "NSStackView", "NSImage", "NSMenu", "NSMenuItem", "NSAlert", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSPopUpButton", "NSPopUpButtonCell", "NSMenuItemCell", "NSSearchField", "NSSearchFieldCell", "NSToolbar", "NSToolbarItem", "NSScrollView", "NSClipView", "NSTableView", "NSOutlineView", "NSTableCellView", "NSTableColumn", "NSTableHeaderView", "NSColor", "NSFont", "NSWorkspace", "NSPasteboard", "NSSegmentedControl", "NSSegmentedCell", "NSComboBox", "NSComboBoxCell", "NSProgressIndicator", "NSLayoutConstraint", "NSLayoutAnchor", "NSVisualEffectView", "NSAppearance", "NSRunningApplication", "NSEvent", "NSGraphics", "NSScreen", "NSBox", "NSText", "NSTextView", "NSUserInterfaceLayout", "NSUserInterfaceItemIdentification", "NSAnimation", "NSTableRowView", "NSSplitView", "NSToolbarItemGroup", "NSTrackingArea", "NSImageView", "NSGridView", "NSTextContent", "NSUserInterfaceValidation", "NSViewController", "NSApplicationScripting", "NSStatusBar", "NSDockTile", "NSFontDescriptor", "NSParagraphStyle", "NSStringDrawing", "NSAccessibility", "NSAccessibilityProtocols", "NSAccessibilityConstants", "NSNibDeclarations", "NSResponder", "NSCursor", "NSTextContainer", "NSLayoutManager", "NSTextStorage", "NSBezierPath", "NSSearchToolbarItem", "NSTableHeaderView", "NSClipView", "NSCell", "NSAttributedString", "NSGradient", "NSShadow", "NSGraphicsContext", "NSAnimationContext"] }
+block2 = { workspace = true }
+dispatch2 = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
