@@ -16,6 +16,7 @@ pub mod app;
 pub mod command;
 pub mod config;
 pub mod fetcher;
+pub mod fuzzy;
 pub mod git;
 pub mod model;
 pub mod paths;

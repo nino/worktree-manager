@@ -13,11 +13,11 @@ use objc2_app_kit::{
     NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont,
     NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
     NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
-    NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
+    NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
     NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView,
 };
-use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, WorktreeInfo};
 
 use crate::badge::{badges_for, Badge};
@@ -320,8 +320,9 @@ pub struct WorktreeCellIvars {
     path: RefCell<String>,
     branch: RefCell<Option<String>>,
     branches: RefCell<Vec<String>>,
-    popup: Retained<NSPopUpButton>,
-    detached: Retained<NSTextField>,
+    /// The branch button: its title is the branch (or "(detached)"), a click
+    /// opens the fuzzy picker.
+    picker: Retained<Button>,
     copy_branch: Retained<Button>,
     badges: Retained<NSStackView>,
     badge_views: RefCell<Vec<Retained<Badge>>>,
@@ -335,9 +336,6 @@ pub struct WorktreeCellIvars {
     terminal: Retained<Button>,
     reveal: Retained<Button>,
     delete: Retained<Button>,
-    /// Set while the popup is being filled so a programmatic selection never
-    /// looks like a user's switch request.
-    filling: Cell<bool>,
     top: RefCell<Option<Retained<NSLayoutConstraint>>>,
 }
 
@@ -402,19 +400,23 @@ define_class!(
             }
         }
 
-        #[unsafe(method(switchBranch:))]
-        fn switch_branch(&self, _s: Option<&AnyObject>) {
+        #[unsafe(method(pickBranch:))]
+        fn pick_branch(&self, _s: Option<&AnyObject>) {
             let iv = self.ivars();
-            if iv.filling.get() {
-                return;
-            }
-            let Some(title) = iv.popup.titleOfSelectedItem() else { return };
-            let chosen = title.to_string();
-            if iv.branch.borrow().as_deref() == Some(chosen.as_str()) {
-                return;
-            }
             let (repo_id, path) = self.ids();
-            iv.app.dispatch(Action::Switch { repo_id, path, branch: chosen });
+            let app = iv.app.clone();
+            crate::picker::show(
+                &iv.picker,
+                &iv.branches.borrow(),
+                iv.branch.borrow().as_deref(),
+                move |branch| {
+                    app.dispatch(Action::Switch {
+                        repo_id: repo_id.clone(),
+                        path: path.clone(),
+                        branch,
+                    });
+                },
+            );
         }
     }
 );
@@ -430,29 +432,30 @@ impl WorktreeCell {
     }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
-        let popup = NSPopUpButton::initWithFrame_pullsDown(
-            mtm.alloc(),
-            NSRect::new(NSPoint::ZERO, NSSize::new(160.0, 20.0)),
-            false,
-        );
-        popup.setBordered(false);
-        popup.setControlSize(NSControlSize::Small);
-        popup.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+        let picker = Button::with_title(&ns(""), None, sel!(pickBranch:), mtm);
+        picker.setBordered(false);
+        picker.setControlSize(NSControlSize::Small);
+        picker.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             12.0,
             crate::util::SEMIBOLD,
         )));
-        popup.setTranslatesAutoresizingMaskIntoConstraints(false);
-        popup.setContentCompressionResistancePriority_forOrientation(
+        if let Some(chevrons) = symbol("chevron.up.chevron.down", "Switch branch") {
+            picker.setImage(Some(&chevrons));
+        }
+        picker.setImagePosition(NSCellImagePosition::ImageTrailing);
+        picker.setImageHugsTitle(true);
+        picker.setSymbolConfiguration(Some(
+            &NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                9.0,
+                crate::util::SEMIBOLD,
+            ),
+        ));
+        picker.setTranslatesAutoresizingMaskIntoConstraints(false);
+        picker.setContentCompressionResistancePriority_forOrientation(
             NSLayoutPriorityDefaultLow + 10.0,
             NSLayoutConstraintOrientation::Horizontal,
         );
-        popup.setToolTip(Some(&ns("Switch branch")));
-        let detached = label("(detached)", mtm);
-        detached.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
-            12.0,
-            crate::util::SEMIBOLD,
-        )));
-        detached.setHidden(true);
+        picker.setToolTip(Some(&ns("Switch branch")));
         let badges = hstack(4.0, mtm);
         badges.setContentHuggingPriority_forOrientation(
             NSLayoutPriorityRequired,
@@ -492,8 +495,7 @@ impl WorktreeCell {
             path: RefCell::new(String::new()),
             branch: RefCell::new(None),
             branches: RefCell::new(Vec::new()),
-            popup: popup.clone(),
-            detached: detached.clone(),
+            picker: picker.clone(),
             copy_branch: copy_branch.clone(),
             badges: badges.clone(),
             badge_views: RefCell::new(Vec::new()),
@@ -507,7 +509,6 @@ impl WorktreeCell {
             terminal: terminal.clone(),
             reveal: reveal.clone(),
             delete: delete.clone(),
-            filling: Cell::new(false),
             top: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe {
@@ -515,10 +516,7 @@ impl WorktreeCell {
         };
         this.setIdentifier(Some(&ns(Self::IDENTIFIER)));
         let target: &AnyObject = this.as_ref();
-        unsafe {
-            popup.setTarget(Some(target));
-            popup.setAction(Some(sel!(switchBranch:)));
-        }
+        unsafe { picker.setTarget(Some(target)) };
         for (b, action) in [
             (&copy_branch, sel!(copyBranch:)),
             (&copy_path, sel!(copyPath:)),
@@ -534,8 +532,7 @@ impl WorktreeCell {
         }
 
         let line1 = hstack(6.0, mtm);
-        line1.addArrangedSubview(&popup);
-        line1.addArrangedSubview(&detached);
+        line1.addArrangedSubview(&picker);
         line1.addArrangedSubview(&copy_branch);
         line1.addArrangedSubview(&spacer(mtm));
         line1.addArrangedSubview(&spinner);
@@ -582,33 +579,10 @@ impl WorktreeCell {
         *iv.path.borrow_mut() = w.path.clone();
         *iv.branch.borrow_mut() = w.branch.clone();
 
-        // Branch picker.
-        match &w.branch {
-            Some(b) => {
-                iv.popup.setHidden(false);
-                iv.detached.setHidden(true);
-                iv.filling.set(true);
-                if *iv.branches.borrow() != branches
-                    || !iv.popup.itemTitles().iter().any(|t| t.to_string() == *b)
-                {
-                    iv.popup.removeAllItems();
-                    let mut titles: Vec<Retained<NSString>> =
-                        branches.iter().map(|s| ns(s)).collect();
-                    if !branches.iter().any(|x| x == b) {
-                        titles.insert(0, ns(b));
-                    }
-                    iv.popup
-                        .addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-                    *iv.branches.borrow_mut() = branches.to_vec();
-                }
-                iv.popup.selectItemWithTitle(&ns(b));
-                iv.filling.set(false);
-            }
-            None => {
-                iv.popup.setHidden(true);
-                iv.detached.setHidden(false);
-            }
-        }
+        // Branch button.
+        iv.picker
+            .setTitle(&ns(w.branch.as_deref().unwrap_or("(detached)")));
+        *iv.branches.borrow_mut() = branches.to_vec();
         iv.copy_branch.setHidden(w.branch.is_none());
 
         // Badges: reuse existing views, add or drop the difference.
@@ -649,7 +623,7 @@ impl WorktreeCell {
         }
         let missing = w.prunable;
         let is_busy = busy.is_some();
-        iv.popup.setEnabled(!is_busy && !missing);
+        iv.picker.setEnabled(!is_busy && !missing);
         for b in [&iv.push, &iv.pull, &iv.merge] {
             b.setEnabled(!is_busy && !missing);
         }

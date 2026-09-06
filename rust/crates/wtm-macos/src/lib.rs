@@ -12,6 +12,7 @@ pub mod dialogs;
 pub mod items;
 pub mod menu;
 pub mod outline;
+pub mod picker;
 pub mod platform;
 pub mod rowview;
 pub mod settings;

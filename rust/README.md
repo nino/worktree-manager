@@ -52,8 +52,22 @@ expansion state) survives updates. On each snapshot it diffs against the one
 it last rendered and calls `reloadItem:` only for rows whose data differs;
 structure changes reload one repo's children; only a query change or a repo
 added/removed triggers `reloadData`. Cell views are recycled through
-`makeViewWithIdentifier:` and re-configured in place (badge views are reused,
-the branch popup's menu is rebuilt only when the branch list changes).
+`makeViewWithIdentifier:` and re-configured in place (badge views are reused).
+
+**Branch picker.** The branch name in each plate is a button (`(detached)`
+for a detached HEAD) that opens a popover (`picker.rs`): a filter field over a
+list ranked by `wtm_core::fuzzy` — the same subsequence match and ordering as
+the Electron app — with ↑/↓, Return and Escape handled in the field's
+delegate. Choosing dispatches `Action::Switch`.
+
+**Keyboard.** Row buttons are `button.rs`'s subclass: they accept focus
+without Full Keyboard Access, and resolve their previous/next key view through
+the rows (`controller::key_view`), bringing off-screen rows into view, so Tab
+walks every button. Tab landing on the outline is forwarded to the first or
+last row button.
+
+**Settings.** `settings.rs` is a plain window, not a sheet: no Save or
+Cancel, every edit is applied as it is typed.
 
 **Cards, not a flat list.** `rowview.rs` gives each row a custom
 `NSTableRowView` that draws its slice of a repo card (gradient header band with
