@@ -53,6 +53,10 @@ pub fn main_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
     controller(mtm).and_then(|c| c.ivars().window.borrow().clone())
 }
 
+/// How long after a collapse the card is checked to be closed: the outline's
+/// row animation is 0.25s.
+const COLLAPSE_SETTLE_NS: i64 = 400_000_000;
+
 const TOOLBAR_ADD: &str = "wtm.add";
 const TOOLBAR_REFRESH: &str = "wtm.refresh";
 const TOOLBAR_SEARCH: &str = "wtm.search";
@@ -341,7 +345,7 @@ define_class!(
         fn will_expand(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
                 self.ivars().collapsed.borrow_mut().remove(&id);
-                self.sync_header_style(&id);
+                self.sync_header_style(&id, None);
             }
         }
 
@@ -382,6 +386,25 @@ define_class!(
         #[unsafe(method(outlineViewItemDidExpand:))]
         fn did_expand(&self, _n: &NSNotification) {
             self.sync_row_styles_later();
+        }
+
+        /// The card normally closes on the frame its last row is dropped
+        /// (`child_row_leaving`). This is the backstop for anything that
+        /// leaves it open — a collapse the outline chose not to animate, or
+        /// rows dropped in an order that hook does not see — so a card can
+        /// never stay drawn open with nothing under it.
+        #[unsafe(method(outlineViewItemDidCollapse:))]
+        fn did_collapse(&self, n: &NSNotification) {
+            let Some(id) = expanded_repo_id(n) else { return };
+            let _ = DispatchQueue::main().after(
+                dispatch2::DispatchTime::NOW.time(COLLAPSE_SETTLE_NS),
+                move || {
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    if let Some(c) = controller(mtm) {
+                        c.sync_header_style(&id, None);
+                    }
+                },
+            );
         }
     }
 );
@@ -478,10 +501,17 @@ pub fn focus_first_row_control(forward: bool, mtm: MainThreadMarker) {
 
 /// Whether any child row view of `repo_id`'s card is still in the outline
 /// (it no longer has the rows, but keeps their views while they slide away).
-fn rows_lingering(outline: &NSOutlineView, repo_id: &str) -> bool {
+/// `except` is a row on its way out: `viewWillMoveToSuperview:` runs before
+/// the view is actually removed, so the last one to leave would otherwise
+/// still count itself and the card would never close.
+fn rows_lingering(outline: &NSOutlineView, repo_id: &str, except: Option<&RowView>) -> bool {
     let is_child_of = |v: &NSView| {
         v.downcast_ref::<RowView>()
-            .map(|r| matches!(r.style(), RowStyle::Child { .. }) && r.owner() == repo_id)
+            .map(|r| {
+                !except.map(|e| std::ptr::eq(e, r)).unwrap_or(false)
+                    && matches!(r.style(), RowStyle::Child { .. })
+                    && r.owner() == repo_id
+            })
             .unwrap_or(false)
     };
     outline.subviews().iter().any(|v| {
@@ -496,15 +526,16 @@ fn rows_lingering(outline: &NSOutlineView, repo_id: &str) -> bool {
 
 /// Called by a child row view as it leaves the outline: if it was the last
 /// of its card's rows, the header can now draw its closed bottom edge.
-pub fn child_row_leaving(repo_id: &str) {
+pub fn child_row_leaving(row: &RowView) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
     let Some(c) = controller(mtm) else {
         return;
     };
-    if c.ivars().collapsed.borrow().contains(repo_id) {
-        c.sync_header_style(repo_id);
+    let repo_id = row.owner();
+    if c.ivars().collapsed.borrow().contains(&repo_id) {
+        c.sync_header_style(&repo_id, Some(row));
     }
 }
 
@@ -579,6 +610,16 @@ impl Controller {
 
     /// The card slice a row should draw, from the display tree and expansion.
     fn row_style(&self, outline: &NSOutlineView, item: &WTMItem) -> RowStyle {
+        self.row_style_excluding(outline, item, None)
+    }
+
+    /// As `row_style`, ignoring a row that is on its way out of the outline.
+    fn row_style_excluding(
+        &self,
+        outline: &NSOutlineView,
+        item: &WTMItem,
+        leaving: Option<&RowView>,
+    ) -> RowStyle {
         let tree = self.ivars().tree.borrow();
         match item.kind() {
             ItemKind::Repo { repo_id } => {
@@ -591,7 +632,7 @@ impl Controller {
                 // way out: the outline keeps their views until the slide ends.
                 let open = has_children
                     && (!self.ivars().collapsed.borrow().contains(&repo_id)
-                        || rows_lingering(outline, &repo_id));
+                        || rows_lingering(outline, &repo_id, leaving));
                 RowStyle::Header { closed: !open }
             }
             ItemKind::Worktree { repo_id, .. } | ItemKind::Pending { repo_id, .. } => {
@@ -634,7 +675,7 @@ impl Controller {
 
     /// Re-tag one card's header row, e.g. when the card opens or closes.
     /// Only a redraw: header heights never change.
-    fn sync_header_style(&self, repo_id: &str) {
+    fn sync_header_style(&self, repo_id: &str, leaving: Option<&RowView>) {
         let Some(outline) = self.ivars().outline.borrow().clone() else {
             return;
         };
@@ -649,7 +690,7 @@ impl Controller {
         if row < 0 {
             return;
         }
-        let style = self.row_style(&outline, &item);
+        let style = self.row_style_excluding(&outline, &item, leaving);
         if let Some(v) = outline.rowViewAtRow_makeIfNecessary(row, false) {
             if let Some(v) = v.downcast_ref::<RowView>() {
                 if v.set_style(style) {

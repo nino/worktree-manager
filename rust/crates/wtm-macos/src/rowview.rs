@@ -111,7 +111,7 @@ define_class!(
                 .map(|sv| sv.isKindOfClass(objc2_app_kit::NSTableView::class()))
                 .unwrap_or(true);
             if !in_outline {
-                crate::controller::child_row_leaving(&self.ivars().owner.borrow());
+                crate::controller::child_row_leaving(self);
                 return;
             }
             let mtm = MainThreadMarker::from(self);
@@ -122,7 +122,7 @@ define_class!(
                     let mtm = MainThreadMarker::new().expect("main queue");
                     let me = me.get(mtm);
                     if unsafe { me.superview() }.is_none() {
-                        crate::controller::child_row_leaving(&me.ivars().owner.borrow());
+                        crate::controller::child_row_leaving(me);
                     }
                 },
             );
