@@ -75,7 +75,15 @@ define_class!(
     impl RowView {
         #[unsafe(method(drawBackgroundInRect:))]
         fn draw_background(&self, _dirty: NSRect) {
-            draw(self.bounds(), self.ivars().style.get());
+            draw(self.bounds(), self.ivars().style.get(), self.isSelected());
+        }
+
+        /// The selection is drawn as part of the card (see `draw`), so the
+        /// row has to repaint when it comes or goes.
+        #[unsafe(method(setSelected:))]
+        fn set_selected(&self, selected: bool) {
+            let _: () = unsafe { msg_send![super(self), setSelected: selected] };
+            self.setNeedsDisplay(true);
         }
 
         #[unsafe(method(drawSelectionInRect:))]
@@ -320,8 +328,24 @@ fn shadow(blur: f64, dy: f64, alpha: f64) {
 
 // MARK: Drawing
 
+/// The keyboard selection: an accent-coloured outline with a glow, around the
+/// header band of a repo or the plate of a worktree.
+fn draw_selection(path: &NSBezierPath) {
+    NSGraphicsContext::saveGraphicsState_class();
+    let accent = NSColor::controlAccentColor();
+    let glow = NSShadow::new();
+    glow.setShadowColor(Some(&accent.colorWithAlphaComponent(0.7)));
+    glow.setShadowBlurRadius(5.0);
+    glow.setShadowOffset(NSSize::new(0.0, 0.0));
+    glow.set();
+    accent.colorWithAlphaComponent(0.9).setStroke();
+    path.setLineWidth(2.0);
+    path.stroke();
+    NSGraphicsContext::restoreGraphicsState_class();
+}
+
 /// Rows are flipped (y grows downward), as `NSTableRowView` is.
-fn draw(bounds: NSRect, style: RowStyle) {
+fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
     let w = bounds.size.width;
     let h = bounds.size.height;
     let x = CARD_MARGIN;
@@ -399,6 +423,17 @@ fn draw(bounds: NSRect, style: RowStyle) {
             card_border().setStroke();
             path.setLineWidth(1.0);
             path.stroke();
+            if selected {
+                // The band alone: the card's other rows are separate views.
+                draw_selection(&NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    NSRect::new(
+                        NSPoint::new(x + 1.5, CARD_GAP + 1.5),
+                        NSSize::new(cw - 3.0, h - CARD_GAP - 3.0 + extra),
+                    ),
+                    r - 1.0,
+                    r - 1.0,
+                ));
+            }
         }
         RowStyle::Child { first, last } => {
             // The first row is WELL_LEAD taller: the well's lead-in below the
@@ -508,6 +543,9 @@ fn draw(bounds: NSRect, style: RowStyle) {
                 .setStroke();
             plate_path.setLineWidth(1.0);
             plate_path.stroke();
+            if selected {
+                draw_selection(&plate_path);
+            }
         }
     }
 }

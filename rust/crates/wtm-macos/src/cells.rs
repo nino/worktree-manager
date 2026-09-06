@@ -409,24 +409,31 @@ define_class!(
 
         #[unsafe(method(pickBranch:))]
         fn pick_branch(&self, _s: Option<&AnyObject>) {
-            let iv = self.ivars();
-            let (repo_id, path) = self.ids();
-            let app = iv.app.clone();
-            crate::picker::show(
-                &iv.picker,
-                &iv.branches.borrow(),
-                iv.branch.borrow().as_deref(),
-                move |branch| {
-                    app.dispatch(Action::Switch {
-                        repo_id: repo_id.clone(),
-                        path: path.clone(),
-                        branch,
-                    });
-                },
-            );
+            self.open_picker();
         }
     }
 );
+
+impl WorktreeCell {
+    /// Open the branch picker under this row's branch button.
+    pub fn open_picker(&self) {
+        let iv = self.ivars();
+        let (repo_id, path) = self.ids();
+        let app = iv.app.clone();
+        crate::picker::show(
+            &iv.picker,
+            &iv.branches.borrow(),
+            iv.branch.borrow().as_deref(),
+            move |branch| {
+                app.dispatch(Action::Switch {
+                    repo_id: repo_id.clone(),
+                    path: path.clone(),
+                    branch,
+                });
+            },
+        );
+    }
+}
 
 impl WorktreeCell {
     pub const IDENTIFIER: &'static str = "wtm.worktree";

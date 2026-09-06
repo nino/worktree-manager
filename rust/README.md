@@ -63,11 +63,16 @@ field's delegate. Choosing dispatches `Action::Switch`. A `claude/` or
 16-unit grid as the web app's SVGs) by `branchlabel.rs`, in both the button
 and the list; matching, tooltips and the dispatched value keep the whole name.
 
-**Keyboard.** Row buttons are `button.rs`'s subclass: they accept focus
-without Full Keyboard Access, and resolve their previous/next key view through
-the rows (`controller::key_view`), bringing off-screen rows into view, so Tab
-walks every button. Tab landing on the outline is forwarded to the first or
-last row button.
+**Keyboard.** The arrow keys move the outline's selection through repos and
+worktrees; the row draws it as an accent-coloured glow around the header band
+or the plate (`rowview::draw_selection`) rather than as a system highlight.
+⌘N creates a worktree in the selected repo and ⌘T opens the selected
+worktree's branch picker; both are validated against the selection. Row
+buttons are `button.rs`'s subclass: they accept focus without Full Keyboard
+Access, and resolve their previous/next key view through the rows
+(`controller::key_view`), bringing off-screen rows into view, so Tab walks
+every button. Tab landing on the outline is forwarded to the first or last
+row button.
 
 **Settings.** `settings.rs` is a plain window, not a sheet: no Save or
 Cancel, every edit is applied as it is typed.

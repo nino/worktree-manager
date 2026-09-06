@@ -140,6 +140,14 @@ define_class!(
             }
         }
 
+        /// ⌘T: the branch picker for the selected worktree.
+        #[unsafe(method(switchBranch:))]
+        fn switch_branch(&self, _s: Option<&AnyObject>) {
+            if let Some(cell) = self.selected_worktree_cell() {
+                cell.open_picker();
+            }
+        }
+
         #[unsafe(method(focusSearch:))]
         fn focus_search(&self, _s: Option<&AnyObject>) {
             if let (Some(w), Some(s)) = (self.window(), self.ivars().search.borrow().as_ref()) {
@@ -175,6 +183,8 @@ define_class!(
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
             if item.action() == Some(sel!(newWorktree:)) {
                 self.selected_repo_id().is_some()
+            } else if item.action() == Some(sel!(switchBranch:)) {
+                self.selected_worktree_cell().is_some()
             } else {
                 true
             }
@@ -330,8 +340,10 @@ define_class!(
 
         #[unsafe(method(outlineView:shouldSelectItem:))]
         unsafe fn should_select(&self, _o: &NSOutlineView, _item: &AnyObject) -> bool {
-            // Nothing acts on a selection; every control lives in the rows.
-            false
+            // Selection is the keyboard's cursor through the tree: the arrow
+            // keys move it, ⌘N and ⌘T act on it, and the row draws it as a
+            // glowing outline (see `rowview::draw_selection`).
+            true
         }
 
         #[unsafe(method_id(outlineView:rowViewForItem:))]
@@ -887,6 +899,24 @@ impl Controller {
         }
     }
 
+    /// The cell of the selected row, when a worktree is selected.
+    fn selected_worktree_cell(&self) -> Option<Retained<WorktreeCell>> {
+        let outline = self.ivars().outline.borrow().clone()?;
+        let row = outline.selectedRow();
+        if row < 0 {
+            return None;
+        }
+        let item = outline.itemAtRow(row)?;
+        let item = item.downcast_ref::<WTMItem>()?;
+        if !matches!(item.kind(), ItemKind::Worktree { .. }) {
+            return None;
+        }
+        outline
+            .viewAtColumn_row_makeIfNecessary(0, row, false)?
+            .downcast::<WorktreeCell>()
+            .ok()
+    }
+
     fn selected_repo_id(&self) -> Option<String> {
         let outline = self.ivars().outline.borrow().clone()?;
         let row = outline.selectedRow();
@@ -951,6 +981,7 @@ impl Controller {
         // Rows draw their own card slices (see `rowview.rs`): no system
         // insets, spacing, selection or separators.
         outline.setStyle(NSTableViewStyle::Plain);
+        // Rows draw the selection themselves, inside the card.
         outline.setSelectionHighlightStyle(NSTableViewSelectionHighlightStyle::None);
         // Children are not indented: their plates are inset by `RowView`.
         outline.setIndentationPerLevel(0.0);
@@ -1143,6 +1174,10 @@ impl Controller {
         crate::menu::install(&NSApplication::sharedApplication(mtm), self.as_ref(), mtm);
         window.center();
         window.makeKeyAndOrderFront(None);
+        // The tree starts focused, so the arrow keys work without a click.
+        if let Some(o) = iv.outline.borrow().as_ref() {
+            window.makeFirstResponder(Some(o));
+        }
         self.fit_column();
     }
 

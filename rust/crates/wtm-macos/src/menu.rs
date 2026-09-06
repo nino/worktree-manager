@@ -108,6 +108,13 @@ pub fn install(app: &NSApplication, controller: &AnyObject, mtm: MainThreadMarke
         Some(controller),
         mtm,
     ));
+    file.addItem(&item(
+        "Switch Branch…",
+        Some(sel!(switchBranch:)),
+        "t",
+        Some(controller),
+        mtm,
+    ));
     file.addItem(&NSMenuItem::separatorItem(mtm));
     file.addItem(&item(
         "Refresh",
