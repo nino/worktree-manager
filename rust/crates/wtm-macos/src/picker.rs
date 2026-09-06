@@ -5,24 +5,29 @@
 //! too, which the old popup could not offer.
 
 use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
+
+use block2::RcBlock;
+use dispatch2::MainThreadBound;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::Message;
 use objc2::{
     define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSColor, NSControl, NSControlTextEditingDelegate, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLayoutConstraint, NSPopover, NSPopoverBehavior,
-    NSPopoverDelegate, NSScrollView, NSTableCellView, NSTableColumn, NSTableRowView, NSTableView,
-    NSTableViewDataSource, NSTableViewDelegate, NSTableViewSelectionHighlightStyle,
-    NSTableViewStyle, NSTextField, NSTextFieldDelegate, NSTextView,
-    NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSApplicationDidResignActiveNotification, NSColor, NSControl, NSControlTextEditingDelegate,
+    NSEvent, NSEventMask, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView,
+    NSTableCellView, NSTableColumn, NSTableRowView, NSTableView, NSTableViewDataSource,
+    NSTableViewDelegate, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
+    NSTextFieldDelegate, NSTextView, NSUserInterfaceItemIdentification, NSView, NSViewController,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSIndexSet, NSInteger, NSMutableAttributedString,
-    NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge,
-    NSSize, NSString,
+    NSMutableIndexSet, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSRectEdge, NSSize, NSString,
 };
 use wtm_core::fuzzy::{fuzzy_filter, Match};
 
@@ -49,6 +54,10 @@ pub struct BranchPickerIvars {
     filtered: RefCell<Vec<(usize, Match)>>,
     /// The row the text was last drawn selected for.
     selected: Cell<NSInteger>,
+    /// The button the popover hangs off, and what watches for the clicks
+    /// that dismiss it.
+    anchor: Retained<NSView>,
+    monitor: RefCell<Option<Retained<AnyObject>>>,
     on_choose: Box<dyn Fn(String)>,
 }
 
@@ -62,6 +71,15 @@ define_class!(
     unsafe impl NSObjectProtocol for BranchPicker {}
 
     impl BranchPicker {
+        /// Leaving the app takes the picker with it, as a transient popover
+        /// would. (The app's own window resigning key is not the same thing:
+        /// the popover itself takes key while the filter field is typed in.)
+        #[unsafe(method(appResignedActive:))]
+        fn app_resigned_active(&self, _n: &NSNotification) {
+            self.stop_watching();
+            unsafe { self.ivars().popover.performClose(None) };
+        }
+
         #[unsafe(method(rowClicked:))]
         fn row_clicked(&self, _s: Option<&AnyObject>) {
             self.choose(self.ivars().table.clickedRow());
@@ -122,7 +140,15 @@ define_class!(
     unsafe impl NSPopoverDelegate for BranchPicker {
         #[unsafe(method(popoverDidClose:))]
         fn popover_did_close(&self, _n: &NSNotification) {
-            CURRENT.with(|c| c.borrow_mut().take());
+            // Only if this is still the current picker: a click that closes
+            // one and opens another arrives before this notification.
+            CURRENT.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.as_deref().is_some_and(|p| std::ptr::eq(p, self)) {
+                    c.take();
+                }
+            });
+            self.stop_watching();
             // The popover took the keyboard; hand it back to the tree rather
             // than leaving the window with no first responder.
             if let Some(mtm) = MainThreadMarker::new() {
@@ -215,7 +241,10 @@ pub fn show(
     let vc = NSViewController::new(mtm);
     vc.setView(&container);
     let popover = NSPopover::new(mtm);
-    popover.setBehavior(NSPopoverBehavior::Transient);
+    // Not `Transient`: that closes on the mouse-down and lets the click reach
+    // the button, whose action then reopens it on the mouse-up. Dismissal is
+    // handled below instead, where a click on the button can be swallowed.
+    popover.setBehavior(NSPopoverBehavior::ApplicationDefined);
     popover.setContentViewController(Some(&vc));
     popover.setContentSize(container.frame().size);
 
@@ -227,6 +256,8 @@ pub fn show(
         current: current.map(str::to_string),
         filtered: RefCell::new(Vec::new()),
         selected: Cell::new(-1),
+        anchor: anchor.retain(),
+        monitor: RefCell::new(None),
         on_choose: Box::new(on_choose),
     });
     let this: Retained<BranchPicker> = unsafe { msg_send![super(this), init] };
@@ -250,6 +281,7 @@ pub fn show(
         anchor,
         NSRectEdge::NSMaxYEdge,
     );
+    this.watch_for_dismissal();
     if let Some(w) = field.window() {
         w.makeFirstResponder(Some(&field));
     }
@@ -257,12 +289,78 @@ pub fn show(
 
 /// Close the open picker, if any.
 pub fn close() {
-    if let Some(p) = CURRENT.with(|c| c.borrow().clone()) {
+    if let Some(p) = CURRENT.with(|c| c.borrow_mut().take()) {
+        p.stop_watching();
         unsafe { p.ivars().popover.performClose(None) };
     }
 }
 
 impl BranchPicker {
+    /// Close on the next click outside the popover. A click on the button
+    /// that opened it is swallowed, so the picker toggles rather than
+    /// closing and reopening on the same click.
+    fn watch_for_dismissal(&self) {
+        let mtm = MainThreadMarker::from(self);
+        let me = MainThreadBound::new(self.retain(), mtm);
+        let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            let mtm = MainThreadMarker::new().expect("events arrive on the main thread");
+            let event = unsafe { event.as_ref() };
+            let me = me.get(mtm);
+            let iv = me.ivars();
+            if !iv.popover.isShown() {
+                // Already on its way out; the click is not ours to swallow.
+                me.stop_watching();
+                return event as *const NSEvent as *mut NSEvent;
+            }
+            let popover_window = iv
+                .popover
+                .contentViewController()
+                .and_then(|c| c.view().window());
+            let clicked = event.window(mtm);
+            if clicked.is_some() && clicked == popover_window {
+                return event as *const NSEvent as *mut NSEvent;
+            }
+            let on_anchor = clicked.as_deref() == iv.anchor.window().as_deref()
+                && iv.anchor.mouse_inRect(
+                    iv.anchor
+                        .convertPoint_fromView(event.locationInWindow(), None),
+                    iv.anchor.bounds(),
+                );
+            unsafe { iv.popover.performClose(None) };
+            // Now, not when the closing animation ends: a second click lands
+            // in between, and it belongs to whatever it hits.
+            me.stop_watching();
+            if on_anchor {
+                // The click has done its job; the button must not see it.
+                std::ptr::null_mut()
+            } else {
+                event as *const NSEvent as *mut NSEvent
+            }
+        });
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+                &block,
+            )
+        };
+        *self.ivars().monitor.borrow_mut() = monitor;
+        unsafe {
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                self,
+                sel!(appResignedActive:),
+                Some(NSApplicationDidResignActiveNotification),
+                None,
+            )
+        };
+    }
+
+    fn stop_watching(&self) {
+        if let Some(monitor) = self.ivars().monitor.borrow_mut().take() {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+            unsafe { NSNotificationCenter::defaultCenter().removeObserver(self) };
+        }
+    }
+
     /// A recycled or new cell: a label pinned to the row's edges.
     fn cell_view(&self, table: &NSTableView) -> Retained<NSTableCellView> {
         let mtm = MainThreadMarker::from(self);
@@ -337,6 +435,7 @@ impl BranchPicker {
             }
             iv.all[filtered[row as usize].0].clone()
         };
+        self.stop_watching();
         unsafe { iv.popover.performClose(None) };
         if iv.current.as_deref() != Some(branch.as_str()) {
             (iv.on_choose)(branch);
@@ -356,6 +455,7 @@ impl BranchPicker {
             self.choose(selected);
             true
         } else if command == sel!(cancelOperation:) {
+            self.stop_watching();
             unsafe { self.ivars().popover.performClose(None) };
             true
         } else {

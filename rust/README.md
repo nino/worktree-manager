@@ -58,7 +58,13 @@ added/removed triggers `reloadData`. Cell views are recycled through
 (`(detached)` for a detached HEAD) that opens a popover (`picker.rs`): a filter
 field over a list ranked by `wtm_core::fuzzy` — the same subsequence match and
 ordering as the Electron app — with ↑/↓, Return and Escape handled in the
-field's delegate. Choosing dispatches `Action::Switch`. A `claude/` or
+field's delegate. Choosing dispatches `Action::Switch`. The popover is
+`ApplicationDefined`, not `Transient`: a transient one closes on the
+mouse-down and still lets the click reach the button, whose action reopens it
+on the mouse-up, so clicking an open picker never closed it. A local event
+monitor closes it instead, swallowing the click when it lands on the button
+that opened it, and it also closes on Escape, on a click anywhere else, and
+when the app is deactivated. A `claude/` or
 `cursor/` prefix is drawn as that agent's mark (`toolicon.rs`, the same
 16-unit grid as the web app's SVGs) by `branchlabel.rs`, in both the button
 and the list; matching, tooltips and the dispatched value keep the whole name.
