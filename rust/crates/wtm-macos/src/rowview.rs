@@ -114,8 +114,54 @@ fn card_border() -> Retained<NSColor> {
 /// card, so it reads as recessed under the raised plates.
 fn well_fill() -> Retained<NSColor> {
     NSColor::windowBackgroundColor()
-        .blendedColorWithFraction_ofColor(0.25, &NSColor::controlBackgroundColor())
+        .blendedColorWithFraction_ofColor(0.05, &NSColor::blackColor())
         .unwrap_or_else(NSColor::windowBackgroundColor)
+}
+
+/// The grain tile: a few thousand half-point specks of black and white at
+/// low alpha, baked once and tiled by Core Graphics as a pattern colour.
+/// Cheap to draw and appearance-neutral.
+fn grain() -> Retained<NSColor> {
+    thread_local! {
+        static GRAIN: std::cell::OnceCell<Retained<NSColor>> = const { std::cell::OnceCell::new() };
+    }
+    GRAIN.with(|g| {
+        g.get_or_init(|| {
+            let size = NSSize::new(128.0, 128.0);
+            let handler = block2::RcBlock::new(move |_rect: NSRect| -> objc2::runtime::Bool {
+                // xorshift: deterministic, so every tile edge matches.
+                let mut state: u32 = 0x9E37_79B9;
+                let mut next = || {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state
+                };
+                for _ in 0..2600 {
+                    let x = (next() % 256) as f64 * 0.5;
+                    let y = (next() % 256) as f64 * 0.5;
+                    let light = next() % 2 == 0;
+                    let alpha = 0.04 + (next() % 5) as f64 * 0.012;
+                    let c = if light {
+                        NSColor::whiteColor()
+                    } else {
+                        NSColor::blackColor()
+                    };
+                    c.colorWithAlphaComponent(alpha).setFill();
+                    NSBezierPath::bezierPathWithRect(NSRect::new(
+                        NSPoint::new(x, y),
+                        NSSize::new(0.5, 0.5),
+                    ))
+                    .fill();
+                }
+                objc2::runtime::Bool::YES
+            });
+            let image =
+                objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler);
+            NSColor::colorWithPatternImage(&image)
+        })
+        .clone()
+    })
 }
 
 /// Plates are raised: the card colour, lifted by a drop shadow.
@@ -208,16 +254,22 @@ fn draw(bounds: NSRect, style: RowStyle) {
             );
             let band_path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
-            // Pale blue, Aqua's signature: the card colour tinted towards the
-            // system blue, deeper at the top and fading towards the plates.
+            // Aqua's blue, greyed down: the card colour tinted towards a
+            // desaturated system blue and darkened a little, deeper at the
+            // top and fading towards the plates.
             let base = card_fill();
-            let blue = NSColor::systemBlueColor();
-            let top = base
-                .blendedColorWithFraction_ofColor(0.16, &blue)
-                .unwrap_or_else(|| base.clone());
-            let bottom = base
-                .blendedColorWithFraction_ofColor(0.05, &blue)
-                .unwrap_or_else(|| base.clone());
+            let blue = NSColor::systemBlueColor()
+                .blendedColorWithFraction_ofColor(0.45, &NSColor::systemGrayColor())
+                .unwrap_or_else(NSColor::systemBlueColor);
+            let tone = |blue_amount: f64, dark_amount: f64| {
+                base.blendedColorWithFraction_ofColor(blue_amount, &blue)
+                    .and_then(|c| {
+                        c.blendedColorWithFraction_ofColor(dark_amount, &NSColor::blackColor())
+                    })
+                    .unwrap_or_else(|| base.clone())
+            };
+            let top = tone(0.26, 0.06);
+            let bottom = tone(0.12, 0.02);
             // A bright hairline along the top edge, the Aqua bevel.
             let hairline = NSRect::new(
                 NSPoint::new(x + r, CARD_GAP + 1.0),
@@ -232,6 +284,9 @@ fn draw(bounds: NSRect, style: RowStyle) {
             ) {
                 g.drawInBezierPath_angle(&band_path, -90.0);
             }
+            // Grain over the band, like brushed metal under glass.
+            grain().setFill();
+            band_path.fill();
             NSColor::whiteColor()
                 .colorWithAlphaComponent(0.35)
                 .setFill();
