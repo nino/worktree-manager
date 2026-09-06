@@ -305,7 +305,7 @@ define_class!(
             };
             let style = self.row_style(_o, item);
             match style {
-                RowStyle::Child { last: true } => base + LAST_ROW_EXTRA,
+                RowStyle::Child { last: true, .. } => base + LAST_ROW_EXTRA,
                 _ => base,
             }
         }
@@ -416,13 +416,15 @@ impl Controller {
             }
             ItemKind::Worktree { repo_id, .. } | ItemKind::Pending { repo_id, .. } => {
                 let key = ItemKind::Repo { repo_id }.key();
-                let last = tree
-                    .children
-                    .get(&key)
-                    .and_then(|c| c.last())
-                    .map(|l| std::ptr::eq(Retained::as_ptr(l), item))
-                    .unwrap_or(false);
-                RowStyle::Child { last }
+                let children = tree.children.get(&key);
+                let is = |c: Option<&Retained<WTMItem>>| {
+                    c.map(|l| std::ptr::eq(Retained::as_ptr(l), item))
+                        .unwrap_or(false)
+                };
+                RowStyle::Child {
+                    first: is(children.and_then(|c| c.first())),
+                    last: is(children.and_then(|c| c.last())),
+                }
             }
         }
     }

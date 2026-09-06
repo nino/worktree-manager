@@ -44,8 +44,9 @@ pub enum RowStyle {
     /// Repo header. `closed`: no rows follow (collapsed or empty), so the
     /// card's bottom edge is drawn here too.
     Header { closed: bool },
-    /// A worktree/pending row. `last`: closes the card underneath the plate.
-    Child { last: bool },
+    /// A worktree/pending row. `first`: continues the well's top shadow;
+    /// `last`: closes the card underneath the plate.
+    Child { first: bool, last: bool },
 }
 
 pub struct RowViewIvars {
@@ -122,11 +123,34 @@ fn plate_fill() -> Retained<NSColor> {
     NSColor::controlBackgroundColor()
 }
 
+/// The well's side shading, drawn by every row the well passes through so
+/// the strips are continuous from the band down to the card bottom.
+fn well_sides(well: NSRect) {
+    let side = 5.0;
+    inner_shadow(
+        NSRect::new(well.origin, NSSize::new(side, well.size.height)),
+        0.0,
+        0.06,
+    );
+    inner_shadow(
+        NSRect::new(
+            NSPoint::new(well.origin.x + well.size.width - side, well.origin.y),
+            NSSize::new(side, well.size.height),
+        ),
+        180.0,
+        0.06,
+    );
+}
+
 /// Inner shadow along one edge of the well: a short gradient from shade to
 /// clear, `angle` giving the direction it fades in (−90 = downwards).
 fn inner_shadow(rect: NSRect, angle: f64, strength: f64) {
-    let from = NSColor::blackColor().colorWithAlphaComponent(strength);
-    let to = NSColor::blackColor().colorWithAlphaComponent(0.0);
+    inner_shadow_to(rect, angle, strength, 0.0);
+}
+
+fn inner_shadow_to(rect: NSRect, angle: f64, from_alpha: f64, to_alpha: f64) {
+    let from = NSColor::blackColor().colorWithAlphaComponent(from_alpha);
+    let to = NSColor::blackColor().colorWithAlphaComponent(to_alpha);
     let mtm = MainThreadMarker::new().expect("drawing happens on the main thread");
     if let Some(g) = NSGradient::initWithStartingColor_endingColor(mtm.alloc(), &from, &to) {
         g.drawInRect_angle(rect, angle);
@@ -229,13 +253,14 @@ fn draw(bounds: NSRect, style: RowStyle) {
                     NSSize::new(cw - 2.0, 1.0),
                 ))
                 .fill();
-                inner_shadow(well, -90.0, 0.10);
+                inner_shadow_to(well, -90.0, 0.10, 0.03);
+                well_sides(well);
             }
             card_border().setStroke();
             path.setLineWidth(1.0);
             path.stroke();
         }
-        RowStyle::Child { last } => {
+        RowStyle::Child { first, last } => {
             // Card body: a rounded rect taller than the row so the sides run
             // straight; for the last row its bottom corners are in view.
             let top = -(r + 2.0);
@@ -270,20 +295,16 @@ fn draw(bounds: NSRect, style: RowStyle) {
             path.addClip();
             well_fill().setFill();
             NSBezierPath::bezierPathWithRect(well).fill();
-            let side = 5.0;
-            inner_shadow(
-                NSRect::new(well.origin, NSSize::new(side, well.size.height)),
-                0.0,
-                0.06,
-            );
-            inner_shadow(
-                NSRect::new(
-                    NSPoint::new(x + cw - 1.0 - side, 0.0),
-                    NSSize::new(side, well.size.height),
-                ),
-                180.0,
-                0.06,
-            );
+            well_sides(well);
+            if first {
+                // The top shadow's tail: the header row fades 0.10 → 0.03
+                // over its lead-in, this finishes the fade.
+                inner_shadow(
+                    NSRect::new(well.origin, NSSize::new(well.size.width, 3.0)),
+                    -90.0,
+                    0.03,
+                );
+            }
             if last {
                 inner_shadow(
                     NSRect::new(
