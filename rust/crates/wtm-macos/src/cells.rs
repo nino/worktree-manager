@@ -23,7 +23,7 @@ use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, 
 use crate::badge::{badges_for, Badge};
 use crate::button::Button;
 use crate::dialogs;
-use crate::util::{label, mono_label, ns, secondary_label, symbol};
+use crate::util::{label, mono_label, ns, secondary_label, symbol, symbol_raised};
 
 use crate::outline::CONTENT_START;
 use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
@@ -41,6 +41,10 @@ pub const PENDING_ROW_HEIGHT: f64 = 2.0 * PLATE_GAP + 36.0;
 /// leading inset is what remains to reach the plate's own padding.
 const HEADER_INSETS: (f64, f64, f64, f64) =
     (CONTENT_START, CARD_MARGIN + 14.0, CARD_GAP + 9.0, 7.0);
+/// How far the branch button's chevrons are lifted so they centre on the
+/// branch name rather than on its line box (see `symbol_raised`).
+const CHEVRON_LIFT: f64 = 1.25;
+
 const PLATE_INSETS: (f64, f64, f64, f64) = (
     CARD_MARGIN + PLATE_INSET + 12.0,
     CARD_MARGIN + PLATE_INSET + 12.0,
@@ -439,17 +443,17 @@ impl WorktreeCell {
             12.0,
             crate::util::SEMIBOLD,
         )));
-        if let Some(chevrons) = symbol("chevron.up.chevron.down", "Switch branch") {
+        if let Some(chevrons) = symbol_raised(
+            "chevron.up.chevron.down",
+            "Switch branch",
+            9.0,
+            crate::util::SEMIBOLD,
+            CHEVRON_LIFT,
+        ) {
             picker.setImage(Some(&chevrons));
         }
         picker.setImagePosition(NSCellImagePosition::ImageTrailing);
         picker.setImageHugsTitle(true);
-        picker.setSymbolConfiguration(Some(
-            &NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                9.0,
-                crate::util::SEMIBOLD,
-            ),
-        ));
         picker.setTranslatesAutoresizingMaskIntoConstraints(false);
         picker.setContentCompressionResistancePriority_forOrientation(
             NSLayoutPriorityDefaultLow + 10.0,
