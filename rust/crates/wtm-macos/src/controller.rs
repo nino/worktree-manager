@@ -38,6 +38,7 @@ use crate::dialogs;
 use crate::items::{ItemKind, WTMItem};
 use crate::outline::OutlineView;
 use crate::rowview::{RowStyle, RowView, LAST_ROW_EXTRA, WELL_LEAD};
+use crate::settings::SettingsWindow;
 use crate::util::{ns, secondary_label, symbol};
 
 static CONTROLLER: OnceLock<MainThreadBound<Retained<Controller>>> = OnceLock::new();
@@ -88,6 +89,7 @@ pub struct ControllerIvars {
     notice_id: Cell<u64>,
     /// When the app last became active; `None` until launch has settled.
     last_activation: Cell<Option<std::time::Instant>>,
+    settings: RefCell<Option<Retained<SettingsWindow>>>,
 }
 
 define_class!(
@@ -116,9 +118,14 @@ define_class!(
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _s: Option<&AnyObject>) {
-            if let Some(w) = self.window() {
-                dialogs::settings(&self.ivars().app, &w);
-            }
+            let mtm = MainThreadMarker::from(self);
+            let iv = self.ivars();
+            let settings = iv
+                .settings
+                .borrow_mut()
+                .get_or_insert_with(|| SettingsWindow::new(iv.app.clone(), mtm))
+                .clone();
+            settings.show();
         }
 
         #[unsafe(method(newWorktree:))]
@@ -799,6 +806,7 @@ impl Controller {
             collapsed: RefCell::new(HashSet::new()),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
+            settings: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let _ = CONTROLLER.set(MainThreadBound::new(this.clone(), mtm));

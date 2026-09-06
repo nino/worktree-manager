@@ -14,6 +14,7 @@ pub mod menu;
 pub mod outline;
 pub mod platform;
 pub mod rowview;
+pub mod settings;
 pub mod util;
 
 pub use platform::{app_dirs, MacPlatform};

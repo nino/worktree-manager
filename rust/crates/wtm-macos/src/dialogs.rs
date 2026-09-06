@@ -1,5 +1,5 @@
-//! Sheets: create worktree, app settings, repo settings, delete confirmation,
-//! folder pickers. All are `NSAlert`/`NSOpenPanel` sheets on the main window
+//! Sheets: create worktree, repo settings, delete confirmation, folder
+//! pickers (the app settings live in their own window, see `settings.rs`). All are `NSAlert`/`NSOpenPanel` sheets on the main window
 //! with native controls in an accessory view; every outcome is dispatched as
 //! an [`Action`] and the model update repaints the tree.
 
@@ -11,21 +11,20 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAlertThirdButtonReturn, NSButton,
-    NSComboBox, NSControl, NSFont, NSLayoutAttribute, NSLayoutPriorityDefaultLow, NSModalResponse,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAlertThirdButtonReturn, NSComboBox,
+    NSControl, NSFont, NSLayoutAttribute, NSLayoutPriorityDefaultLow, NSModalResponse,
     NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView,
     NSStackViewDistribution, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
     NSView, NSWindow,
 };
 use objc2_foundation::{NSArray, NSObject, NSPoint, NSRect, NSSize, NSString};
 use wtm_core::{
-    Action, App, AppSettings, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams,
-    DeleteWorktreeResult,
+    Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, DeleteWorktreeResult,
 };
 
 use crate::util::{label, ns};
 
-const FORM_WIDTH: f64 = 420.0;
+pub(crate) const FORM_WIDTH: f64 = 420.0;
 const LABEL_WIDTH: f64 = 120.0;
 
 // MARK: Callback target
@@ -71,7 +70,7 @@ impl Callback {
 
 // MARK: Form helpers
 
-fn form(mtm: MainThreadMarker) -> Retained<NSStackView> {
+pub(crate) fn form(mtm: MainThreadMarker) -> Retained<NSStackView> {
     let s = NSStackView::new(mtm);
     s.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     s.setAlignment(NSLayoutAttribute::Leading);
@@ -80,7 +79,7 @@ fn form(mtm: MainThreadMarker) -> Retained<NSStackView> {
     s
 }
 
-fn row(caption: &str, control: &NSView, mtm: MainThreadMarker) -> Retained<NSStackView> {
+pub(crate) fn row(caption: &str, control: &NSView, mtm: MainThreadMarker) -> Retained<NSStackView> {
     let r = NSStackView::new(mtm);
     r.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     r.setAlignment(NSLayoutAttribute::FirstBaseline);
@@ -102,7 +101,7 @@ fn row(caption: &str, control: &NSView, mtm: MainThreadMarker) -> Retained<NSSta
     r
 }
 
-fn hint(text: &str, mtm: MainThreadMarker) -> Retained<NSStackView> {
+pub(crate) fn hint(text: &str, mtm: MainThreadMarker) -> Retained<NSStackView> {
     let r = NSStackView::new(mtm);
     r.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     r.setAlignment(NSLayoutAttribute::FirstBaseline);
@@ -124,7 +123,11 @@ fn hint(text: &str, mtm: MainThreadMarker) -> Retained<NSStackView> {
     r
 }
 
-fn text_field(value: &str, placeholder: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
+pub(crate) fn text_field(
+    value: &str,
+    placeholder: &str,
+    mtm: MainThreadMarker,
+) -> Retained<NSTextField> {
     let f = NSTextField::textFieldWithString(&ns(value), mtm);
     f.setPlaceholderString(Some(&ns(placeholder)));
     f.setFont(Some(&NSFont::systemFontOfSize(13.0)));
@@ -313,78 +316,6 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
             branch: name.trim().to_string(),
             new_branch,
             base_ref,
-        }));
-    });
-}
-
-// MARK: App settings
-
-pub fn settings(app: &App, window: &NSWindow) {
-    let mtm = MainThreadMarker::from(window);
-    let config = app.model().config.clone();
-    let a = alert("Settings", "", mtm);
-    a.addButtonWithTitle(&ns("Save"));
-    a.addButtonWithTitle(&ns("Cancel"));
-
-    let root = text_field(&config.worktrees_root, "e.g., ~/.claude-worktrees", mtm);
-    let browse =
-        unsafe { NSButton::buttonWithTitle_target_action(&ns("Browse…"), None, None, mtm) };
-    let root_row = NSStackView::new(mtm);
-    root_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    root_row.setSpacing(6.0);
-    root_row.addArrangedSubview(&root);
-    root_row.addArrangedSubview(&browse);
-    let editor = text_field(&config.editor_command, "e.g., code", mtm);
-
-    let alert_window = a.window();
-    let root_c = root.clone();
-    let pick = Callback::new(
-        move || {
-            let root_c = root_c.clone();
-            pick_folders(
-                &alert_window,
-                "Choose worktrees root folder",
-                false,
-                move |paths| {
-                    if let Some(p) = paths.first() {
-                        root_c.setStringValue(&ns(&p.to_string_lossy()));
-                    }
-                },
-            );
-        },
-        mtm,
-    );
-    pick.attach(&browse);
-
-    let f = form(mtm);
-    f.addArrangedSubview(&row("Worktrees root:", &root_row, mtm));
-    f.addArrangedSubview(&hint(
-        "Worktrees are created under this folder, grouped by repo name.",
-        mtm,
-    ));
-    f.addArrangedSubview(&row("Editor command:", &editor, mtm));
-    f.addArrangedSubview(&hint(
-        "Used by “Open in editor”. The worktree path is appended, or substituted for {path} if present.",
-        mtm,
-    ));
-    f.addArrangedSubview(&hint(
-        "“Open in terminal” uses your system default terminal (set via “Set as default terminal” in your terminal app).",
-        mtm,
-    ));
-    finish(&f);
-    a.setAccessoryView(Some(&f));
-    a.window().setInitialFirstResponder(Some(&root));
-
-    let app = app.clone();
-    let _keep = pick;
-    sheet(&a, window, move |resp| {
-        let _ = &_keep;
-        if resp != NSAlertFirstButtonReturn {
-            return;
-        }
-        app.dispatch(Action::SetSettings(AppSettings {
-            worktrees_root: root.stringValue().to_string().trim().to_string(),
-            editor_command: editor.stringValue().to_string().trim().to_string(),
         }));
     });
 }
