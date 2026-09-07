@@ -1,22 +1,21 @@
-# Worktree Manager — native Rust rewrite (experiment)
+# Architecture
 
-A from-scratch port of the Electron app to Rust with **real AppKit widgets**
-(`NSOutlineView`, `NSToolbar`, `NSAlert` sheets, SF Symbols), aimed at the
-lowest possible latency: the UI never waits on git, and every repaint touches
-only the rows whose data changed.
+**Real AppKit widgets** (`NSOutlineView`, `NSToolbar`, `NSAlert` sheets,
+`NSPopover`, SF Symbols) driven from Rust through objc2, aimed at the lowest
+possible latency: the UI never waits on git, and every repaint touches only the
+rows whose data changed.
 
 ```sh
-cd rust
 cargo run                 # dev build, runs as a bare binary (menu bar + window)
 cargo test                # unit tests + an end-to-end core test on a temp repo
 scripts/bundle.sh         # release build → target/bundle/Worktree Manager.app
-scripts/bundle.sh --install   # …and copy to /Applications/Worktree Manager (Native).app
+scripts/bundle.sh --install   # …and copy it to /Applications
 WTM_USER_DATA=/tmp/x cargo run   # sandboxed config dir (never touches real config)
 ```
 
 Config lives in `~/Library/Application Support/Worktree Manager/config.json`,
-in the same JSON shape as the Electron app's `worktree-manager.json`, which is
-imported on first launch if present. Both apps can coexist.
+in the same JSON shape the Electron app this replaced used, and that app's
+`worktree-manager.json` is imported on first launch if it is still there.
 
 ## Crates
 
@@ -148,8 +147,8 @@ Nothing in `wtm-core` changes. The UI contract is: subscribe to `Event`, read
 reply callback for the confirmation ladder. The macOS controller (`rebuild` in
 `controller.rs`) is a reference for the snapshot-diffing approach.
 
-## What is not ported yet
+## Not carried over from the Electron app
 
-Command runner with the terminal drawer, the GitHub auto-updater, code
-signing/notarisation, and the brushed-metal appearance (this uses the standard
-macOS look, light and dark).
+The command runner with its terminal drawer, and the brushed-metal appearance
+(this uses the standard macOS look, light and dark). Both are in git history if
+they are wanted back.
