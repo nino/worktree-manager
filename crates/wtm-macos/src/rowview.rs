@@ -14,11 +14,12 @@ use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{
-    define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+    define_class, msg_send, AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
+    Message,
 };
 use objc2_app_kit::{
-    NSBezierPath, NSBitmapImageRep, NSColor, NSGradient, NSGraphicsContext, NSShadow,
-    NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
+    NSBezierPath, NSBitmapImageRep, NSColor, NSDeviceRGBColorSpace, NSGradient, NSGraphicsContext,
+    NSImage, NSShadow, NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 
@@ -232,50 +233,78 @@ fn well_fill() -> Retained<NSColor> {
         .unwrap_or_else(NSColor::windowBackgroundColor)
 }
 
-/// The grain tile: a few thousand half-point specks of black and white at
-/// low alpha, baked once and tiled by Core Graphics as a pattern colour.
-/// Cheap to draw and appearance-neutral.
+/// The grain tile: a few thousand half-point specks of black and white at low
+/// alpha, tiled by Core Graphics as a pattern colour.
+///
+/// The pixels are written by hand into a bitmap rather than drawn into an
+/// image with a handler: a handler-backed `NSImage` re-runs its drawing every
+/// time the pattern is filled, which cost 3ms per branch button and put
+/// scrolling at about 20fps. As a bitmap it is a blit.
 pub(crate) fn grain() -> Retained<NSColor> {
     thread_local! {
         static GRAIN: std::cell::OnceCell<Retained<NSColor>> = const { std::cell::OnceCell::new() };
     }
-    GRAIN.with(|g| {
-        g.get_or_init(|| {
-            let size = NSSize::new(128.0, 128.0);
-            let handler = block2::RcBlock::new(move |_rect: NSRect| -> objc2::runtime::Bool {
-                // xorshift: deterministic, so every tile edge matches.
-                let mut state: u32 = 0x9E37_79B9;
-                let mut next = || {
-                    state ^= state << 13;
-                    state ^= state >> 17;
-                    state ^= state << 5;
-                    state
-                };
-                for _ in 0..3400 {
-                    let x = (next() % 256) as f64 * 0.5;
-                    let y = (next() % 256) as f64 * 0.5;
-                    let light = next() % 2 == 0;
-                    let alpha = 0.07 + (next() % 5) as f64 * 0.02;
-                    let c = if light {
-                        NSColor::whiteColor()
-                    } else {
-                        NSColor::blackColor()
-                    };
-                    c.colorWithAlphaComponent(alpha).setFill();
-                    NSBezierPath::bezierPathWithRect(NSRect::new(
-                        NSPoint::new(x, y),
-                        NSSize::new(0.5, 0.5),
-                    ))
-                    .fill();
-                }
-                objc2::runtime::Bool::YES
-            });
-            let image =
-                objc2_app_kit::NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler);
-            NSColor::colorWithPatternImage(&image)
-        })
-        .clone()
-    })
+    GRAIN.with(|g| g.get_or_init(build_grain).clone())
+}
+
+/// Side of the tile in points, and the scale it is rendered at: one speck per
+/// pixel at 2x, which is as fine as the texture can be.
+const GRAIN_POINTS: usize = 128;
+const GRAIN_SCALE: usize = 2;
+const GRAIN_SPECKS: usize = 14000;
+
+fn build_grain() -> Retained<NSColor> {
+    let pixels = GRAIN_POINTS * GRAIN_SCALE;
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            pixels as isize,
+            pixels as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            (pixels * 4) as isize,
+            32,
+        )
+    };
+    let Some(rep) = rep else {
+        return NSColor::clearColor();
+    };
+    let data = rep.bitmapData();
+    if !data.is_null() {
+        // Transparent to begin with, then speckled. Colours are premultiplied.
+        let len = pixels * pixels * 4;
+        let buffer = unsafe { std::slice::from_raw_parts_mut(data, len) };
+        buffer.fill(0);
+        // xorshift: deterministic, so the tile is the same every launch.
+        let mut state: u32 = 0x9E37_79B9;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for _ in 0..GRAIN_SPECKS {
+            let x = next() as usize % pixels;
+            let y = next() as usize % pixels;
+            let light = next() % 2 == 0;
+            let alpha = 0.03 + (next() % 5) as f64 * 0.01;
+            let a = (alpha * 255.0) as u8;
+            let c = if light { a } else { 0 };
+            let at = (y * pixels + x) * 4;
+            buffer[at..at + 4].copy_from_slice(&[c, c, c, a]);
+        }
+    }
+    rep.setSize(NSSize::new(GRAIN_POINTS as f64, GRAIN_POINTS as f64));
+    let image = NSImage::initWithSize(
+        NSImage::alloc(),
+        NSSize::new(GRAIN_POINTS as f64, GRAIN_POINTS as f64),
+    );
+    image.addRepresentation(&rep);
+    NSColor::colorWithPatternImage(&image)
 }
 
 /// Plates are raised: the card colour, lifted by a drop shadow.
