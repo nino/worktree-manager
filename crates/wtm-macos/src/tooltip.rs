@@ -11,8 +11,8 @@ use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezierPath, NSColor, NSFont, NSPanel, NSScreen, NSTextField, NSView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSBezierPath, NSColor, NSEvent, NSFont, NSPanel, NSScreen,
+    NSTextField, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
@@ -20,6 +20,8 @@ use crate::util::ns;
 
 /// How long the pointer must rest on an icon before its tooltip appears.
 const DELAY: Duration = Duration::from_millis(250);
+/// How often a visible tooltip checks that the pointer is still on its button.
+const WATCH: Duration = Duration::from_millis(150);
 /// Space between the icon and the tooltip.
 const OFFSET: f64 = 5.0;
 const PAD_X: f64 = 7.0;
@@ -28,6 +30,11 @@ const RADIUS: f64 = 5.0;
 
 thread_local! {
     static TIP: RefCell<Option<Retained<Tooltip>>> = const { RefCell::new(None) };
+    /// The button the visible tooltip belongs to. A tracking area does not
+    /// always get to say goodbye — a row can scroll out from under a still
+    /// pointer, or its view can be recycled — so while a tooltip is up the
+    /// pointer is checked against this view instead of waiting for an exit.
+    static OWNER: RefCell<Option<Retained<NSView>>> = const { RefCell::new(None) };
     /// Bumped by every show or hide, so a delayed show that has been
     /// overtaken does nothing.
     static GENERATION: Cell<u64> = const { Cell::new(0) };
@@ -174,6 +181,7 @@ pub fn schedule(view: &NSView, text: &str) {
 /// Take the tooltip away, and cancel any that is waiting to appear.
 pub fn hide() {
     GENERATION.with(|g| g.set(g.get() + 1));
+    OWNER.with(|o| o.borrow_mut().take());
     if let Some(tip) = TIP.with(|t| t.borrow().clone()) {
         if let Some(parent) = tip.parentWindow() {
             parent.removeChildWindow(&tip);
@@ -196,4 +204,50 @@ fn present(view: &NSView, text: &str, mtm: MainThreadMarker) {
             .clone()
     });
     tip.present(text, view);
+    OWNER.with(|o| *o.borrow_mut() = Some(view.retain()));
+    watch(mtm);
+}
+
+/// While a tooltip is up, keep asking whether the pointer is still on the
+/// button it belongs to, and take it away when it is not. Cheap, and only
+/// while one is showing.
+fn watch(mtm: MainThreadMarker) {
+    let _ = mtm;
+    let _ =
+        DispatchQueue::main().after(DispatchTime::NOW.time(WATCH.as_nanos() as i64), move || {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if !visible() {
+                return;
+            }
+            if pointer_is_on_owner(mtm) {
+                watch(mtm);
+            } else {
+                hide();
+            }
+        });
+}
+
+/// Whether the pointer is still over the button the tooltip belongs to, and
+/// that button is still on screen in an active window.
+fn pointer_is_on_owner(mtm: MainThreadMarker) -> bool {
+    let Some(owner) = OWNER.with(|o| o.borrow().clone()) else {
+        return false;
+    };
+    let Some(window) = owner.window() else {
+        return false; // The row was recycled, or the window went away.
+    };
+    if owner.isHiddenOrHasHiddenAncestor()
+        || !window.isVisible()
+        || !NSApplication::sharedApplication(mtm).isActive()
+    {
+        return false;
+    }
+    let on_screen = NSEvent::mouseLocation();
+    let in_window = window
+        .convertRectFromScreen(NSRect::new(on_screen, NSSize::new(1.0, 1.0)))
+        .origin;
+    let local = owner.convertPoint_fromView(in_window, None);
+    // `visibleRect`, not `bounds`: a row scrolled under the toolbar still has
+    // bounds, but no longer sits beneath the pointer.
+    owner.mouse_inRect(local, owner.visibleRect())
 }
