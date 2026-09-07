@@ -43,6 +43,13 @@ pub fn install(app: &NSApplication, controller: &AnyObject, mtm: MainThreadMarke
         None,
         mtm,
     ));
+    app_menu.addItem(&item(
+        "Check for Updates…",
+        Some(sel!(checkForUpdates:)),
+        "",
+        Some(controller),
+        mtm,
+    ));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     app_menu.addItem(&item(
         "Settings…",

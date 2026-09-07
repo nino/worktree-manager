@@ -82,6 +82,8 @@ pub struct ControllerIvars {
     notice_bar: RefCell<Option<Retained<NSView>>>,
     notice_label: RefCell<Option<Retained<NSTextField>>>,
     notice_details: RefCell<Option<Retained<NSButton>>>,
+    /// Shown in the notice bar once an update is installed and waiting.
+    notice_restart: RefCell<Option<Retained<NSButton>>>,
     refresh_spinner: RefCell<Option<Retained<NSProgressIndicator>>>,
     items: RefCell<HashMap<String, Retained<WTMItem>>>,
     tree: RefCell<Tree>,
@@ -154,6 +156,20 @@ define_class!(
             }
         }
 
+        /// The app menu's "Check for Updates…".
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, _s: Option<&AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            crate::updater::check_now(&self.ivars().app, mtm);
+        }
+
+        /// Quit and come back as the version the updater installed.
+        #[unsafe(method(restartForUpdate:))]
+        fn restart_for_update(&self, _s: Option<&AnyObject>) {
+            let mtm = MainThreadMarker::from(self);
+            crate::updater::restart(mtm);
+        }
+
         #[unsafe(method(dismissNotice:))]
         fn dismiss_notice(&self, _s: Option<&AnyObject>) {
             self.ivars().app.dispatch(Action::ClearNotice);
@@ -199,6 +215,7 @@ define_class!(
             self.build_window(mtm);
             self.model_changed();
             self.ivars().app.start();
+            crate::updater::start(&self.ivars().app, mtm);
             self.ivars().last_activation.set(Some(std::time::Instant::now()));
         }
 
@@ -708,6 +725,11 @@ impl Controller {
         Some(Retained::into_super(view))
     }
 
+    /// An update finished installing: the notice bar grows a Restart button.
+    pub fn update_became_ready(&self) {
+        self.update_chrome(&self.ivars().app.model());
+    }
+
     /// Re-tag one card's header row, e.g. when the card opens or closes.
     /// Only a redraw: header heights never change.
     fn sync_header_style(&self, repo_id: &str, leaving: Option<&RowView>) {
@@ -874,6 +896,7 @@ impl Controller {
             notice_bar: RefCell::new(None),
             notice_label: RefCell::new(None),
             notice_details: RefCell::new(None),
+            notice_restart: RefCell::new(None),
             refresh_spinner: RefCell::new(None),
             items: RefCell::new(HashMap::new()),
             tree: RefCell::new(Tree::default()),
@@ -1078,6 +1101,19 @@ impl Controller {
         details.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         details.setTranslatesAutoresizingMaskIntoConstraints(false);
         details.setHidden(true);
+        let restart = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &ns("Restart"),
+                Some(self.as_ref()),
+                Some(sel!(restartForUpdate:)),
+                mtm,
+            )
+        };
+        restart.setControlSize(NSControlSize::Small);
+        restart.setBezelStyle(NSBezelStyle::Push);
+        restart.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        restart.setTranslatesAutoresizingMaskIntoConstraints(false);
+        restart.setHidden(true);
         let close = unsafe {
             NSButton::buttonWithImage_target_action(
                 &symbol("xmark", "Dismiss").unwrap(),
@@ -1092,6 +1128,7 @@ impl Controller {
         close.setTranslatesAutoresizingMaskIntoConstraints(false);
         notice_bar.addSubview(&notice_label);
         notice_bar.addSubview(&details);
+        notice_bar.addSubview(&restart);
         notice_bar.addSubview(&close);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
             notice_label
@@ -1109,9 +1146,15 @@ impl Controller {
             details
                 .centerYAnchor()
                 .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
+            restart
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&details.trailingAnchor(), 6.0),
+            restart
+                .centerYAnchor()
+                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
             close
                 .leadingAnchor()
-                .constraintEqualToAnchor_constant(&details.trailingAnchor(), 4.0),
+                .constraintEqualToAnchor_constant(&restart.trailingAnchor(), 4.0),
             close
                 .trailingAnchor()
                 .constraintEqualToAnchor_constant(&notice_bar.trailingAnchor(), -12.0),
@@ -1192,6 +1235,7 @@ impl Controller {
         *iv.notice_bar.borrow_mut() = Some(notice_bar);
         *iv.notice_label.borrow_mut() = Some(notice_label);
         *iv.notice_details.borrow_mut() = Some(details);
+        *iv.notice_restart.borrow_mut() = Some(restart);
         *iv.refresh_spinner.borrow_mut() = Some(spinner);
 
         crate::menu::install(&NSApplication::sharedApplication(mtm), self.as_ref(), mtm);
@@ -1250,10 +1294,15 @@ impl Controller {
                     if let Some(d) = iv.notice_details.borrow().as_ref() {
                         d.setHidden(!long);
                     }
+                    let waiting = crate::updater::ready_version(MainThreadMarker::from(self));
+                    if let Some(r) = iv.notice_restart.borrow().as_ref() {
+                        r.setHidden(waiting.is_none());
+                    }
                     bar.setHidden(false);
                     if iv.notice_id.get() != n.id {
                         iv.notice_id.set(n.id);
-                        if n.tone == Tone::Info {
+                        // An installed update stays on offer until it is taken.
+                        if n.tone == Tone::Info && waiting.is_none() {
                             // Informational notices fade once the tree shows the outcome.
                             let app = iv.app.clone();
                             let id = n.id;

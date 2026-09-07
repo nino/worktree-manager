@@ -40,6 +40,11 @@ underneath — each with branch, path, live git status, and one-click actions.
 - **Agent branches read cleanly** — a `claude/` or `cursor/` prefix is drawn as
   that agent's mark, so the part of the name that identifies the work is what you
   see.
+- **Updates itself** — an installed copy checks the latest release shortly after
+  launch and every six hours, and installs a newer signed build in the
+  background; the notice bar then offers a restart. It only ever installs a
+  notarised build signed by the same team as the running copy, so a tampered
+  download is refused. Builds you make yourself never update.
 - **Persistent config** — worktrees root, editor command, and the repo list (with
   per-repo primary branch and init command) survive relaunches.
 - **Native, and quick about it** — real AppKit views, an immutable model snapshot,

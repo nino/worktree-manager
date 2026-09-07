@@ -82,6 +82,12 @@ pub enum Action {
     OpenInTerminal(String),
     Reveal(String),
     ClearNotice,
+    /// Say something in the notice bar. Used by anything outside the core's
+    /// own operations that has news — the updater, for one.
+    ShowNotice {
+        text: String,
+        tone: Tone,
+    },
 }
 
 /// Callback for actions that need an answer beyond a model change.
@@ -285,6 +291,7 @@ impl App {
                 }
             }
             Action::ClearNotice => self.update(|m| m.notice = None),
+            Action::ShowNotice { text, tone } => self.notify(tone, text),
         }
     }
 

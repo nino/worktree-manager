@@ -147,6 +147,19 @@ Nothing in `wtm-core` changes. The UI contract is: subscribe to `Event`, read
 reply callback for the confirmation ladder. The macOS controller (`rebuild` in
 `controller.rs`) is a reference for the snapshot-diffing approach.
 
+**Updating itself.** `updater.rs` reads `appcast.json` from the rolling
+`latest` release (`releases/latest/download/…` always resolves to the newest
+one, so there is no API call and no token), 10s after launch and every six
+hours. A newer version is downloaded, checked against the manifest's SHA-256,
+unpacked, and then checked where it counts: `codesign --verify`, a Team ID
+equal to the running copy's, and `spctl` reporting a notarised Developer ID
+app. Only then is the bundle swapped — the old one is moved aside first and
+removed once the new one is in place, so a failure leaves something that runs.
+The running image is the old code until a restart, which the notice bar
+offers. None of this happens unless the running copy is itself an installed,
+Developer-ID-signed build with a stamped version: a `cargo run` build has no
+Team ID to match and would think every release is an upgrade.
+
 ## Not carried over from the Electron app
 
 The command runner with its terminal drawer, and the brushed-metal appearance

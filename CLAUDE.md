@@ -93,6 +93,13 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Releases**: pushing to `main` builds, signs, notarises and publishes a
   rolling `latest` release; installed copies update themselves from it. See
   "Releases" below.
+- **The updater** (`updater.rs`) only runs for an installed Developer ID build
+  with a stamped version — a local build has no Team ID to match and its
+  `0.1.0` placeholder would treat every release as an upgrade. It refuses any
+  download whose hash, signature, Team ID or notarisation does not check out.
+  `swap` moves the old bundle aside before putting the new one in place, and
+  is unit-tested; so is the signature check, against a notarised app on the
+  machine.
 
 ## objc2 and AppKit notes (learned the hard way)
 

@@ -23,6 +23,7 @@ pub mod model;
 pub mod paths;
 pub mod repos;
 pub mod types;
+pub mod update;
 pub mod watcher;
 pub mod worktrees;
 
