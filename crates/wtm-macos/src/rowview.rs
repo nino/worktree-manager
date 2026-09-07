@@ -18,10 +18,11 @@ use objc2::{
     Message,
 };
 use objc2_app_kit::{
-    NSBezierPath, NSBitmapImageRep, NSColor, NSDeviceRGBColorSpace, NSGradient, NSGraphicsContext,
-    NSImage, NSShadow, NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSBezierPath, NSBitmapImageRep,
+    NSColor, NSDeviceRGBColorSpace, NSGradient, NSGraphicsContext, NSImage, NSShadow,
+    NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSArray, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 /// Space above each card (between cards).
 pub const CARD_GAP: f64 = 12.0;
@@ -214,6 +215,16 @@ impl RowView {
 }
 
 // MARK: Palette
+
+/// Whether the appearance being drawn into is a dark one.
+fn drawing_dark() -> bool {
+    let names = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
+        NSAppearanceNameDarkAqua
+    }]);
+    NSAppearance::currentDrawingAppearance()
+        .bestMatchFromAppearancesWithNames(&names)
+        .is_some_and(|name| &*name == unsafe { NSAppearanceNameDarkAqua })
+}
 
 fn card_fill() -> Retained<NSColor> {
     NSColor::controlBackgroundColor()
@@ -412,6 +423,7 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
             );
             let band_path =
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
+            let dark = drawing_dark();
             // Aqua's blue, greyed down: the card colour tinted towards a
             // desaturated system blue and darkened a little, deeper at the
             // top and fading towards the plates.
@@ -426,8 +438,14 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                     })
                     .unwrap_or_else(|| base.clone())
             };
-            let top = tone(0.26, 0.06);
-            let bottom = tone(0.12, 0.02);
+            // Light on top in the dark appearance, the way a lit surface reads
+            // there, and the other way round in the light one.
+            let (deep, shallow) = (tone(0.26, 0.06), tone(0.12, 0.02));
+            let (top, bottom) = if dark {
+                (shallow, deep)
+            } else {
+                (deep, shallow)
+            };
             // A bright hairline along the top edge, the Aqua bevel.
             let hairline = NSRect::new(
                 NSPoint::new(x + r, CARD_GAP + 1.0),
@@ -445,8 +463,11 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
             // Grain over the band, like brushed metal under glass.
             grain().setFill();
             band_path.fill();
+            // The Aqua bevel. Faint in the dark appearance, where a bright
+            // line just inside the card's own border reads as a second border
+            // rather than as a lit edge.
             NSColor::whiteColor()
-                .colorWithAlphaComponent(0.35)
+                .colorWithAlphaComponent(if dark { 0.10 } else { 0.35 })
                 .setFill();
             NSBezierPath::bezierPathWithRect(hairline).fill();
             card_border().setStroke();
