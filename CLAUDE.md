@@ -154,7 +154,21 @@ notarises and staples the app and the disk image, and replaces the rolling
 it only grows, and re-running the workflow on the same commit produces the
 same version, so a rebuild is never mistaken for an update.
 
-The release carries the DMG for people, and the zip plus `appcast.json` for
+Pushing the `beta` tag runs the same job for the beta channel:
+
+```sh
+git push --force origin HEAD:refs/tags/beta
+```
+
+It publishes a **prerelease** under the `beta` tag, from any branch, and never
+touches the stable release — `releases/latest` skips prereleases, so nothing
+published this way can reach someone on stable. A beta is versioned
+`1.0.<commits>-beta.<run number>`, which sorts above the stable build of the
+same commit and below the next one; because the run number always grows,
+rebuilding a beta from an unchanged tree is still an update, which is what
+makes the update path testable without inventing commits.
+
+Each release carries the DMG for people, and the zip plus `appcast.json` for
 the in-app updater. Five repository secrets drive the signing, under
 Settings → Secrets and variables → Actions:
 

@@ -3,17 +3,28 @@ name: Release
 on:
   push:
     branches: [main]
-  # Re-run the release without inventing a commit. A run that failed on
+    # A beta: the same signed, notarised build, published as a prerelease under
+    # the `beta` tag instead of replacing what everyone else is running. Move
+    # the tag and push it to cut one (`git push --force origin HEAD:refs/tags/beta`).
+    tags: [beta]
+  # Re-run a release without inventing a commit. A run that failed on
   # credentials rather than on code has nothing to fix in the tree, and the
   # only other way back to a green release is a push to main.
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Which channel to publish
+        type: choice
+        options: [stable, beta]
+        default: stable
 
 permissions:
   contents: write
 
-# Only one release build at a time; a newer push supersedes an in-flight one.
+# One release build at a time per channel; a newer push supersedes an
+# in-flight one, but a beta never cancels the release everyone is waiting on.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the version is derived from main's commit count
+          fetch-depth: 0 # the version is derived from the commit count
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -39,24 +50,53 @@ jobs:
 
       # The in-app updater decides there is something to install by comparing
       # versions, so every release needs one that is both new and larger than
-      # the one before. main's commit count is exactly that: it only grows, and
+      # the one before. The commit count is exactly that: it only grows, and
       # re-running this workflow on the same commit stamps the same version, so
       # a rebuild is never mistaken for an update. Nothing is committed back —
       # the tree keeps 0.1.0, and dev builds never update themselves.
-      - name: Stamp the build version
+      #
+      # A beta adds the run number, so it sorts above the stable build of the
+      # same commit and below the next one, and so that rebuilding a beta from
+      # an unchanged tree *is* an update — which is what makes the update path
+      # testable without inventing commits.
+      - name: Work out the channel and the version
         run: |
-          # workflow_dispatch offers every branch, and this job replaces the
-          # release installed copies update from. Building anything but main
-          # would publish that branch's code as `latest` *and* stamp it with a
-          # version main might not reach for several pushes — which would freeze
-          # the feed until it caught up. Fail before anything is signed.
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::the release can only be built from main (got $GITHUB_REF)"
-            exit 1
+          CHANNEL="${{ inputs.channel }}"
+          if [ -z "$CHANNEL" ]; then
+            case "$GITHUB_REF" in
+              refs/heads/main) CHANNEL=stable ;;
+              refs/tags/beta) CHANNEL=beta ;;
+              *) echo "::error::nothing to release from $GITHUB_REF"; exit 1 ;;
+            esac
           fi
-          VERSION="1.0.$(git rev-list --count HEAD)"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Building version $VERSION"
+          COMMITS=$(git rev-list --count HEAD)
+          if [ "$CHANNEL" = stable ]; then
+            # workflow_dispatch offers every branch, and a stable release
+            # replaces the one installed copies update from. Building anything
+            # but main would publish that branch's code as `latest` *and* stamp
+            # it with a version main might not reach for several pushes — which
+            # would freeze the feed until it caught up. Fail before anything is
+            # signed.
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::a stable release can only be built from main (got $GITHUB_REF)"
+              exit 1
+            fi
+            VERSION="1.0.$COMMITS"
+            BUILD="$VERSION"
+            TAG=latest
+          else
+            VERSION="1.0.$COMMITS-beta.$GITHUB_RUN_NUMBER"
+            # CFBundleVersion is meant to be digits and dots only.
+            BUILD="1.0.$COMMITS.$GITHUB_RUN_NUMBER"
+            TAG=beta
+          fi
+          {
+            echo "CHANNEL=$CHANNEL"
+            echo "VERSION=$VERSION"
+            echo "BUILD=$BUILD"
+            echo "TAG=$TAG"
+          } >> "$GITHUB_ENV"
+          echo "Building $CHANNEL version $VERSION (bundle version $BUILD)"
 
       - name: Test
         run: cargo test --workspace
@@ -64,7 +104,7 @@ jobs:
       - name: Build the universal app
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          scripts/bundle.sh --universal --version "$VERSION"
+          scripts/bundle.sh --universal --version "$VERSION" --build "$BUILD"
           lipo -info "target/bundle/$APP.app/Contents/MacOS/worktree-manager"
 
       # notarytool wants the App Store Connect key as a file, so the secret has
@@ -172,20 +212,26 @@ jobs:
           xcrun stapler staple "$dmg"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
-      # What the in-app updater reads (see crates/wtm-macos/src/updater.rs).
-      # `releases/latest/download/...` always resolves to the newest release,
-      # so an installed copy needs no GitHub API call and no token.
-      # What the in-app updater reads (see crates/wtm-macos/src/updater.rs).
-      # `releases/latest/download/...` always resolves to the newest release,
-      # so an installed copy needs no GitHub API call and no token.
+      # What the in-app updater reads (see crates/wtm-core/src/update.rs).
+      # `releases/latest/download/…` always resolves to the newest release that
+      # is not a prerelease, and `releases/download/beta/…` to whatever the
+      # `beta` tag currently points at — so an installed copy needs no GitHub
+      # API call and no token, and a beta cannot reach the stable channel.
       - name: Write the update manifest
         run: |
+          if [ "$CHANNEL" = stable ]; then
+            BASE="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          else
+            BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/beta"
+          fi
+          export BASE
           python3 - <<'PY'
           import hashlib, json, os, pathlib, datetime
           zip_path = pathlib.Path(os.environ["ZIP"])
           manifest = {
               "version": os.environ["VERSION"],
-              "url": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/latest/download/{zip_path.name}",
+              "channel": os.environ["CHANNEL"],
+              "url": f"{os.environ['BASE']}/{zip_path.name}",
               "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
               "minimumSystemVersion": "13.0",
               "commit": os.environ["GITHUB_SHA"],
@@ -233,19 +279,43 @@ jobs:
           fi
 
       # The DMG is what a person downloads; the zip and appcast.json are what
-      # installed copies update from, and they have to live in the same
-      # release for `releases/latest/download` to resolve them.
-      - name: Publish rolling "latest" release
+      # installed copies update from, and they have to live in the same release
+      # for the channel's download URL to resolve them.
+      #
+      # A beta is published as a prerelease, which is what keeps the two
+      # channels apart: `releases/latest` skips prereleases, so nothing here
+      # can reach someone on stable. The stable release keeps its own tag and
+      # is never touched by a beta run.
+      - name: Publish the ${{ env.CHANNEL }} release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           SHORT_SHA=${GITHUB_SHA:0:7}
-          # Recreate the rolling release so its tag always points at this commit.
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest \
-            --title "$APP v${VERSION} (${SHORT_SHA})" \
-            --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised universal macOS build — double-click to open. Installed copies update themselves from here." \
-            "$DMG" "$ZIP" dist/appcast.json
+          if [ "$CHANNEL" = stable ]; then
+            # Recreate the rolling release so its tag always points at this commit.
+            gh release delete "$TAG" --yes --cleanup-tag || true
+            gh release create "$TAG" \
+              --title "$APP v${VERSION} (${SHORT_SHA})" \
+              --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised universal macOS build — double-click to open. Installed copies update themselves from here." \
+              "$DMG" "$ZIP" dist/appcast.json
+          else
+            # Point the tag at this commit when it is not already there — a
+            # dispatched beta has no tag push behind it. A tag written with
+            # GITHUB_TOKEN starts no further workflow run.
+            at=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              git tag -f "$TAG" "$GITHUB_SHA"
+              git push --force origin "refs/tags/$TAG"
+            fi
+            # Delete only the release. The tag stays where it is, so nothing
+            # here can move what `releases/latest` resolves to.
+            gh release delete "$TAG" --yes || true
+            gh release create "$TAG" \
+              --prerelease --latest=false \
+              --title "$APP v${VERSION} (beta, ${SHORT_SHA})" \
+              --notes "Beta build of \`${GITHUB_SHA}\`. Signed and notarised, and ahead of the stable release. Copies set to the beta channel in Settings update themselves from here." \
+              "$DMG" "$ZIP" dist/appcast.json
+          fi
 
       - name: Remove the signing material
         if: always()
