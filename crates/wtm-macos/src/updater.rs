@@ -6,6 +6,11 @@
 //! switches over — the running image is the old one until then, exactly as
 //! Squirrel worked for the Electron app.
 //!
+//! There are two channels: stable reads the rolling `latest` release, beta
+//! reads the prerelease published from the `beta` tag. Which one is followed
+//! is a setting; `releases/latest` ignores prereleases, so a beta build is
+//! never handed to someone on stable.
+//!
 //! What is downloaded is checked twice before it replaces anything: its
 //! SHA-256 against the manifest, and then its code signature — it must be a
 //! notarised Developer ID build signed by the same team as the copy that is
@@ -20,12 +25,8 @@ use dispatch2::{DispatchQueue, DispatchTime};
 use objc2::MainThreadMarker;
 use objc2_foundation::{NSBundle, NSString};
 use wtm_core::model::Tone;
-use wtm_core::update::{is_newer, Manifest, UpdateStatus};
+use wtm_core::update::{is_newer, Manifest, UpdateChannel, UpdateStatus};
 use wtm_core::{Action, App};
-
-/// Where the manifest lives. `releases/latest/download/…` always resolves to
-/// the newest release, so an installed copy needs no API call and no token.
-const FEED: &str = "https://github.com/nino/worktree-manager/releases/latest/download/appcast.json";
 
 /// Long enough after launch that the first git listing is done.
 const FIRST_CHECK: Duration = Duration::from_secs(10);
@@ -53,9 +54,10 @@ pub fn start(app: &App, mtm: MainThreadMarker) {
         return;
     };
     log::info!(
-        "updates: {} {} — checking {FEED}",
+        "updates: {} {} — following the {} channel",
         install.bundle.display(),
-        install.version
+        install.version,
+        app.model().config.update_channel.name()
     );
     schedule(app.clone(), install, FIRST_CHECK);
 }
@@ -64,12 +66,23 @@ pub fn start(app: &App, mtm: MainThreadMarker) {
 pub fn check_now(app: &App, mtm: MainThreadMarker) {
     match installation(mtm) {
         Some(install) => run_check(app.clone(), install, true),
+
         None => app.dispatch(Action::ShowNotice {
             text: "This build does not update itself. Install the app from the latest release to \
                    get updates."
                 .into(),
             tone: Tone::Info,
         }),
+    }
+}
+
+/// The channel setting changed: read the new channel's feed straight away,
+/// so switching does not mean waiting for the next six-hourly check. A build
+/// that cannot update itself says nothing — the setting is still worth
+/// keeping, it just has no effect until the app is installed from a release.
+pub fn channel_changed(app: &App, mtm: MainThreadMarker) {
+    if let Some(install) = installation(mtm) {
+        run_check(app.clone(), install, true);
     }
 }
 
@@ -137,12 +150,15 @@ fn run_check(app: App, install: Installation, announce: bool) {
             tone: Tone::Info,
         });
     }
+    // Read the channel here, on the main thread, so the worker carries a
+    // decision rather than a handle to the model.
+    let channel = app.model().config.update_channel;
     // curl, unzip and codesign all block; none of it belongs on the main
     // thread, and none of it needs the model.
     std::thread::Builder::new()
         .name("wtm-updater".into())
         .spawn(move || {
-            let outcome = check_and_install(&install);
+            let outcome = check_and_install(&install, channel);
             let app = app.clone();
             DispatchQueue::main().exec_async(move || report(&app, outcome, announce));
         })
@@ -180,12 +196,16 @@ fn report(app: &App, outcome: Result<UpdateStatus, String>, announce: bool) {
     }
 }
 
-fn check_and_install(install: &Installation) -> Result<UpdateStatus, String> {
-    let manifest = Manifest::parse(&fetch(FEED)?)?;
+fn check_and_install(
+    install: &Installation,
+    channel: UpdateChannel,
+) -> Result<UpdateStatus, String> {
+    let manifest = Manifest::parse(&fetch(&channel.feed_url())?)?;
     if !is_newer(&manifest.version, &install.version) {
         log::info!(
-            "updates: {} is the latest ({} released)",
+            "updates: {} is the latest on {} ({} released)",
             install.version,
+            channel.name(),
             manifest.version
         );
         return Ok(UpdateStatus::UpToDate);

@@ -93,6 +93,9 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Releases**: pushing to `main` builds, signs, notarises and publishes a
   rolling `latest` release; installed copies update themselves from it. See
   "Releases" below.
+- **Update channels**: stable follows the rolling `latest` release, beta the
+  prerelease under the `beta` tag. Which one is followed is in the config
+  (`updateChannel`) and in Settings. See "Releases" below.
 - **The updater** (`updater.rs`) only runs for an installed Developer ID build
   with a stamped version — a local build has no Team ID to match and its
   `0.1.0` placeholder would treat every release as an upgrade. It refuses any

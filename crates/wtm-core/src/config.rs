@@ -9,6 +9,7 @@ use wtm_platform::AppDirs;
 
 use crate::paths::sanitize_repo_name;
 use crate::types::{AppConfig, AppSettings, RepoConfig};
+use crate::update::UpdateChannel;
 
 const CONFIG_FILE: &str = "config.json";
 
@@ -49,6 +50,7 @@ impl ConfigStore {
     pub fn set_settings(&mut self, settings: AppSettings) {
         self.config.worktrees_root = settings.worktrees_root;
         self.config.editor_command = settings.editor_command;
+        self.config.update_channel = settings.update_channel;
         self.save();
     }
 
@@ -133,6 +135,7 @@ fn defaults(home: &Path) -> AppConfig {
             .to_string_lossy()
             .into_owned(),
         editor_command: "code".to_string(),
+        update_channel: UpdateChannel::default(),
         repos: Vec::new(),
     }
 }
@@ -156,5 +159,17 @@ mod tests {
         let c: AppConfig =
             serde_json::from_str(r#"{"worktreesRoot":"/w","editorCommand":"c"}"#).unwrap();
         assert!(c.repos.is_empty());
+        // An Electron-era file, and every existing install, follows stable.
+        assert_eq!(c.update_channel, UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn the_update_channel_round_trips() {
+        let json = r#"{"worktreesRoot":"/w","editorCommand":"c","updateChannel":"beta"}"#;
+        let c: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.update_channel, UpdateChannel::Beta);
+        assert!(serde_json::to_string(&c)
+            .unwrap()
+            .contains(r#""updateChannel":"beta""#));
     }
 }

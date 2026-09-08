@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::update::UpdateChannel;
+
 /// A named command a repo can run inside a worktree (e.g. `pnpm dev`). Kept for
 /// config round-tripping; the command runner itself is not part of this build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +46,9 @@ pub struct AppConfig {
     pub worktrees_root: String,
     /// Editor command used by "Open in editor" (e.g. `code`, or an absolute path).
     pub editor_command: String,
+    /// Which releases an installed copy updates itself to.
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
     /// Configured repositories.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
@@ -54,6 +59,7 @@ pub struct AppConfig {
 pub struct AppSettings {
     pub worktrees_root: String,
     pub editor_command: String,
+    pub update_channel: UpdateChannel,
 }
 
 /// A path that could not be added as a repository, with the reason why.

@@ -147,10 +147,14 @@ Nothing in `wtm-core` changes. The UI contract is: subscribe to `Event`, read
 reply callback for the confirmation ladder. The macOS controller (`rebuild` in
 `controller.rs`) is a reference for the snapshot-diffing approach.
 
-**Updating itself.** `updater.rs` reads `appcast.json` from the rolling
-`latest` release (`releases/latest/download/…` always resolves to the newest
-one, so there is no API call and no token), 10s after launch and every six
-hours. A newer version is downloaded, checked against the manifest's SHA-256,
+**Updating itself.** `updater.rs` reads `appcast.json` from the release its
+channel names — the rolling `latest` one for stable, the `beta` tag's
+prerelease for beta (`UpdateChannel::feed_url`) — 10s after launch and every
+six hours. Both are plain download URLs, so there is no API call and no token,
+and `releases/latest` resolves to the newest release that is *not* a
+prerelease, which is what keeps a beta out of the stable channel. The channel
+is a setting; changing it checks the new feed at once rather than at the next
+six-hourly tick. A newer version is downloaded, checked against the manifest's SHA-256,
 unpacked, and then checked where it counts: `codesign --verify`, a Team ID
 equal to the running copy's, and `spctl` reporting a notarised Developer ID
 app. Only then is the bundle swapped — the old one is moved aside first and

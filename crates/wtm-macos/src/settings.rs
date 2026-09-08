@@ -9,11 +9,13 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSControlTextEditingDelegate, NSStackView, NSTextField,
-    NSTextFieldDelegate, NSUserInterfaceLayoutOrientation, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSAccessibility, NSBackingStoreType, NSControlTextEditingDelegate,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh, NSPopUpButton, NSStackView,
+    NSTextField, NSTextFieldDelegate, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use wtm_core::update::UpdateChannel;
 use wtm_core::{Action, App, AppSettings};
 
 use crate::dialogs::{form, hint, pick_folders, row, text_field, Callback, FORM_WIDTH};
@@ -26,8 +28,10 @@ pub struct SettingsWindowIvars {
     window: Retained<NSWindow>,
     root: Retained<NSTextField>,
     editor: Retained<NSTextField>,
-    /// Target of the Browse… button; kept alive with the window.
-    _browse: RefCell<Option<Retained<Callback>>>,
+    channel: Retained<NSPopUpButton>,
+    /// Targets of the Browse… button and the channel popup; these are the only
+    /// things holding them, so they live as long as the window.
+    _targets: RefCell<Vec<Retained<Callback>>>,
 }
 
 define_class!(
@@ -79,12 +83,32 @@ impl SettingsWindow {
         root_row.addArrangedSubview(&browse);
         let editor = text_field(&config.editor_command, "e.g., code", mtm);
 
+        let channel = NSPopUpButton::initWithFrame_pullsDown(mtm.alloc(), NSRect::ZERO, false);
+        for title in CHANNELS.iter().map(|(_, title)| *title) {
+            channel.addItemWithTitle(&ns(title));
+        }
+        channel.selectItemAtIndex(index_of(config.update_channel));
+        // The caption beside it is a plain label, so the popup would otherwise
+        // announce only the channel name.
+        channel.setAccessibilityLabel(Some(&ns("Software updates")));
+        // Popups are sized to their widest title; without this the row's own
+        // low hugging priority would stretch it across the whole form.
+        channel.setContentHuggingPriority_forOrientation(
+            NSLayoutPriorityDefaultHigh,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        let channel_row = NSStackView::new(mtm);
+        channel_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        channel_row.addArrangedSubview(&channel);
+        channel_row.addArrangedSubview(&NSView::new(mtm));
+
         let this = mtm.alloc::<Self>().set_ivars(SettingsWindowIvars {
             app,
             window: window.clone(),
             root: root.clone(),
             editor: editor.clone(),
-            _browse: RefCell::new(None),
+            channel: channel.clone(),
+            _targets: RefCell::new(Vec::new()),
         });
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         window.setDelegate(Some(ProtocolObject::from_ref(&*this)));
@@ -115,7 +139,11 @@ impl SettingsWindow {
             mtm,
         );
         pick.attach(&browse);
-        *this.ivars()._browse.borrow_mut() = Some(pick);
+
+        let me = this.clone();
+        let switch = Callback::new(move || me.channel_chosen(), mtm);
+        switch.attach(&channel);
+        this.ivars()._targets.borrow_mut().extend([pick, switch]);
 
         let f = form(mtm);
         f.addArrangedSubview(&row("Worktrees root:", &root_row, mtm));
@@ -130,6 +158,11 @@ impl SettingsWindow {
         ));
         f.addArrangedSubview(&hint(
             "“Open in terminal” uses your system default terminal (set via “Set as default terminal” in your terminal app).",
+            mtm,
+        ));
+        f.addArrangedSubview(&row("Software updates:", &channel_row, mtm));
+        f.addArrangedSubview(&hint(
+            "Beta builds arrive before they are released to everyone, and are less tested. Only an app installed from a release updates itself.",
             mtm,
         ));
         f.setEdgeInsets(objc2_foundation::NSEdgeInsets {
@@ -155,8 +188,31 @@ impl SettingsWindow {
         if !iv.window.isVisible() {
             iv.root.setStringValue(&ns(&config.worktrees_root));
             iv.editor.setStringValue(&ns(&config.editor_command));
+            iv.channel
+                .selectItemAtIndex(index_of(config.update_channel));
         }
         iv.window.makeKeyAndOrderFront(None);
+    }
+
+    /// Switching the channel takes effect at once: the new channel's feed is
+    /// read straight away rather than at the next six-hourly check, so picking
+    /// beta and waiting a moment is the whole procedure.
+    fn channel_chosen(&self) {
+        let iv = self.ivars();
+        if iv.app.model().config.update_channel == self.chosen_channel() {
+            return;
+        }
+        self.apply();
+        if let Some(mtm) = MainThreadMarker::new() {
+            crate::updater::channel_changed(&iv.app, mtm);
+        }
+    }
+
+    fn chosen_channel(&self) -> UpdateChannel {
+        let index = self.ivars().channel.indexOfSelectedItem();
+        CHANNELS
+            .get(index.max(0) as usize)
+            .map_or(UpdateChannel::Stable, |(channel, _)| *channel)
     }
 
     fn apply(&self) {
@@ -164,6 +220,7 @@ impl SettingsWindow {
         let settings = AppSettings {
             worktrees_root: iv.root.stringValue().to_string().trim().to_string(),
             editor_command: iv.editor.stringValue().to_string().trim().to_string(),
+            update_channel: self.chosen_channel(),
         };
         if settings.worktrees_root.is_empty() {
             // Never persist an empty root; the field is mid-edit.
@@ -172,8 +229,22 @@ impl SettingsWindow {
         let current = iv.app.model().config.clone();
         if current.worktrees_root != settings.worktrees_root
             || current.editor_command != settings.editor_command
+            || current.update_channel != settings.update_channel
         {
             iv.app.dispatch(Action::SetSettings(settings));
         }
     }
+}
+
+/// The channels the popup offers, in the order they appear in it.
+const CHANNELS: [(UpdateChannel, &str); 2] = [
+    (UpdateChannel::Stable, "Stable"),
+    (UpdateChannel::Beta, "Beta"),
+];
+
+fn index_of(channel: UpdateChannel) -> isize {
+    CHANNELS
+        .iter()
+        .position(|(c, _)| *c == channel)
+        .unwrap_or(0) as isize
 }

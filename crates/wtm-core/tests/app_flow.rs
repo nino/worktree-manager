@@ -106,6 +106,7 @@ fn add_repo_create_and_delete_worktree() {
     app.dispatch(Action::SetSettings(wtm_core::AppSettings {
         worktrees_root: base.join("wts").to_string_lossy().into_owned(),
         editor_command: "true".into(),
+        update_channel: Default::default(),
     }));
 
     // Add the repo by a path inside it (a file), exercising root resolution.

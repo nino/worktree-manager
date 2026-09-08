@@ -2,7 +2,55 @@
 //! install. The fetching and installing are the backend's job (they mean
 //! HTTPS, code signatures and app bundles); this is the part worth testing.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// The releases page the updater reads from.
+const RELEASES: &str = "https://github.com/nino/worktree-manager/releases";
+
+/// Which releases an installed copy follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// The rolling `latest` release: what a download from the repository is.
+    #[default]
+    Stable,
+    /// Prereleases published from the `beta` tag, ahead of stable.
+    Beta,
+}
+
+impl UpdateChannel {
+    /// The name stored in the config file.
+    pub fn name(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "stable",
+            UpdateChannel::Beta => "beta",
+        }
+    }
+
+    /// The manifest this channel reads. Neither needs an API call or a token.
+    pub fn feed_url(self) -> String {
+        match self {
+            // `releases/latest` is the newest release that is *not* a
+            // prerelease, so a beta build never reaches this channel.
+            UpdateChannel::Stable => format!("{RELEASES}/latest/download/appcast.json"),
+            // Pinned to the `beta` tag, which the release workflow moves.
+            UpdateChannel::Beta => format!("{RELEASES}/download/beta/appcast.json"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UpdateChannel {
+    /// A name this build does not know falls back to stable rather than
+    /// failing: the whole config file is discarded when any field is
+    /// unreadable, and a channel is not worth losing someone's repos over.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(match name.as_str() {
+            "beta" => UpdateChannel::Beta,
+            _ => UpdateChannel::Stable,
+        })
+    }
+}
 
 /// The manifest published beside a release (`appcast.json`, written by
 /// `.github/workflows/release.yml`).
@@ -123,6 +171,42 @@ mod tests {
         );
         assert!(Manifest::parse(&short_hash).is_err());
         assert!(Manifest::parse("not json").is_err());
+    }
+
+    #[test]
+    fn a_channel_survives_a_name_this_build_does_not_know() {
+        let read = |json: &str| serde_json::from_str::<UpdateChannel>(json).unwrap();
+        assert_eq!(read(r#""beta""#), UpdateChannel::Beta);
+        assert_eq!(read(r#""stable""#), UpdateChannel::Stable);
+        assert_eq!(read(r#""canary""#), UpdateChannel::Stable);
+        assert_eq!(
+            serde_json::to_string(&UpdateChannel::Beta).unwrap(),
+            r#""beta""#
+        );
+    }
+
+    #[test]
+    fn the_beta_feed_is_pinned_to_its_own_tag() {
+        // `releases/latest` skips prereleases, so the stable feed cannot
+        // resolve to a beta; the beta feed names its tag and so cannot drift
+        // onto a stable release.
+        assert!(UpdateChannel::Stable
+            .feed_url()
+            .ends_with("/releases/latest/download/appcast.json"));
+        assert!(UpdateChannel::Beta
+            .feed_url()
+            .ends_with("/releases/download/beta/appcast.json"));
+    }
+
+    /// The workflow stamps a beta as `1.0.<commits>-beta.<run>`, which has to
+    /// order above the stable build of the same commit and below the next one.
+    #[test]
+    fn beta_versions_sit_between_the_stable_ones() {
+        assert!(is_newer("1.0.112-beta.91", "1.0.112-beta.90"));
+        assert!(is_newer("1.0.112-beta.90", "1.0.112"));
+        assert!(is_newer("1.0.113", "1.0.112-beta.90"));
+        assert!(!is_newer("1.0.112-beta.90", "1.0.112-beta.90"));
+        assert!(!is_newer("1.0.112", "1.0.112-beta.90"));
     }
 
     #[test]
