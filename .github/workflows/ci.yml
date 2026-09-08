@@ -15,22 +15,28 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest # tests are pure parsers + happy-dom, so no macOS runner needed
+    # The UI crate is AppKit, so even `cargo check` needs a macOS runner.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6 # version read from packageManager field
-
-      - uses: actions/setup-node@v7
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          node-version: 24
-          cache: pnpm
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Format
+        run: cargo fmt --all --check
 
       - name: Test
-        run: pnpm test
+        run: cargo test --workspace
+
+      # The end-to-end test drives real git, so a release build is the only
+      # thing left unproven — and it is what the release workflow ships.
+      - name: Build
+        run: cargo build --release --workspace

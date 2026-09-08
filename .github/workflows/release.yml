@@ -3,61 +3,109 @@ name: Release
 on:
   push:
     branches: [main]
-  # Re-run the release without inventing a commit. A run that failed on
+    # A beta: the same signed, notarised build, published as a prerelease under
+    # the `beta` tag instead of replacing what everyone else is running. Move
+    # the tag and push it to cut one (`git push --force origin HEAD:refs/tags/beta`).
+    tags: [beta]
+  # Re-run a release without inventing a commit. A run that failed on
   # credentials rather than on code has nothing to fix in the tree, and the
   # only other way back to a green release is a push to main.
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Which channel to publish
+        type: choice
+        options: [stable, beta]
+        default: stable
 
 permissions:
   contents: write
 
-# Only one release build at a time; a newer push supersedes an in-flight one.
+# One release build at a time per channel; a newer push supersedes an
+# in-flight one, but a beta never cancels the release everyone is waiting on.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  APP: Worktree Manager
 
 jobs:
   release:
-    runs-on: macos-latest # arm64
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the version is derived from main's commit count
+          fetch-depth: 0 # the version is derived from the commit count
 
-      - uses: pnpm/action-setup@v6 # version read from packageManager field
-
-      - uses: actions/setup-node@v7
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Test
-        run: pnpm test
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-cargo-${{ runner.os }}-
 
       # The in-app updater decides there is something to install by comparing
-      # semver, so every release needs a version that is both new and larger
-      # than the one before. main's commit count is exactly that: it only grows,
-      # and re-running this workflow on the same commit stamps the same version,
-      # so a rebuild is never mistaken for an update. The tree keeps 1.0.0 —
-      # nothing is committed back — and dev builds do not update themselves.
-      - name: Stamp the build version
+      # versions, so every release needs one that is both new and larger than
+      # the one before. The commit count is exactly that: it only grows, and
+      # re-running this workflow on the same commit stamps the same version, so
+      # a rebuild is never mistaken for an update. Nothing is committed back —
+      # the tree keeps 0.1.0, and dev builds never update themselves.
+      #
+      # A beta adds the run number, so it sorts above the stable build of the
+      # same commit and below the next one, and so that rebuilding a beta from
+      # an unchanged tree *is* an update — which is what makes the update path
+      # testable without inventing commits.
+      - name: Work out the channel and the version
         run: |
-          # workflow_dispatch offers every branch, and this job replaces the
-          # release installed copies update from. Building anything but main
-          # would publish that branch's code as `latest` *and* stamp it with a
-          # version main might not reach for several pushes — which would freeze
-          # the feed until it caught up. Fail before anything is signed.
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error::the release can only be built from main (got $GITHUB_REF)"
-            exit 1
+          CHANNEL="${{ inputs.channel }}"
+          if [ -z "$CHANNEL" ]; then
+            case "$GITHUB_REF" in
+              refs/heads/main) CHANNEL=stable ;;
+              refs/tags/beta) CHANNEL=beta ;;
+              *) echo "::error::nothing to release from $GITHUB_REF"; exit 1 ;;
+            esac
           fi
-          VERSION="1.0.$(git rev-list --count HEAD)"
-          npm pkg set version="$VERSION"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Building version $VERSION"
+          COMMITS=$(git rev-list --count HEAD)
+          if [ "$CHANNEL" = stable ]; then
+            # workflow_dispatch offers every branch, and a stable release
+            # replaces the one installed copies update from. Building anything
+            # but main would publish that branch's code as `latest` *and* stamp
+            # it with a version main might not reach for several pushes — which
+            # would freeze the feed until it caught up. Fail before anything is
+            # signed.
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::a stable release can only be built from main (got $GITHUB_REF)"
+              exit 1
+            fi
+            VERSION="1.0.$COMMITS"
+            BUILD="$VERSION"
+            TAG=latest
+          else
+            VERSION="1.0.$COMMITS-beta.$GITHUB_RUN_NUMBER"
+            # CFBundleVersion is meant to be digits and dots only.
+            BUILD="1.0.$COMMITS.$GITHUB_RUN_NUMBER"
+            TAG=beta
+          fi
+          {
+            echo "CHANNEL=$CHANNEL"
+            echo "VERSION=$VERSION"
+            echo "BUILD=$BUILD"
+            echo "TAG=$TAG"
+          } >> "$GITHUB_ENV"
+          echo "Building $CHANNEL version $VERSION (bundle version $BUILD)"
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build the universal app
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          scripts/bundle.sh --universal --version "$VERSION" --build "$BUILD"
+          lipo -info "target/bundle/$APP.app/Contents/MacOS/worktree-manager"
 
       # notarytool wants the App Store Connect key as a file, so the secret has
       # to land on disk. RUNNER_TEMP dies with the runner, and the last step
@@ -73,13 +121,6 @@ jobs:
           umask 077
           printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
 
-      # The certificate is imported here rather than by electron-builder,
-      # because the way electron-builder does it is wrong: it hands
-      # `security set-key-partition-list` the .p12 password, where the
-      # keychain's own password belongs. macOS 26 rejects that outright
-      # (SecKeychainUnlock), and the runners are macos-26. Given no CSC_LINK,
-      # electron-builder skips its own keychain handling and searches
-      # CSC_KEYCHAIN instead — which is the one built here.
       - name: Import the signing certificate
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
@@ -100,65 +141,112 @@ jobs:
           security set-keychain-settings "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/productbuild
+            -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k "$keychain_password" "$keychain" > /dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm -f "$certificate"
 
           security find-identity -v -p codesigning "$keychain"
-          if ! security find-identity -v -p codesigning "$keychain" | grep -q "Developer ID Application"; then
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application.*\)"/\1/p' | head -1)
+          if [ -z "$identity" ]; then
             echo "::error::the certificate holds no Developer ID Application identity — wrong export?"
             exit 1
           fi
+          echo "IDENTITY=$identity" >> "$GITHUB_ENV"
 
-      # Hardened runtime is on, and electron-builder's default entitlements
-      # cover what Electron needs. Notarisation of the .app happens here, from
-      # the key written above.
-      - name: Build and package
-        env:
-          CSC_KEYCHAIN: ${{ runner.temp }}/signing.keychain-db
-          APPLE_API_KEY: ${{ runner.temp }}/apple-api-key.p8
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: pnpm dist
+      # One binary and a couple of resources, so there is nothing nested to
+      # sign first. Hardened runtime and a secure timestamp are what
+      # notarisation requires; the app asks for no entitlements.
+      - name: Sign the app
+        run: |
+          codesign --force --options runtime --timestamp \
+            --sign "$IDENTITY" "target/bundle/$APP.app"
+          codesign --verify --deep --strict --verbose=2 "target/bundle/$APP.app"
 
-      # The step above notarises the .app; the disk image around it carries no
-      # ticket of its own, so Gatekeeper has to phone home the first time
-      # someone mounts it — and refuses if they are offline. One more
-      # submission and a staple makes the DMG self-contained.
-      - name: Notarise and staple the disk image
+      # Assets are named without spaces: GitHub rewrites those in download
+      # URLs, and the updater's manifest has to point at something that
+      # resolves.
+      - name: Notarise and staple the app
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
-          shopt -s nullglob
-          dmgs=(release/*.dmg)
-          if [ ${#dmgs[@]} -ne 1 ]; then
-            echo "::error::expected exactly one DMG in release/, found ${#dmgs[@]}"
-            exit 1
-          fi
-          xcrun notarytool submit "${dmgs[0]}" \
+          mkdir -p dist
+          zip="dist/Worktree-Manager-$VERSION.zip"
+          ditto -c -k --keepParent "target/bundle/$APP.app" "$zip"
+          xcrun notarytool submit "$zip" \
             --key "$RUNNER_TEMP/apple-api-key.p8" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER_ID" \
             --wait
-          xcrun stapler staple "${dmgs[0]}"
+          xcrun stapler staple "target/bundle/$APP.app"
+          # Re-zip: the ticket is stapled into the bundle, and the zip is what
+          # the updater installs, so it has to carry the stapled copy. Without
+          # this an update would land an app that has to phone home the first
+          # time it is opened, and fails if the machine is offline.
+          rm -f "$zip"
+          ditto -c -k --keepParent "target/bundle/$APP.app" "$zip"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarise and staple the disk image
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          staging="$RUNNER_TEMP/dmg"
+          rm -rf "$staging" && mkdir -p "$staging"
+          cp -R "target/bundle/$APP.app" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          dmg="dist/Worktree-Manager-$VERSION.dmg"
+          hdiutil create -volname "$APP" -srcfolder "$staging" -ov -format ULFO "$dmg"
+          # A signed disk image gets its own ticket stapled, so mounting it
+          # works offline; an unsigned one makes Gatekeeper phone home.
+          codesign --force --timestamp --sign "$IDENTITY" "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --key "$RUNNER_TEMP/apple-api-key.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$dmg"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      # What the in-app updater reads (see crates/wtm-core/src/update.rs).
+      # `releases/latest/download/…` always resolves to the newest release that
+      # is not a prerelease, and `releases/download/beta/…` to whatever the
+      # `beta` tag currently points at — so an installed copy needs no GitHub
+      # API call and no token, and a beta cannot reach the stable channel.
+      - name: Write the update manifest
+        run: |
+          if [ "$CHANNEL" = stable ]; then
+            BASE="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          else
+            BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/beta"
+          fi
+          export BASE
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, datetime
+          zip_path = pathlib.Path(os.environ["ZIP"])
+          manifest = {
+              "version": os.environ["VERSION"],
+              "channel": os.environ["CHANNEL"],
+              "url": f"{os.environ['BASE']}/{zip_path.name}",
+              "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
+              "minimumSystemVersion": "13.0",
+              "commit": os.environ["GITHUB_SHA"],
+              "publishedAt": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          pathlib.Path("dist/appcast.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
 
       # What a downloader's Mac will check, checked here instead.
       - name: Verify the signature and the tickets
         run: |
-          shopt -s nullglob
-          dmgs=(release/*.dmg)
-          apps=(release/mac*/*.app)
-          if [ ${#apps[@]} -ne 1 ] || [ ${#dmgs[@]} -ne 1 ]; then
-            echo "::error::expected one app and one DMG, found ${#apps[@]} and ${#dmgs[@]}"
-            exit 1
-          fi
+          app="target/bundle/$APP.app"
 
-          codesign --verify --deep --strict --verbose=2 "${apps[0]}"
-
-          signature=$(codesign --display --verbose=4 "${apps[0]}" 2>&1)
+          signature=$(codesign --display --verbose=4 "$app" 2>&1)
           echo "$signature" | grep -E "Authority|TeamIdentifier|flags="
           if ! echo "$signature" | grep -q "Authority=Developer ID Application"; then
             echo "::error::not signed with a Developer ID Application certificate"
@@ -169,85 +257,65 @@ jobs:
             exit 1
           fi
 
-          # For the DMG this is the whole check available: spctl wants a
-          # signature on the disk image, and electron-builder leaves disk images
-          # unsigned on purpose, so asking spctl about one only ever gets back
-          # "no usable signature", ticket or no ticket.
-          xcrun stapler validate "${apps[0]}"
-          xcrun stapler validate "${dmgs[0]}"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$DMG"
 
-          # What Gatekeeper actually does when someone runs the app they dragged
-          # out of that disk image.
-          assessment=$(spctl --assess --type exec -vv "${apps[0]}" 2>&1)
+          # What Gatekeeper actually does when someone runs the app they
+          # dragged out of that disk image.
+          assessment=$(spctl --assess --type exec -vv "$app" 2>&1)
           echo "$assessment"
           if ! echo "$assessment" | grep -q "source=Notarized Developer ID"; then
             echo "::error::Gatekeeper does not see a notarised Developer ID app"
             exit 1
           fi
 
-      # What the in-app updater reads. electron-builder writes latest-mac.yml
-      # because electron-builder.yml carries a publish config; without it the
-      # release would look fine and no installed copy would ever update.
-      #
-      # Only the zip is checked: it is the file the updater downloads and
-      # verifies (Squirrel.Mac cannot install from a DMG). The DMG's entry in
-      # the same file records its hash from *before* the step above stapled a
-      # notarisation ticket to it, so it no longer matches the uploaded disk
-      # image — nothing reads it, and re-hashing there would mean rewriting
-      # electron-builder's metadata by hand.
-      - name: Verify the update metadata
-        run: |
-          metadata=release/latest-mac.yml
-          if [ ! -f "$metadata" ]; then
-            echo "::error::no $metadata — the app updater has nothing to read"
-            exit 1
-          fi
-          cat "$metadata"
-
-          version=$(sed -n 's/^version: //p' "$metadata" | tr -d "'\"")
-          if [ "$version" != "$VERSION" ]; then
-            echo "::error::update metadata says $version, this build is $VERSION"
-            exit 1
-          fi
-
-          zip=$(sed -n 's/^path: //p' "$metadata" | tr -d "'\"")
-          if [ ! -f "release/$zip" ]; then
-            echo "::error::update metadata points at release/$zip, which was not built"
-            exit 1
-          fi
-
-          # electron-updater refuses a download whose sha512 disagrees, so a
-          # mismatch here is a release that silently never updates anyone.
-          expected=$(sed -n 's/^sha512: //p' "$metadata" | tr -d "'\"")
-          actual=$(openssl dgst -sha512 -binary "release/$zip" | openssl base64 -A)
+          # The updater refuses a download whose hash disagrees, so a mismatch
+          # here is a release that silently never updates anyone.
+          expected=$(python3 -c "import json;print(json.load(open('dist/appcast.json'))['sha256'])")
+          actual=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
           if [ "$expected" != "$actual" ]; then
-            echo "::error::sha512 in $metadata does not match release/$zip"
+            echo "::error::appcast.json sha256 does not match $ZIP"
             exit 1
           fi
 
-          # Not fatal — it only costs bandwidth. Squirrel fetches just the
-          # changed blocks when the blockmap sits beside the zip, and falls back
-          # to the whole ~150 MB when it doesn't.
-          if [ ! -f "release/$zip.blockmap" ]; then
-            echo "::warning::no release/$zip.blockmap — updates will be full downloads"
-          fi
-
-      # The DMG is what a person downloads; the zip, its blockmap and
-      # latest-mac.yml are what installed copies update from, and they have to
-      # live in the same release for electron-updater to resolve them.
-      - name: Publish rolling "latest" release
+      # The DMG is what a person downloads; the zip and appcast.json are what
+      # installed copies update from, and they have to live in the same release
+      # for the channel's download URL to resolve them.
+      #
+      # A beta is published as a prerelease, which is what keeps the two
+      # channels apart: `releases/latest` skips prereleases, so nothing here
+      # can reach someone on stable. The stable release keeps its own tag and
+      # is never touched by a beta run.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s nullglob
           SHORT_SHA=${GITHUB_SHA:0:7}
-          assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
-          # Recreate the rolling release so its tag always points at this commit.
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest \
-            --title "Worktree Manager v${VERSION} (${SHORT_SHA})" \
-            --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised macOS arm64 build — double-click to open. Installed copies update themselves from here." \
-            "${assets[@]}"
+          if [ "$CHANNEL" = stable ]; then
+            # Recreate the rolling release so its tag always points at this commit.
+            gh release delete "$TAG" --yes --cleanup-tag || true
+            gh release create "$TAG" \
+              --title "$APP v${VERSION} (${SHORT_SHA})" \
+              --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised universal macOS build — double-click to open. Installed copies update themselves from here." \
+              "$DMG" "$ZIP" dist/appcast.json
+          else
+            # Point the tag at this commit when it is not already there — a
+            # dispatched beta has no tag push behind it. A tag written with
+            # GITHUB_TOKEN starts no further workflow run.
+            at=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
+            if [ "$at" != "$GITHUB_SHA" ]; then
+              git tag -f "$TAG" "$GITHUB_SHA"
+              git push --force origin "refs/tags/$TAG"
+            fi
+            # Delete only the release. The tag stays where it is, so nothing
+            # here can move what `releases/latest` resolves to.
+            gh release delete "$TAG" --yes || true
+            gh release create "$TAG" \
+              --prerelease --latest=false \
+              --title "$APP v${VERSION} (beta, ${SHORT_SHA})" \
+              --notes "Beta build of \`${GITHUB_SHA}\`. Signed and notarised, and ahead of the stable release. Copies set to the beta channel in Settings update themselves from here." \
+              "$DMG" "$ZIP" dist/appcast.json
+          fi
 
       - name: Remove the signing material
         if: always()

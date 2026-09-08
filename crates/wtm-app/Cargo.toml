@@ -1,0 +1,19 @@
+[package]
+name = "wtm-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Worktree Manager executable: wires the core to the platform backend"
+
+[[bin]]
+name = "worktree-manager"
+path = "src/main.rs"
+
+[dependencies]
+wtm-core = { workspace = true }
+wtm-platform = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wtm-macos = { workspace = true }

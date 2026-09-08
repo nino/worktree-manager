@@ -1,7 +1,7 @@
 # Worktree Manager
 
-A compact macOS desktop app for managing [git worktrees](https://git-scm.com/docs/git-worktree)
-across multiple repositories.
+A compact macOS app for managing [git worktrees](https://git-scm.com/docs/git-worktree)
+across multiple repositories, written in Rust against AppKit.
 
 The main window is a tree: repositories at the top level, their worktrees nested
 underneath — each with branch, path, live git status, and one-click actions.
@@ -14,9 +14,8 @@ underneath — each with branch, path, live git status, and one-click actions.
   or behind the repo's primary branch, unpushed commits, `✓` for clean trees, and a
   "folder missing" badge for worktrees whose directory was deleted outside the app.
 - **One-click git ops per worktree** — push (sets upstream on first push), pull
-  (fast-forward only), merge the primary branch in (`--no-rebase`, your
-  `pull.rebase` config can't rewrite history from a button), and a branch-switch
-  dropdown backed by plain `git switch`.
+  (fast-forward only), pull the primary branch in, and a branch switcher with a
+  fuzzy finder, backed by plain `git switch`.
 - **Create worktrees** — new or existing branch, based on any ref. A new branch
   defaults to branching off `origin/<trunk>` (the latest fetched remote state)
   when the remote is present, falling back to the local trunk otherwise; the
@@ -30,76 +29,69 @@ underneath — each with branch, path, live git status, and one-click actions.
   `git worktree remove` runs _without_ `--force` first: deleting a dirty worktree
   requires an explicit second "Force delete — discard changes" confirmation.
   The primary working tree can never be deleted.
-- **Open in editor / terminal / Finder** — editor and terminal commands are
-  configurable globally and support a `{path}` placeholder
-  (e.g. Ghostty: `open -na Ghostty --args --working-directory={path}`).
-- **Updates itself** — the app checks GitHub for the latest signed build, pulls
-  it down in the background, and swaps it in when you quit; the title bar offers
-  a restart if you'd rather have it now. The About dialog shows the running
-  version and can check on demand.
-- **Persistent config** — worktrees root, editor/terminal commands, and the repo
-  list (with per-repo primary branch + init command) survive relaunches.
-- A shamelessly skeuomorphic brushed-metal appearance — machined panels, embossed
-  keys, engraved badges, Aqua gems — one look, regardless of system theme.
+- **Follows what you do elsewhere** — each worktree is watched with FSEvents, so a
+  `git switch` or a commit in your terminal updates that row within a moment.
+- **Open in editor / terminal / Finder** — the editor command is configurable and
+  takes a `{path}` placeholder (e.g. `code {path}`); the terminal is whichever one
+  you have set as the system default.
+- **Keyboard throughout** — arrow keys move a selection through the tree, ⌘N
+  creates a worktree in the selected repo, space or ⌘T opens the branch switcher,
+  ⌘F searches, and Tab reaches every button in every row.
+- **Agent branches read cleanly** — a `claude/` or `cursor/` prefix is drawn as
+  that agent's mark, so the part of the name that identifies the work is what you
+  see.
+- **Updates itself** — an installed copy checks the latest release shortly after
+  launch and every six hours, and installs a newer signed build in the
+  background; the notice bar then offers a restart. It only ever installs a
+  notarised build signed by the same team as the running copy, so a tampered
+  download is refused. Builds you make yourself never update. Settings offers a
+  beta channel, which follows the prereleases published ahead of a stable one.
+- **Persistent config** — worktrees root, editor command, and the repo list (with
+  per-repo primary branch and init command) survive relaunches.
+- **Native, and quick about it** — real AppKit views, an immutable model snapshot,
+  and targeted row reloads: the UI never waits on git.
 
-## Install & run
+## Install
 
-Requires [pnpm](https://pnpm.io) and git ≥ 2.36.
+Download the DMG from the [latest release](../../releases/latest) and drag the
+app to Applications. Builds are signed and notarised, so it opens with a
+double-click.
 
-```sh
-pnpm install   # postinstall fetches the Electron binary
-pnpm dev       # run in development (renderer HMR)
-```
+## Build from source
 
-## Build
-
-Run `pnpm i && pnpm build && pnpm dist`, and boom, you'll have an app ready in the dist folder.
-
-```sh
-pnpm build     # typecheck + production build into out/
-pnpm start     # preview the production build
-pnpm dist      # package a macOS .app + .dmg (and the updater's .zip) into release/
-```
-
-## Install into /Applications
-
-Once you've packaged the app, copy the bundle into your Applications folder:
+Requires a [Rust toolchain](https://rustup.rs) and git ≥ 2.36.
 
 ```sh
-pnpm dist         # build the .app (skip if you already have one in release/)
-pnpm install-app  # copy release/…/Worktree Manager.app → /Applications
+cargo run                      # run a dev build
+scripts/bundle.sh              # release build → target/bundle/Worktree Manager.app
+scripts/bundle.sh --install    # …and copy it to /Applications
 ```
-
-`install-app` is macOS-only — it exits with an error on other platforms, since
-the packaged target is a `.app` bundle. It overwrites any existing install.
 
 ## Development
 
 ```sh
-pnpm test          # vitest (pure parsers, path logic)
-pnpm typecheck     # tsc for main + renderer projects
-pnpm format        # prettier
-pnpm screenshot    # regenerate docs/screenshot.png (demo repos, sandboxed config)
+cargo test                     # unit tests + an end-to-end core test on a temp repo
+cargo fmt                      # format
+WTM_USER_DATA=/tmp/wtm cargo run    # sandboxed config, leaves the real one alone
+WTM_APPEARANCE=dark cargo run       # force an appearance
+RUST_LOG=info cargo run             # timings for refreshes and git runs
 ```
 
-`pnpm screenshot` rebuilds the README image after a restyle: it stages throwaway
-demo repos under `~/wtm-demo`, points the app at a temporary config profile (via
-`WTM_USER_DATA`, so your real config is untouched), captures the window, and
-cleans everything up.
-
-Stack: Electron (electron-vite), React 19, TypeScript 7, TanStack Query,
-electron-store, Vitest. See [CLAUDE.md](CLAUDE.md) for architecture notes,
-conventions, and version constraints.
+[docs/architecture.md](docs/architecture.md) explains how the crates fit
+together and why the fiddly parts are the way they are;
+[CLAUDE.md](CLAUDE.md) carries the conventions and the AppKit lessons.
 
 ## Configuration
 
-| Setting          | Scope    | Default                                                |
-| ---------------- | -------- | ------------------------------------------------------ |
-| Worktrees root   | global   | `~/.claude-worktrees`                                  |
-| Editor command   | global   | `code`                                                 |
-| Terminal command | global   | `open -a Terminal`                                     |
-| Primary branch   | per repo | auto-detected from `origin/HEAD`, else `main`/`master` |
-| Init command     | per repo | _(empty)_                                              |
+| Setting        | Scope    | Default                                                |
+| -------------- | -------- | ------------------------------------------------------ |
+| Worktrees root | global   | `~/.claude-worktrees`                                  |
+| Editor command | global   | `code`                                                 |
+| Primary branch | per repo | auto-detected from `origin/HEAD`, else `main`/`master` |
+| Init command   | per repo | _(empty)_                                              |
+
+Settings apply as you type them — there is no Save button. Config lives in
+`~/Library/Application Support/Worktree Manager/config.json`.
 
 Adding a repository resolves the picked folder to its primary working tree (even
 if you pick a linked worktree) and lists all existing worktrees immediately. The

@@ -1,0 +1,9 @@
+[package]
+name = "wtm-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The operating-system seam: traits every platform backend implements"
+
+[dependencies]
+log = { workspace = true }
