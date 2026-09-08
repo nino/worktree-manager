@@ -286,7 +286,7 @@ jobs:
       # channels apart: `releases/latest` skips prereleases, so nothing here
       # can reach someone on stable. The stable release keeps its own tag and
       # is never touched by a beta run.
-      - name: Publish the ${{ env.CHANNEL }} release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
