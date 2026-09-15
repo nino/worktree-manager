@@ -65,7 +65,9 @@ selection, key loop), `cells` (row cell views), `rowview` (the card drawing),
 `outline` (NSOutlineView subclass), `button` (focusable buttons, the branch
 bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 (agent marks), `tooltip`, `dialogs` (sheets), `settings` (its own window),
-`badge`, `items`, `menu`, `platform`, `util`.
+`announcement` (the one-off note about the rewrite, shown until the
+`SEEN_REWRITE_ANNOUNCEMENT` user default is set), `badge`, `items`, `menu`,
+`platform`, `util`.
 
 ## Key behaviors
 
