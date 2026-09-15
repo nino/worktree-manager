@@ -85,6 +85,12 @@ pub enum UpdateStatus {
     Downloading(String),
     /// Installed alongside the running copy; a restart switches to it.
     Ready(String),
+    /// A newer version exists, but the running copy cannot be replaced where
+    /// it is. `advice` says what would let it update.
+    Unreplaceable {
+        version: String,
+        advice: String,
+    },
     Failed(String),
 }
 

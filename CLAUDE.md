@@ -100,6 +100,9 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   with a stamped version — a local build has no Team ID to match and its
   `0.1.0` placeholder would treat every release as an upgrade. It refuses any
   download whose hash, signature, Team ID or notarisation does not check out.
+  A copy that cannot be replaced where it runs (App Translocation, a disk
+  image, a folder the user may not write to) is caught before downloading,
+  and the notice says a version is available and how to install it.
   `swap` moves the old bundle aside before putting the new one in place, and
   is unit-tested; so is the signature check, against a notarised app on the
   machine.

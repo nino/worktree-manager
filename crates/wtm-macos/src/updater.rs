@@ -37,6 +37,9 @@ const TIMEOUT_SECS: u64 = 120;
 thread_local! {
     /// The version installed and waiting for a restart, if any.
     static READY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// The newest version a background check has already said cannot be
+    /// installed, so the six-hourly check does not repeat itself.
+    static TOLD_UNREPLACEABLE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The version waiting for a restart, if an update has been installed.
@@ -186,6 +189,19 @@ fn report(
                 }
             }
         }
+        Ok(UpdateStatus::Unreplaceable { version, advice }) => {
+            log::info!("updates: {version} available but not installable: {advice}");
+            // Said once per version even for the background check: without it
+            // a copy that cannot replace itself would never hear of an update.
+            let already_told = TOLD_UNREPLACEABLE
+                .with(|t| t.replace(Some(version.clone())) == Some(version.clone()));
+            if announce || !already_told {
+                app.dispatch(Action::ShowNotice {
+                    text: format!("Version {version} is available. {advice}"),
+                    tone: Tone::Info,
+                });
+            }
+        }
         Ok(UpdateStatus::UpToDate) if announce => app.dispatch(Action::ShowNotice {
             // Naming the version and channel is what tells someone which
             // build they are on after a restart, without opening About.
@@ -223,6 +239,15 @@ fn check_and_install(
         return Ok(UpdateStatus::UpToDate);
     }
     log::info!("updates: {} available", manifest.version);
+
+    // Before downloading anything: an update that cannot be put in place is
+    // news for the user, not a failure to report.
+    if let Some(blocker) = replace_blocker(&install.bundle) {
+        return Ok(UpdateStatus::Unreplaceable {
+            version: manifest.version,
+            advice: blocker.advice(),
+        });
+    }
 
     let work = tempdir()?;
     let zip = work.join("update.zip");
@@ -339,6 +364,62 @@ fn verify_signature(app: &Path, team: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Why the running copy cannot be swapped for a new one where it is.
+#[derive(Debug, PartialEq, Eq)]
+enum Blocker {
+    /// App Translocation: a quarantined app opened from where it was
+    /// downloaded runs from a randomised read-only mount. Moving it in Finder
+    /// is what ends that.
+    Translocated,
+    /// A disk image, or some other read-only volume.
+    ReadOnly,
+    /// A folder this user may not write to, e.g. /Applications for a
+    /// standard account.
+    NoPermission(PathBuf),
+}
+
+impl Blocker {
+    /// Follows "Version … is available." in the notice bar, so it has to be
+    /// short enough to read without Details.
+    fn advice(&self) -> String {
+        match self {
+            Blocker::Translocated | Blocker::ReadOnly => {
+                "Move Worktree Manager to Applications to install it.".into()
+            }
+            Blocker::NoPermission(folder) => format!(
+                "Installing it needs permission to change {}.",
+                folder.display()
+            ),
+        }
+    }
+}
+
+/// Whether `swap` would fail for a reason no retry will fix. Writing a file
+/// beside the bundle is the check, because it is exactly what `swap` does;
+/// the translocation test comes first only for the sake of a clearer message.
+fn replace_blocker(bundle: &Path) -> Option<Blocker> {
+    if bundle
+        .components()
+        .any(|c| c.as_os_str() == "AppTranslocation")
+    {
+        return Some(Blocker::Translocated);
+    }
+    let parent = bundle.parent()?;
+    let probe = parent.join(format!(".worktree-manager-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::ReadOnlyFilesystem => Some(Blocker::ReadOnly),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Some(Blocker::NoPermission(parent.to_path_buf()))
+        }
+        // Anything else may be passing; let `swap` report it if it recurs.
+        Err(_) => None,
+    }
+}
+
 /// Put `new_app` where the running copy is. The old bundle is moved aside
 /// first and only removed once the new one is in place, so a failure leaves
 /// something that runs.
@@ -440,6 +521,39 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(siblings, vec!["Worktree Manager.app".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_replaced_is_recognised_before_downloading() {
+        let root = std::env::temp_dir().join(format!("wtm-blocker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let writable = root.join("Applications/Worktree Manager.app");
+        fake_app(&writable, "x");
+        assert_eq!(replace_blocker(&writable), None);
+        // The probe is not left behind.
+        assert_eq!(
+            std::fs::read_dir(root.join("Applications"))
+                .unwrap()
+                .count(),
+            1
+        );
+
+        let translocated =
+            Path::new("/private/var/folders/xx/T/AppTranslocation/888FD9E8/d/Worktree Manager.app");
+        assert_eq!(replace_blocker(translocated), Some(Blocker::Translocated));
+
+        let locked = root.join("Locked/Worktree Manager.app");
+        fake_app(&locked, "x");
+        let folder = root.join("Locked");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(
+            replace_blocker(&locked),
+            Some(Blocker::NoPermission(folder.clone()))
+        );
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
