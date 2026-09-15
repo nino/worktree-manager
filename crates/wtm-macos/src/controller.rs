@@ -13,15 +13,16 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThr
 use objc2_app_kit::{
     NSApplication, NSApplicationDelegate, NSBackingStoreType, NSBezelStyle, NSButton, NSColor,
     NSControl, NSControlSize, NSControlTextEditingDelegate, NSFont, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSMenuItem,
-    NSMenuItemValidation, NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView, NSSearchField,
-    NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView, NSStackViewDistribution,
-    NSTableColumn, NSTableViewColumnAutoresizingStyle, NSTableViewSelectionHighlightStyle,
-    NSTableViewStyle, NSTextField, NSTextFieldDelegate, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem,
-    NSToolbarItemIdentifier, NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation,
-    NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
+    NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation, NSOutlineView,
+    NSOutlineViewDataSource, NSOutlineViewDelegate, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSScrollView, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
+    NSStackViewDistribution, NSTableColumn, NSTableViewColumnAutoresizingStyle,
+    NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
+    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
+    NSToolbarItem, NSToolbarItemIdentifier, NSUserInterfaceItemIdentification,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSURL,
@@ -1126,41 +1127,48 @@ impl Controller {
         close.setBezelStyle(NSBezelStyle::AccessoryBarAction);
         close.setControlSize(NSControlSize::Small);
         close.setTranslatesAutoresizingMaskIntoConstraints(false);
-        notice_bar.addSubview(&notice_label);
-        notice_bar.addSubview(&details);
-        notice_bar.addSubview(&restart);
-        notice_bar.addSubview(&close);
+        // A stack, so the Details and Restart buttons take no room while they
+        // are hidden, and the label, hugging loosest, takes whatever width is
+        // left rather than the close button stretching to fill it.
+        let notice_row = NSStackView::new(mtm);
+        notice_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        notice_row.setAlignment(NSLayoutAttribute::CenterY);
+        notice_row.setSpacing(6.0);
+        notice_row.setTranslatesAutoresizingMaskIntoConstraints(false);
+        notice_row.addArrangedSubview(&notice_label);
+        notice_row.addArrangedSubview(&details);
+        notice_row.addArrangedSubview(&restart);
+        notice_row.addArrangedSubview(&close);
+        notice_row.setCustomSpacing_afterView(8.0, &notice_label);
+        notice_row.setCustomSpacing_afterView(4.0, &restart);
+        notice_label.setContentHuggingPriority_forOrientation(
+            NSLayoutPriorityDefaultLow - 1.0,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        for button in [&details, &restart, &close] {
+            button.setContentHuggingPriority_forOrientation(
+                NSLayoutPriorityDefaultHigh,
+                NSLayoutConstraintOrientation::Horizontal,
+            );
+        }
+        notice_bar.addSubview(&notice_row);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            notice_label
+            notice_row
                 .leadingAnchor()
                 .constraintEqualToAnchor_constant(&notice_bar.leadingAnchor(), 20.0),
+            notice_row
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&notice_bar.trailingAnchor(), -12.0),
+            notice_row
+                .centerYAnchor()
+                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
+            // The label's lines, not the buttons, set the bar's height.
             notice_label
                 .topAnchor()
                 .constraintEqualToAnchor_constant(&notice_bar.topAnchor(), 8.0),
             notice_label
                 .bottomAnchor()
                 .constraintEqualToAnchor_constant(&notice_bar.bottomAnchor(), -8.0),
-            details
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&notice_label.trailingAnchor(), 8.0),
-            details
-                .centerYAnchor()
-                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
-            restart
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&details.trailingAnchor(), 6.0),
-            restart
-                .centerYAnchor()
-                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
-            close
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&restart.trailingAnchor(), 4.0),
-            close
-                .trailingAnchor()
-                .constraintEqualToAnchor_constant(&notice_bar.trailingAnchor(), -12.0),
-            close
-                .centerYAnchor()
-                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
         ]));
 
         // Empty state.
@@ -1210,13 +1218,28 @@ impl Controller {
         );
         content.addSubview(&empty);
         content.addSubview(&spinner);
+        // Centred in the space the list would occupy, below the notice bar
+        // rather than in the whole window, and never pushed up under the bar:
+        // in a short window the centring gives way and the stack stays below
+        // the bar, running off the bottom instead.
+        let centred = empty
+            .centerYAnchor()
+            .constraintEqualToAnchor_constant(&scroll.centerYAnchor(), -20.0);
+        centred.setPriority(NSLayoutPriorityDefaultHigh);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            // The stack's Width alignment does not stretch the bar on its own:
+            // a notice shorter than the window left it hugging its text
+            // against the right edge.
+            notice_bar
+                .widthAnchor()
+                .constraintEqualToAnchor(&content.widthAnchor()),
             empty
                 .centerXAnchor()
                 .constraintEqualToAnchor(&content.centerXAnchor()),
+            centred,
             empty
-                .centerYAnchor()
-                .constraintEqualToAnchor_constant(&content.centerYAnchor(), -20.0),
+                .topAnchor()
+                .constraintGreaterThanOrEqualToAnchor_constant(&scroll.topAnchor(), 16.0),
             spinner
                 .trailingAnchor()
                 .constraintEqualToAnchor_constant(&content.trailingAnchor(), -14.0),
@@ -1262,8 +1285,12 @@ impl Controller {
         if let Some(e) = iv.empty.borrow().as_ref() {
             e.setHidden(!model.repos.is_empty());
         }
-        if let Some(s) = iv.scroll.borrow().as_ref() {
-            s.setHidden(model.repos.is_empty());
+        // Hide the list, not its scroll view. The content stack drops hidden
+        // views from its layout, and with the scroll view gone a notice bar
+        // would be the only thing in it, and the window would shrink to the
+        // bar's height.
+        if let Some(o) = iv.outline.borrow().as_ref() {
+            o.setHidden(model.repos.is_empty());
         }
         if let Some(sp) = iv.refresh_spinner.borrow().as_ref() {
             if model.refreshing || model.fetching {
