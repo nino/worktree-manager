@@ -160,12 +160,19 @@ fn run_check(app: App, install: Installation, announce: bool) {
         .spawn(move || {
             let outcome = check_and_install(&install, channel);
             let app = app.clone();
-            DispatchQueue::main().exec_async(move || report(&app, outcome, announce));
+            DispatchQueue::main()
+                .exec_async(move || report(&app, outcome, announce, &install.version, channel));
         })
         .expect("spawn updater thread");
 }
 
-fn report(app: &App, outcome: Result<UpdateStatus, String>, announce: bool) {
+fn report(
+    app: &App,
+    outcome: Result<UpdateStatus, String>,
+    announce: bool,
+    running: &str,
+    channel: UpdateChannel,
+) {
     match outcome {
         Ok(UpdateStatus::Ready(version)) => {
             READY.with(|r| *r.borrow_mut() = Some(version.clone()));
@@ -180,7 +187,12 @@ fn report(app: &App, outcome: Result<UpdateStatus, String>, announce: bool) {
             }
         }
         Ok(UpdateStatus::UpToDate) if announce => app.dispatch(Action::ShowNotice {
-            text: "You are up to date.".into(),
+            // Naming the version and channel is what tells someone which
+            // build they are on after a restart, without opening About.
+            text: format!(
+                "You are up to date: {running} is the latest {} build.",
+                channel.name()
+            ),
             tone: Tone::Info,
         }),
         Ok(_) => {}
