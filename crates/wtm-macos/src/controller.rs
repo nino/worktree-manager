@@ -164,11 +164,12 @@ define_class!(
             crate::updater::check_now(&self.ivars().app, mtm);
         }
 
-        /// Quit and come back as the version the updater installed.
+        /// Quit and come back as the version the updater installed — putting
+        /// it in place first, if it is still waiting on an administrator.
         #[unsafe(method(restartForUpdate:))]
         fn restart_for_update(&self, _s: Option<&AnyObject>) {
             let mtm = MainThreadMarker::from(self);
-            crate::updater::restart(mtm);
+            crate::updater::install_or_restart(&self.ivars().app, mtm);
         }
 
         #[unsafe(method(dismissNotice:))]
@@ -1323,14 +1324,24 @@ impl Controller {
                         d.setHidden(!long);
                     }
                     let waiting = crate::updater::ready_version(MainThreadMarker::from(self));
+                    let pending = crate::updater::pending_version(MainThreadMarker::from(self));
                     if let Some(r) = iv.notice_restart.borrow().as_ref() {
-                        r.setHidden(waiting.is_none());
+                        r.setHidden(waiting.is_none() && pending.is_none());
+                        // An update still waiting on an administrator is put in
+                        // place by this button, not just switched to, and the
+                        // label is what warns that a password will be asked for.
+                        r.setTitle(&ns(if waiting.is_some() {
+                            "Restart"
+                        } else {
+                            "Install and Restart"
+                        }));
                     }
                     bar.setHidden(false);
                     if iv.notice_id.get() != n.id {
                         iv.notice_id.set(n.id);
-                        // An installed update stays on offer until it is taken.
-                        if n.tone == Tone::Info && waiting.is_none() {
+                        // An update that is installed, or waiting to be, stays
+                        // on offer until it is taken.
+                        if n.tone == Tone::Info && waiting.is_none() && pending.is_none() {
                             // Informational notices fade once the tree shows the outcome.
                             let app = iv.app.clone();
                             let id = n.id;

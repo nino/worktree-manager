@@ -16,6 +16,13 @@
 //! notarised Developer ID build signed by the same team as the copy that is
 //! running. That second check is the one that matters: it is what stops a
 //! tampered or substituted download from being installed.
+//!
+//! A standard account cannot write to `/Applications`, so for it the swap is
+//! done by an administrator: the download is held, checked, and put in place
+//! only when someone answers the authentication dialog. Nothing is authorised
+//! that has not been checked, and it is checked again immediately before the
+//! privileged copy, because between the two it sits in a folder this account
+//! can write to.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,11 +47,52 @@ thread_local! {
     /// The newest version a background check has already said cannot be
     /// installed, so the six-hourly check does not repeat itself.
     static TOLD_UNREPLACEABLE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// A checked download waiting for an administrator to allow it in.
+    static PENDING: std::cell::RefCell<Option<Staged>> = const { std::cell::RefCell::new(None) };
+    /// An authorised install is under way, so a second press of the button
+    /// does not put a second password dialog on screen.
+    static INSTALLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The version waiting for a restart, if an update has been installed.
 pub fn ready_version(_mtm: MainThreadMarker) -> Option<String> {
     READY.with(|r| r.borrow().clone())
+}
+
+/// The version downloaded and checked but not yet allowed in, if any.
+pub fn pending_version(_mtm: MainThreadMarker) -> Option<String> {
+    PENDING.with(|p| p.borrow().as_ref().map(|s| s.version.clone()))
+}
+
+/// A download that is checked and ready, waiting for the permission that lets
+/// it replace the running copy.
+#[derive(Clone)]
+struct Staged {
+    version: String,
+    /// The unpacked bundle, still in the work directory.
+    app: PathBuf,
+    /// Removed once the update is installed.
+    work: PathBuf,
+    /// Where it goes.
+    bundle: PathBuf,
+    /// Re-checked against this before anything runs as root.
+    team: String,
+}
+
+/// What a check produced: what to tell the user, and the download that is
+/// waiting on them, if there is one.
+struct Checked {
+    status: UpdateStatus,
+    staged: Option<Staged>,
+}
+
+impl Checked {
+    fn just(status: UpdateStatus) -> Self {
+        Checked {
+            status,
+            staged: None,
+        }
+    }
 }
 
 /// Start the update loop. Does nothing unless this is an installed release
@@ -147,6 +195,11 @@ fn run_check(app: App, install: Installation, announce: bool) {
     if READY.with(|r| r.borrow().is_some()) {
         return; // Already installed; waiting for a restart.
     }
+    if PENDING.with(|p| p.borrow().is_some()) {
+        // Downloaded and waiting for permission. Checking again would clear
+        // the work directory the staged bundle is sitting in.
+        return;
+    }
     if announce {
         app.dispatch(Action::ShowNotice {
             text: "Checking for updates…".into(),
@@ -171,11 +224,19 @@ fn run_check(app: App, install: Installation, announce: bool) {
 
 fn report(
     app: &App,
-    outcome: Result<UpdateStatus, String>,
+    outcome: Result<Checked, String>,
     announce: bool,
     running: &str,
     channel: UpdateChannel,
 ) {
+    // The worker did the downloading; the state it produced belongs here, on
+    // the thread that owns it.
+    let outcome = outcome.map(|checked| {
+        if let Some(staged) = checked.staged {
+            PENDING.with(|p| *p.borrow_mut() = Some(staged));
+        }
+        checked.status
+    });
     match outcome {
         Ok(UpdateStatus::Ready(version)) => {
             READY.with(|r| *r.borrow_mut() = Some(version.clone()));
@@ -183,6 +244,20 @@ fn report(
                 text: format!("Version {version} is installed. Restart to use it."),
                 tone: Tone::Info,
             });
+            if let Some(mtm) = MainThreadMarker::new() {
+                if let Some(c) = crate::controller::controller(mtm) {
+                    c.update_became_ready();
+                }
+            }
+        }
+        Ok(UpdateStatus::NeedsAuthorisation { version, advice }) => {
+            log::info!("updates: {version} downloaded, waiting for authorisation");
+            app.dispatch(Action::ShowNotice {
+                text: format!("Version {version} is ready to install. {advice}"),
+                tone: Tone::Info,
+            });
+            // Puts the button in the notice bar; the dialog comes when it is
+            // pressed, not out of nowhere while someone is working.
             if let Some(mtm) = MainThreadMarker::new() {
                 if let Some(c) = crate::controller::controller(mtm) {
                     c.update_became_ready();
@@ -224,10 +299,7 @@ fn report(
     }
 }
 
-fn check_and_install(
-    install: &Installation,
-    channel: UpdateChannel,
-) -> Result<UpdateStatus, String> {
+fn check_and_install(install: &Installation, channel: UpdateChannel) -> Result<Checked, String> {
     let manifest = Manifest::parse(&fetch(&channel.feed_url())?)?;
     if !is_newer(&manifest.version, &install.version) {
         log::info!(
@@ -236,17 +308,20 @@ fn check_and_install(
             channel.name(),
             manifest.version
         );
-        return Ok(UpdateStatus::UpToDate);
+        return Ok(Checked::just(UpdateStatus::UpToDate));
     }
     log::info!("updates: {} available", manifest.version);
 
-    // Before downloading anything: an update that cannot be put in place is
-    // news for the user, not a failure to report.
-    if let Some(blocker) = replace_blocker(&install.bundle) {
-        return Ok(UpdateStatus::Unreplaceable {
+    // Before downloading anything: an update that nobody can put in place is
+    // news for the user, not a failure to report. A folder this account may
+    // not write to is not one of those — it takes an administrator, who is
+    // asked once the download has been checked.
+    let blocker = replace_blocker(&install.bundle);
+    if let Some(blocker) = blocker.as_ref().filter(|b| !b.needs_authorisation()) {
+        return Ok(Checked::just(UpdateStatus::Unreplaceable {
             version: manifest.version,
             advice: blocker.advice(),
-        });
+        }));
     }
 
     let work = tempdir()?;
@@ -273,9 +348,28 @@ fn check_and_install(
         .ok_or("the download contained no app")?;
 
     verify_signature(&new_app, &install.team)?;
+
+    if let Some(blocker) = blocker {
+        // Checked, and going no further until someone with the rights says so.
+        // It stays where it is: nothing has been installed and nothing run.
+        return Ok(Checked {
+            status: UpdateStatus::NeedsAuthorisation {
+                version: manifest.version.clone(),
+                advice: blocker.advice(),
+            },
+            staged: Some(Staged {
+                version: manifest.version,
+                app: new_app,
+                work,
+                bundle: install.bundle.clone(),
+                team: install.team.clone(),
+            }),
+        });
+    }
+
     swap(&new_app, &install.bundle)?;
     let _ = std::fs::remove_dir_all(&work);
-    Ok(UpdateStatus::Ready(manifest.version))
+    Ok(Checked::just(UpdateStatus::Ready(manifest.version)))
 }
 
 fn fetch(url: &str) -> Result<String, String> {
@@ -379,6 +473,13 @@ enum Blocker {
 }
 
 impl Blocker {
+    /// Whether permission is the only thing missing. A read-only volume and a
+    /// translocated copy cannot be written to by anyone, root included; a
+    /// folder this account does not own can be, once an administrator says so.
+    fn needs_authorisation(&self) -> bool {
+        matches!(self, Blocker::NoPermission(_))
+    }
+
     /// Follows "Version … is available." in the notice bar, so it has to be
     /// short enough to read without Details.
     fn advice(&self) -> String {
@@ -452,6 +553,140 @@ fn swap(new_app: &Path, installed: &Path) -> Result<(), String> {
     }
     let _ = std::fs::remove_dir_all(&old);
     Ok(())
+}
+
+/// What the user is told when they answer the authentication dialog with
+/// Cancel. Their decision, so it is reported as news rather than an error, and
+/// the offer stays up.
+const CANCELLED: &str = "Installation was cancelled.";
+
+/// The notice bar's button. An update that is already installed only needs a
+/// restart; one still waiting for permission is installed first, which is
+/// where the authentication dialog comes from — pressed, never unprompted.
+pub fn install_or_restart(app: &App, mtm: MainThreadMarker) {
+    let Some(staged) = PENDING.with(|p| p.borrow().clone()) else {
+        restart(mtm);
+        return;
+    };
+    if INSTALLING.replace(true) {
+        return; // A dialog is already up.
+    }
+    app.dispatch(Action::ShowNotice {
+        text: format!("Installing version {}…", staged.version),
+        tone: Tone::Info,
+    });
+    // osascript blocks for as long as the dialog is on screen, which is as
+    // long as the user takes.
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("wtm-installer".into())
+        .spawn(move || {
+            let outcome = authorise_and_swap(&staged);
+            DispatchQueue::main().exec_async(move || match outcome {
+                Ok(()) => {
+                    INSTALLING.set(false);
+                    let _ = std::fs::remove_dir_all(&staged.work);
+                    PENDING.with(|p| *p.borrow_mut() = None);
+                    READY.with(|r| *r.borrow_mut() = Some(staged.version.clone()));
+                    // They asked for it to be installed, and it is: the old
+                    // image is still what is running, so take the restart now
+                    // rather than ask a second time.
+                    if let Some(mtm) = MainThreadMarker::new() {
+                        restart(mtm);
+                    }
+                }
+                Err(message) => {
+                    INSTALLING.set(false);
+                    let cancelled = message == CANCELLED;
+                    if !cancelled {
+                        log::warn!("updates: {message}");
+                    }
+                    // The download stays staged either way, so the button is
+                    // still there to try again.
+                    app.dispatch(Action::ShowNotice {
+                        text: message,
+                        tone: if cancelled { Tone::Info } else { Tone::Error },
+                    });
+                }
+            });
+        })
+        .expect("spawn installer thread");
+}
+
+/// Check the staged bundle once more and then have an administrator put it in
+/// place. The second check is not ceremony: the bundle has been sitting in a
+/// folder this account can write to since the first one, and what follows runs
+/// as root.
+fn authorise_and_swap(staged: &Staged) -> Result<(), String> {
+    verify_signature(&staged.app, &staged.team)?;
+    let parent = staged
+        .bundle
+        .parent()
+        .ok_or("the app has no parent folder")?;
+    let script = install_script(
+        &staged.app,
+        &staged.bundle,
+        &parent.join(".worktree-manager-update.app"),
+        &parent.join(".worktree-manager-previous.app"),
+    );
+    run_as_administrator(
+        &script,
+        "Worktree Manager needs permission to install the update.",
+    )
+}
+
+/// The steps `swap` takes, in the order it takes them, as one shell command:
+/// the new bundle is copied in beside the old one, the old one is moved aside,
+/// and it is put back if the last move fails — so an interruption leaves an
+/// app that still runs. Every path is quoted; this runs as root.
+fn install_script(new_app: &Path, installed: &Path, staged: &Path, old: &Path) -> String {
+    let new_app = shell_quote(&new_app.to_string_lossy());
+    let installed = shell_quote(&installed.to_string_lossy());
+    let staged = shell_quote(&staged.to_string_lossy());
+    let old = shell_quote(&old.to_string_lossy());
+    format!(
+        "rm -rf {staged} {old} && cp -R {new_app} {staged} && mv {installed} {old} && \
+         {{ mv {staged} {installed} || {{ mv {old} {installed}; rm -rf {staged}; exit 1; }}; }} && \
+         rm -rf {old}"
+    )
+}
+
+/// Run a shell command as an administrator. `osascript` is what puts macOS's
+/// own authentication dialog on screen — the same one the Electron app raised
+/// — and a standard account can answer it with an administrator's name and
+/// password, which is the only way an update reaches a folder that account
+/// does not own.
+fn run_as_administrator(command: &str, prompt: &str) -> Result<(), String> {
+    let script = format!(
+        "do shell script {command} with prompt {prompt} with administrator privileges",
+        command = applescript_quote(command),
+        prompt = applescript_quote(prompt),
+    );
+    let out = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // -128 is AppleScript for "the user cancelled".
+    if stderr.contains("-128") {
+        return Err(CANCELLED.into());
+    }
+    Err(stderr
+        .lines()
+        .next()
+        .unwrap_or("the update could not be installed")
+        .trim()
+        .to_string())
+}
+
+/// A string literal for `osascript -e`. AppleScript escapes backslashes and
+/// double quotes and nothing else, so the shell quoting inside — single
+/// quotes, from `shell_quote` — passes through untouched.
+fn applescript_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Quit and start the copy that was just installed. The shell outlives this
@@ -600,6 +835,55 @@ mod tests {
         assert!(verify_signature(notarised, &team).is_ok());
         // Signed, notarised, but by someone else: refused.
         assert!(verify_signature(notarised, "NOTTHISTEAM").is_err());
+    }
+
+    /// The one blocker that is got past rather than reported.
+    #[test]
+    fn only_a_folder_this_account_cannot_write_to_is_worth_asking_about() {
+        assert!(Blocker::NoPermission(PathBuf::from("/Applications")).needs_authorisation());
+        assert!(!Blocker::Translocated.needs_authorisation());
+        assert!(!Blocker::ReadOnly.needs_authorisation());
+    }
+
+    /// This command is handed to root, so it has to do exactly what `swap`
+    /// does, and every path in it has to survive a space.
+    #[test]
+    fn the_administrator_runs_the_same_steps_as_an_ordinary_swap() {
+        let script = install_script(
+            Path::new("/tmp/wtm-update-1/app/Worktree Manager.app"),
+            Path::new("/Applications/Worktree Manager.app"),
+            Path::new("/Applications/.worktree-manager-update.app"),
+            Path::new("/Applications/.worktree-manager-previous.app"),
+        );
+        let installed = "'/Applications/Worktree Manager.app'";
+        let staged = "'/Applications/.worktree-manager-update.app'";
+        let previous = "'/Applications/.worktree-manager-previous.app'";
+        assert!(script.contains(&format!(
+            "cp -R '/tmp/wtm-update-1/app/Worktree Manager.app' {staged}"
+        )));
+        // The installed copy is moved aside before anything takes its place,
+        // and put back if that move fails.
+        let aside = script
+            .find(&format!("mv {installed} {previous}"))
+            .expect("the installed copy is moved aside");
+        let restore = script
+            .find(&format!("mv {previous} {installed}"))
+            .expect("and put back when the install fails");
+        assert!(aside < restore);
+        // Nothing is thrown away until the new copy is in place.
+        assert!(script.ends_with(&format!("rm -rf {previous}")));
+    }
+
+    /// The shell command is a string inside an AppleScript string, so it is
+    /// quoted twice; the inner quoting has to come through untouched.
+    #[test]
+    fn the_command_survives_applescript_quoting() {
+        assert_eq!(
+            applescript_quote("rm -rf '/Applications/A B.app'"),
+            "\"rm -rf '/Applications/A B.app'\""
+        );
+        assert_eq!(applescript_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+        assert_eq!(applescript_quote("back\\slash"), "\"back\\\\slash\"");
     }
 
     #[test]
