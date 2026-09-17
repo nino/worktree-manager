@@ -1,0 +1,60 @@
+name: CodeQL
+
+# Advanced setup, so the language list lives in the repo instead of in the
+# repository settings. It supersedes the default setup, which has to be turned
+# off first (Settings → Advanced Security → Code scanning): with both enabled,
+# GitHub rejects the results this workflow uploads.
+#
+# Deliberately no javascript-typescript. The tree has been Rust since the
+# Electron app was deleted, and the default setup kept failing the analysis
+# because it could not find any JS to look at.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Code scanning findings go stale as the queries improve, not just as the
+  # code changes, so re-run on a timer as well.
+  schedule:
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    # Unlike CI, this does not need macOS: both extractors run without building,
+    # so nothing here ever tries to compile the AppKit crate.
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+          - language: rust
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          # `none` is the only mode either language supports: CodeQL reads the
+          # sources directly rather than watching a build.
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
