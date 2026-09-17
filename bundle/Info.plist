@@ -12,8 +12,13 @@
 	<string>icon.icns</string>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<!-- The Electron app's identifier, deliberately. Squirrel.Mac only
+	     installs an update whose signature satisfies the running copy's
+	     designated requirement, and that requirement names the identifier —
+	     so this is what lets a copy still on the Electron build update itself
+	     into this one. See .github/workflows/release.yml. -->
 	<key>CFBundleIdentifier</key>
-	<string>uk.org.plinth.worktree-manager-native</string>
+	<string>uk.org.plinth.worktree-manager</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

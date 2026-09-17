@@ -57,6 +57,10 @@ Download the DMG from the [latest release](../../releases/latest) and drag the
 app to Applications. Builds are signed and notarised, so it opens with a
 double-click.
 
+Still on the Electron version? 1.0.86 was its last, and it updates itself into
+this one: the release it already checks now carries a build it can install.
+Dragging the DMG across works too, and keeps your configuration either way.
+
 ## Build from source
 
 Requires a [Rust toolchain](https://rustup.rs) and git ≥ 2.36.

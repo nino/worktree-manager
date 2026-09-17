@@ -226,19 +226,38 @@ jobs:
           fi
           export BASE
           python3 - <<'PY'
-          import hashlib, json, os, pathlib, datetime
+          import base64, hashlib, json, os, pathlib, datetime
           zip_path = pathlib.Path(os.environ["ZIP"])
+          zip_bytes = zip_path.read_bytes()
+          version = os.environ["VERSION"]
           manifest = {
-              "version": os.environ["VERSION"],
+              "version": version,
               "channel": os.environ["CHANNEL"],
               "url": f"{os.environ['BASE']}/{zip_path.name}",
-              "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
+              "sha256": hashlib.sha256(zip_bytes).hexdigest(),
               "minimumSystemVersion": "13.0",
               "commit": os.environ["GITHUB_SHA"],
               "publishedAt": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
           }
           pathlib.Path("dist/appcast.json").write_text(json.dumps(manifest, indent=2) + "\n")
           print(json.dumps(manifest, indent=2))
+
+          # The same build, described the way electron-updater reads it. See
+          # the step below for why the stable release still carries this.
+          if os.environ["CHANNEL"] == "stable":
+              sha512 = base64.b64encode(hashlib.sha512(zip_bytes).digest()).decode()
+              date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+              pathlib.Path("dist/latest-mac.yml").write_text(
+                  f"version: {version}\n"
+                  "files:\n"
+                  f"  - url: {zip_path.name}\n"
+                  f"    sha512: '{sha512}'\n"
+                  f"    size: {len(zip_bytes)}\n"
+                  f"path: {zip_path.name}\n"
+                  f"sha512: '{sha512}'\n"
+                  f"releaseDate: '{date}'\n"
+              )
+              print(pathlib.Path("dist/latest-mac.yml").read_text())
           PY
 
       # What a downloader's Mac will check, checked here instead.
@@ -278,9 +297,29 @@ jobs:
             exit 1
           fi
 
+          # Same again for the Electron-era manifest, which states the digest
+          # in base64 and is rejected just as silently when it disagrees.
+          if [ -f dist/latest-mac.yml ]; then
+            expected=$(sed -n "s/^sha512: '\(.*\)'$/\1/p" dist/latest-mac.yml)
+            actual=$(openssl dgst -sha512 -binary "$ZIP" | base64 | tr -d '\n')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::latest-mac.yml sha512 does not match $ZIP"
+              exit 1
+            fi
+          fi
+
       # The DMG is what a person downloads; the zip and appcast.json are what
       # installed copies update from, and they have to live in the same release
       # for the channel's download URL to resolve them.
+      #
+      # latest-mac.yml is the same zip described for electron-updater, which is
+      # what the Electron app this one replaced reads from this release. Without
+      # it those copies get a 404 on every check and can never leave the build
+      # they are on. They can take this one because the bundle keeps their
+      # identifier and is signed by the same team, which is what Squirrel.Mac
+      # checks before it swaps a bundle in. Stable only: there was never an
+      # Electron beta channel. It can go once nobody is left on 1.0.86, the
+      # last Electron release.
       #
       # A beta is published as a prerelease, which is what keeps the two
       # channels apart: `releases/latest` skips prereleases, so nothing here
@@ -297,7 +336,7 @@ jobs:
             gh release create "$TAG" \
               --title "$APP v${VERSION} (${SHORT_SHA})" \
               --notes "Automated build of \`${GITHUB_SHA}\` from \`main\`. Signed and notarised universal macOS build — double-click to open. Installed copies update themselves from here." \
-              "$DMG" "$ZIP" dist/appcast.json
+              "$DMG" "$ZIP" dist/appcast.json dist/latest-mac.yml
           else
             # Point the tag at this commit when it is not already there — a
             # dispatched beta has no tag push behind it. A tag written with

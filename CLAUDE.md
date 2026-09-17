@@ -51,7 +51,8 @@ crates/
                    branch-prefix splitting, and the `App` facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
-bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager-native)
+bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
+                   the Electron app's; see "Releases")
 build/             Icon sources (icon.icns, Assets.car) copied into the bundle
 scripts/bundle.sh  Builds the .app
 docs/architecture.md  How it fits together, and why the fiddly parts are so
@@ -174,7 +175,21 @@ rebuilding a beta from an unchanged tree is still an update, which is what
 makes the update path testable without inventing commits.
 
 Each release carries the DMG for people, and the zip plus `appcast.json` for
-the in-app updater. Five repository secrets drive the signing, under
+the in-app updater.
+
+The stable release also carries `latest-mac.yml`: the same zip, described the
+way electron-updater reads it. Nothing in this app reads that file — it is
+there for the copies still running the Electron app, which check this release
+on a timer and, without it, get a 404 and stay on the build they are on
+forever. They can take this app as an update because the bundle keeps their
+identifier and is signed by the same team: Squirrel.Mac only installs a bundle
+whose signature satisfies the running copy's designated requirement, and that
+requirement names the identifier. That is why `CFBundleIdentifier` is
+`uk.org.plinth.worktree-manager` and not something ending in `-native`. Both
+the file and the identifier can be revisited once nobody is left on 1.0.86 —
+the last Electron release, where the rewrite's first was 1.0.120.
+
+Five repository secrets drive the signing, under
 Settings → Secrets and variables → Actions:
 
 | secret | what it is |
