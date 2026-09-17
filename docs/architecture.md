@@ -164,6 +164,17 @@ offers. None of this happens unless the running copy is itself an installed,
 Developer-ID-signed build with a stamped version: a `cargo run` build has no
 Team ID to match and would think every release is an upgrade.
 
+The stable release carries one more file this app never reads:
+`latest-mac.yml`, the same zip described for electron-updater. The Electron app
+checks that release every six hours, and until the rewrite started publishing
+the file, every check 404'd — those copies could see no update at all, least of
+all this one. They can install this one because the bundle kept their
+identifier (`uk.org.plinth.worktree-manager`) and is signed by the same team,
+which between them satisfy the designated requirement Squirrel.Mac checks a
+downloaded bundle against. Their first launch of it is a first launch of this
+app: no `SEEN_REWRITE_ANNOUNCEMENT` default, so the note about the rewrite
+comes up, and their `worktree-manager.json` is imported by the config store.
+
 ## Not carried over from the Electron app
 
 The command runner with its terminal drawer, and the brushed-metal appearance
