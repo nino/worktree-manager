@@ -31,7 +31,7 @@ Environment switches, all dev-only:
 
 | variable | effect |
 | --- | --- |
-| `WTM_USER_DATA=<dir>` | config + snapshot live there instead of the real profile |
+| `WTM_USER_DATA=<dir>` | config, snapshot + window state live there instead of the real profile |
 | `WTM_APPEARANCE=dark\|light` | force an appearance without changing the system setting |
 | `RUST_LOG=info` | timings for refreshes and git runs |
 
@@ -47,8 +47,9 @@ crates/
                    terminal, reveal, app directories). No dependencies.
   wtm-core         Everything that is not a widget: types, git runner and
                    parsers, create/delete/push/pull/switch, config store,
-                   snapshot, background fetch, file watcher, fuzzy matching,
-                   branch-prefix splitting, and the `App` facade. Tested.
+                   snapshot, window state, background fetch, file watcher,
+                   fuzzy matching, branch-prefix splitting, and the `App`
+                   facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
@@ -77,6 +78,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   publishes, and hands the slow part to tokio. See `docs/architecture.md`.
 - **Config** is JSON in the same shape the Electron app used, and that app's
   file is imported on first launch if present.
+- **The window comes back as it was**: its frame, the list's scroll offset,
+  the focused row and which cards were closed live in `ui-state.json` beside
+  the config, so `WTM_USER_DATA` sandboxes them too. Rows are remembered by
+  identity, never by index. A frame less than half on any screen is ignored
+  and the window centres instead.
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.
@@ -207,4 +213,5 @@ Settings → Secrets and variables → Actions:
 | `APPLE_API_ISSUER_ID` | the issuer UUID |
 
 Local `scripts/bundle.sh` builds are ad-hoc signed, which is enough for a
-stable identity (window-frame autosave) but is not a Developer ID signature.
+stable identity (the user defaults the announcement is marked seen in) but is
+not a Developer ID signature.

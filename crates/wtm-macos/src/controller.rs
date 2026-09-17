@@ -16,7 +16,7 @@ use objc2_app_kit::{
     NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
     NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation, NSOutlineView,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSScrollView, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
+    NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
     NSStackViewDistribution, NSTableColumn, NSTableViewColumnAutoresizingStyle,
     NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
     NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
@@ -25,10 +25,11 @@ use objc2_app_kit::{
     NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    NSArray, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSURL,
+    NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
+    NSSize, NSURL,
 };
 use wtm_core::model::Tone;
-use wtm_core::{Action, App, Event, Model};
+use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
 
 use crate::button::Button;
 use crate::cells::{
@@ -92,6 +93,15 @@ pub struct ControllerIvars {
     shown: RefCell<Option<Arc<Model>>>,
     query: RefCell<String>,
     collapsed: RefCell<HashSet<String>>,
+    /// The window state this launch is coming back to, until it has been
+    /// applied. While it is set nothing is recorded: the list is at the top
+    /// with nothing selected, which is not what should be remembered.
+    restore: RefCell<Option<UiState>>,
+    /// `apply_restore` is already queued for the next run-loop turn.
+    restore_queued: Cell<bool>,
+    /// `rebuild` is expanding cards to match what is remembered, so the
+    /// expansion notifications are not the user opening or closing one.
+    syncing_expansion: Cell<bool>,
     /// Id of the notice currently displayed, for the auto-clear timer.
     notice_id: Cell<u64>,
     /// When the app last became active; `None` until launch has settled.
@@ -193,6 +203,12 @@ define_class!(
         fn clip_frame_changed(&self, _n: &NSNotification) {
             self.fit_column();
         }
+
+        /// The list was scrolled, by whatever means.
+        #[unsafe(method(clipBoundsChanged:))]
+        fn clip_bounds_changed(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
     }
 
     unsafe impl NSMenuItemValidation for Controller {
@@ -246,6 +262,14 @@ define_class!(
             true
         }
 
+        /// Last chance to write the window state: the core's debounced write
+        /// would never run once the process is going away.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+            self.ivars().app.flush_ui_state();
+        }
+
         #[unsafe(method(applicationSupportsSecureRestorableState:))]
         fn secure_restorable(&self, _a: &NSApplication) -> bool {
             true
@@ -261,7 +285,19 @@ define_class!(
         }
     }
 
-    unsafe impl NSWindowDelegate for Controller {}
+    unsafe impl NSWindowDelegate for Controller {
+        /// Both fire once per frame of a live resize or drag; the core
+        /// coalesces them into one write.
+        #[unsafe(method(windowDidResize:))]
+        fn window_did_resize(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
+
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
+    }
 
     // MARK: Toolbar
 
@@ -357,6 +393,12 @@ define_class!(
             }
         }
 
+        /// The keyboard's cursor moved; remember which row has it.
+        #[unsafe(method(outlineViewSelectionDidChange:))]
+        fn selection_did_change(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
+
         #[unsafe(method(outlineView:shouldSelectItem:))]
         unsafe fn should_select(&self, _o: &NSOutlineView, _item: &AnyObject) -> bool {
             // Selection is the keyboard's cursor through the tree: the arrow
@@ -375,7 +417,10 @@ define_class!(
         #[unsafe(method(outlineViewItemWillExpand:))]
         fn will_expand(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
-                self.ivars().collapsed.borrow_mut().remove(&id);
+                if !self.ivars().syncing_expansion.get() {
+                    self.ivars().collapsed.borrow_mut().remove(&id);
+                    self.remember_ui_state_later();
+                }
                 self.sync_header_style(&id, None);
             }
         }
@@ -385,7 +430,10 @@ define_class!(
         #[unsafe(method(outlineViewItemWillCollapse:))]
         fn will_collapse(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
-                self.ivars().collapsed.borrow_mut().insert(id);
+                if !self.ivars().syncing_expansion.get() {
+                    self.ivars().collapsed.borrow_mut().insert(id);
+                    self.remember_ui_state_later();
+                }
             }
             // The rows about to slide away can no longer draw (see
             // `RowView::set_snapshot`): freeze each one as an image first.
@@ -888,6 +936,11 @@ impl Controller {
     }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
+        // Read before the core is moved into the ivars: the closed cards have
+        // to be known before the first tree is built, or every card would
+        // open and then shut again in front of the user.
+        let saved = app.ui_state();
+        let collapsed: HashSet<String> = saved.collapsed_repos.iter().cloned().collect();
         let this = mtm.alloc::<Self>().set_ivars(ControllerIvars {
             app,
             window: RefCell::new(None),
@@ -905,7 +958,10 @@ impl Controller {
             tree: RefCell::new(Tree::default()),
             shown: RefCell::new(None),
             query: RefCell::new(String::new()),
-            collapsed: RefCell::new(HashSet::new()),
+            collapsed: RefCell::new(collapsed),
+            restore: RefCell::new(Some(saved)),
+            restore_queued: Cell::new(false),
+            syncing_expansion: Cell::new(false),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
             settings: RefCell::new(None),
@@ -985,6 +1041,172 @@ impl Controller {
             .map(|r| r.repo.id.clone())
     }
 
+    // MARK: Window state
+
+    /// Record where the window is, how far the list is scrolled, which row
+    /// has the keyboard and which cards are closed. Called from every window
+    /// move, scroll and selection change; the core discards an unchanged
+    /// value and coalesces the rest into one write.
+    fn remember_ui_state(&self) {
+        let iv = self.ivars();
+        if iv.restore.borrow().is_some() {
+            // Still coming up. The list is at the top with nothing selected,
+            // which would overwrite what we are about to restore.
+            return;
+        }
+        let mut state = UiState::default();
+        if let Some(w) = iv.window.borrow().as_ref() {
+            let f = w.frame();
+            state.window = Some(WindowFrame {
+                x: f.origin.x,
+                y: f.origin.y,
+                width: f.size.width,
+                height: f.size.height,
+            });
+        }
+        if let Some(scroll) = iv.scroll.borrow().as_ref() {
+            state.scroll = scroll.contentView().bounds().origin.y;
+        }
+        state.focus = self.focused_row();
+        state.collapsed_repos = iv.collapsed.borrow().iter().cloned().collect();
+        iv.app.store_ui_state(state);
+    }
+
+    /// As above, on the next run-loop turn. Expansion notifications arrive
+    /// while the outline is rearranging its rows, and reading the selected
+    /// row from in there answers for the tree as it was a moment ago.
+    fn remember_ui_state_later(&self) {
+        DispatchQueue::main().exec_async(|| {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(c) = controller(mtm) {
+                c.remember_ui_state();
+            }
+        });
+    }
+
+    /// The focused row, by identity. A pending creation is not recorded: it
+    /// is gone by the next launch.
+    fn focused_row(&self) -> Option<Focus> {
+        let outline = self.ivars().outline.borrow().clone()?;
+        let row = outline.selectedRow();
+        if row < 0 {
+            return None;
+        }
+        let item = outline.itemAtRow(row)?;
+        match item.downcast_ref::<WTMItem>()?.kind() {
+            ItemKind::Repo { repo_id } => Some(Focus {
+                repo_id,
+                worktree_path: None,
+            }),
+            ItemKind::Worktree { repo_id, path } => Some(Focus {
+                repo_id,
+                worktree_path: Some(path),
+            }),
+            ItemKind::Pending { .. } => None,
+        }
+    }
+
+    /// Put the list back where it was, once there is a list to put back.
+    ///
+    /// Called after every rebuild until it can run: with nothing cached in
+    /// `snapshot.json` the rows only exist after the first listing, and an
+    /// offset clamped against a one-row-tall outline would come out at zero.
+    /// The work itself waits for the next run-loop turn, because the outline's
+    /// height settles after the reload that is still in progress here.
+    fn restore_ui_state(&self) {
+        let iv = self.ivars();
+        if iv.restore.borrow().is_none() || iv.restore_queued.get() {
+            return;
+        }
+        let model = iv.app.model();
+        let rows = iv
+            .outline
+            .borrow()
+            .as_ref()
+            .map(|o| o.numberOfRows())
+            .unwrap_or(0);
+        // Nothing to restore onto when there are no repos at all; otherwise
+        // wait until each card holds its worktrees, from the cached snapshot
+        // or from the listing that replaces it.
+        let ready = model.repos.is_empty()
+            || (rows > 0
+                && model
+                    .repos
+                    .iter()
+                    .all(|r| r.loaded || !r.worktrees.is_empty()));
+        if !ready {
+            return;
+        }
+        iv.restore_queued.set(true);
+        DispatchQueue::main().exec_async(|| {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(c) = controller(mtm) {
+                c.apply_restore();
+                c.ivars().restore_queued.set(false);
+            }
+        });
+    }
+
+    /// Select the remembered row and scroll to the remembered offset, once.
+    /// A later listing must never yank the list out from under someone who is
+    /// already using it, so the state is taken rather than read.
+    fn apply_restore(&self) {
+        let iv = self.ivars();
+        let state = iv.restore.borrow().clone();
+        let Some(state) = state else {
+            return;
+        };
+        let Some(outline) = iv.outline.borrow().clone() else {
+            return;
+        };
+        if let Some(f) = &state.focus {
+            let key = match &f.worktree_path {
+                Some(path) => ItemKind::Worktree {
+                    repo_id: f.repo_id.clone(),
+                    path: path.clone(),
+                }
+                .key(),
+                None => ItemKind::Repo {
+                    repo_id: f.repo_id.clone(),
+                }
+                .key(),
+            };
+            // `rowForItem` answers -1 for a worktree that is gone, or one
+            // inside a card that is closed; either way there is nothing to
+            // select and the tree simply starts unselected.
+            let item = iv.items.borrow().get(&key).cloned();
+            if let Some(item) = item {
+                let row = unsafe { outline.rowForItem(Some(&item)) };
+                if row >= 0 {
+                    outline.selectRowIndexes_byExtendingSelection(
+                        &NSIndexSet::indexSetWithIndex(row as usize),
+                        false,
+                    );
+                }
+            }
+        }
+        // Selecting does not scroll, so the offset is applied after it and
+        // wins. It is clamped here because the list may be shorter than it
+        // was — worktrees deleted elsewhere, or a card closed.
+        if let Some(scroll) = iv.scroll.borrow().clone() {
+            let clip = scroll.contentView();
+            let document = scroll
+                .documentView()
+                .map(|d| d.frame().size.height)
+                .unwrap_or(0.0);
+            let max = (document - clip.bounds().size.height).max(0.0);
+            let y = state.scroll.clamp(0.0, max);
+            if y > 0.0 {
+                clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
+                scroll.reflectScrolledClipView(&clip);
+            }
+        }
+        // Cleared last: the selection and the scroll above are this launch
+        // catching up, not the user moving about, and recording them
+        // half-applied would write back a list scrolled to the top.
+        *iv.restore.borrow_mut() = None;
+    }
+
     // MARK: Window construction
 
     fn build_window(&self, mtm: MainThreadMarker) {
@@ -1005,7 +1227,10 @@ impl Controller {
         window.setMinSize(NSSize::new(640.0, 400.0));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         window.setDelegate(Some(ProtocolObject::from_ref(self)));
-        window.setFrameAutosaveName(&ns("WTMMainWindow"));
+        // No `setFrameAutosaveName`: the frame is kept in the app's own state
+        // file along with the scroll offset and the focused row, so that
+        // `WTM_USER_DATA` sandboxes all of it together (see
+        // `wtm_core::ui_state`). It is applied below, once the window is built.
         unsafe { window.setReleasedWhenClosed(false) };
 
         let toolbar = NSToolbar::initWithIdentifier(mtm.alloc(), &ns("wtm.toolbar"));
@@ -1056,14 +1281,24 @@ impl Controller {
         // `fit_column`); autoresizing alone left the table wider than the clip.
         let clip = scroll.contentView();
         clip.setPostsFrameChangedNotifications(true);
+        // The clip view's bounds origin *is* the scroll offset, and it moves
+        // for a wheel, a scroller, a keystroke and a programmatic scroll
+        // alike, so one notification covers every way the list can move.
+        clip.setPostsBoundsChangedNotifications(true);
         unsafe {
-            objc2_foundation::NSNotificationCenter::defaultCenter()
-                .addObserver_selector_name_object(
-                    self.as_ref(),
-                    sel!(clipFrameChanged:),
-                    Some(objc2_app_kit::NSViewFrameDidChangeNotification),
-                    Some(&clip),
-                );
+            let centre = objc2_foundation::NSNotificationCenter::defaultCenter();
+            centre.addObserver_selector_name_object(
+                self.as_ref(),
+                sel!(clipFrameChanged:),
+                Some(objc2_app_kit::NSViewFrameDidChangeNotification),
+                Some(&clip),
+            );
+            centre.addObserver_selector_name_object(
+                self.as_ref(),
+                sel!(clipBoundsChanged:),
+                Some(objc2_app_kit::NSViewBoundsDidChangeNotification),
+                Some(&clip),
+            );
         }
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
@@ -1264,7 +1499,22 @@ impl Controller {
         *iv.refresh_spinner.borrow_mut() = Some(spinner);
 
         crate::menu::install(&NSApplication::sharedApplication(mtm), self.as_ref(), mtm);
-        window.center();
+        // Back where it was, unless that frame no longer lands on a screen —
+        // the display it was on may be gone, and a window off the edge cannot
+        // be dragged back.
+        let saved = iv
+            .restore
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.window)
+            .filter(|f| f.is_usable_on(&screen_frames(mtm)));
+        match saved {
+            Some(f) => window.setFrame_display(
+                NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height)),
+                false,
+            ),
+            None => window.center(),
+        }
         window.makeKeyAndOrderFront(None);
         // The tree starts focused, so the arrow keys work without a click.
         if let Some(o) = iv.outline.borrow().as_ref() {
@@ -1280,6 +1530,7 @@ impl Controller {
         let model = self.ivars().app.model();
         self.rebuild(false);
         self.update_chrome(&model);
+        self.restore_ui_state();
     }
 
     fn update_chrome(&self, model: &Model) {
@@ -1445,12 +1696,17 @@ impl Controller {
             // delegate, which borrows these cells again.
             let roots = iv.tree.borrow().roots.clone();
             let collapsed = iv.collapsed.borrow().clone();
+            // Matching what is remembered is not the user opening a card, and
+            // a search expands every card without meaning to forget which
+            // ones were closed.
+            iv.syncing_expansion.set(true);
             for root in &roots {
                 let id = root.kind().repo_id().to_string();
                 if searching || !collapsed.contains(&id) {
                     unsafe { outline.expandItem(Some(root)) };
                 }
             }
+            iv.syncing_expansion.set(false);
             self.sync_row_styles();
             return;
         }
@@ -1484,7 +1740,9 @@ impl Controller {
                 unsafe { outline.reloadItem_reloadChildren(Some(root), true) };
                 let is_collapsed = iv.collapsed.borrow().contains(&repo_id);
                 if !is_collapsed {
+                    iv.syncing_expansion.set(true);
                     unsafe { outline.expandItem(Some(root)) };
+                    iv.syncing_expansion.set(false);
                 }
                 continue;
             }
@@ -1523,6 +1781,23 @@ impl Controller {
         }
         self.sync_row_styles();
     }
+}
+
+/// Every screen's visible frame (the area outside the menu bar and the Dock),
+/// for deciding whether a remembered window frame can still be used.
+fn screen_frames(mtm: MainThreadMarker) -> Vec<WindowFrame> {
+    NSScreen::screens(mtm)
+        .iter()
+        .map(|s| {
+            let f = s.visibleFrame();
+            WindowFrame {
+                x: f.origin.x,
+                y: f.origin.y,
+                width: f.size.width,
+                height: f.size.height,
+            }
+        })
+        .collect()
 }
 
 /// What the notice bar shows of a message: its first two lines, with a count

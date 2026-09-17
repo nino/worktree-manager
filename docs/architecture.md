@@ -25,8 +25,9 @@ crates/
                  terminal, reveal, app directories). ~60 lines, no deps.
   wtm-core       Everything that is not a widget: data model, git runner and
                  parsers, create/delete safety ladder, push/pull/merge/switch,
-                 config + startup snapshot, background fetch, file watcher, and
-                 the `App` facade. Depends only on wtm-platform. Tested.
+                 config + startup snapshot + window state, background fetch,
+                 file watcher, and the `App` facade. Depends only on
+                 wtm-platform. Tested.
   wtm-macos      AppKit UI through objc2 + the macOS `Platform` impl.
   wtm-app        The binary. The only place with `cfg(target_os)`: it picks a
                  backend and hands it to the core.
@@ -115,6 +116,30 @@ same frame.
 **Instant launch.** The last listing is written to `snapshot.json`; at the
 next launch the tree is on screen before any git process has started, then
 replaced as real listings land (repo rows show a spinner until then).
+
+**Where it was left.** `ui-state.json` holds the window frame, how far the
+list was scrolled, which row had the keyboard and which cards were closed
+(`wtm_core::ui_state`). It sits beside the config rather than in
+NSUserDefaults or AppKit's window restoration, so `WTM_USER_DATA` sandboxes a
+dev run's window along with its config, and the values are plain enough for a
+backend on another OS to use. The controller records on every window move,
+scroll and selection change — the core drops an unchanged value and coalesces
+the rest into one write 750ms later, with a synchronous flush from
+`applicationWillTerminate:`.
+
+Restoring has two wrinkles. A frame is only reused when at least half of it
+lands on a screen's visible frame, summed across screens so a window that
+straddled two comes back straddling; a display that has been unplugged would
+otherwise put the window somewhere it cannot be dragged back from. And the
+focused row is stored by identity (repo id, or worktree path), never by index,
+because the tree is rebuilt from a fresh listing: the state is applied once,
+on the run-loop turn after the first tree that has its worktrees in it — from
+the cached snapshot, or from the first listing when there is none — since the
+outline's height only settles after its reload, and an offset clamped against
+a one-row outline comes out at zero. Until it has been applied nothing is
+recorded, or the list sitting at the top would be written over what is about
+to be restored. A pending creation is never recorded: it is not there next
+time.
 
 **Fresh without asking.** Each worktree directory (and, for linked worktrees,
 its `.git/worktrees/<name>` metadata dir) is watched with FSEvents via
