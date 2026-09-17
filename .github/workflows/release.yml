@@ -105,7 +105,7 @@ jobs:
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           scripts/bundle.sh --universal --version "$VERSION" --build "$BUILD"
-          lipo -info "target/bundle/$APP.app/Contents/MacOS/worktree-manager"
+          lipo -info "target/bundle/$APP.app/Contents/MacOS/$APP"
 
       # notarytool wants the App Store Connect key as a file, so the secret has
       # to land on disk. RUNNER_TEMP dies with the runner, and the last step

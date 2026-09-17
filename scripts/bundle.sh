@@ -46,7 +46,7 @@ fi
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/bundle/Info.plist" "$app/Contents/Info.plist"
-cp "$binary" "$app/Contents/MacOS/worktree-manager"
+cp "$binary" "$app/Contents/MacOS/Worktree Manager"
 [[ -f "$root/build/icon.icns" ]] && cp "$root/build/icon.icns" "$app/Contents/Resources/icon.icns"
 [[ -f "$root/build/Assets.car" ]] && cp "$root/build/Assets.car" "$app/Contents/Resources/Assets.car"
 printf 'APPL????' > "$app/Contents/PkgInfo"

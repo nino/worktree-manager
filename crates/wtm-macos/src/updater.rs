@@ -499,7 +499,7 @@ mod tests {
 
     fn fake_app(at: &Path, marker: &str) {
         std::fs::create_dir_all(at.join("Contents/MacOS")).unwrap();
-        std::fs::write(at.join("Contents/MacOS/worktree-manager"), marker).unwrap();
+        std::fs::write(at.join("Contents/MacOS/Worktree Manager"), marker).unwrap();
     }
 
     #[test]
@@ -513,7 +513,7 @@ mod tests {
 
         swap(&downloaded, &installed).unwrap();
 
-        let binary = installed.join("Contents/MacOS/worktree-manager");
+        let binary = installed.join("Contents/MacOS/Worktree Manager");
         assert_eq!(std::fs::read_to_string(binary).unwrap(), "new");
         // Nothing left over beside it.
         let siblings: Vec<String> = std::fs::read_dir(root.join("Applications"))
