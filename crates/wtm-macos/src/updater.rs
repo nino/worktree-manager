@@ -77,6 +77,14 @@ struct Staged {
     bundle: PathBuf,
     /// Re-checked against this before anything runs as root.
     team: String,
+    /// What the notice says is needed, so the offer can be made again.
+    advice: String,
+}
+
+/// The one line the notice bar shows for an update that is downloaded and
+/// waiting on permission.
+fn offer(version: &str, advice: &str) -> String {
+    format!("Version {version} is ready to install. {advice}")
 }
 
 /// What a check produced: what to tell the user, and the download that is
@@ -195,9 +203,15 @@ fn run_check(app: App, install: Installation, announce: bool) {
     if READY.with(|r| r.borrow().is_some()) {
         return; // Already installed; waiting for a restart.
     }
-    if PENDING.with(|p| p.borrow().is_some()) {
-        // Downloaded and waiting for permission. Checking again would clear
-        // the work directory the staged bundle is sitting in.
+    if let Some(waiting) = PENDING.with(|p| p.borrow().clone()) {
+        // Downloaded and waiting for permission. Checking again would clear the
+        // work directory it is sitting in — and the notice may have been
+        // dismissed since, which used to leave the update unreachable until the
+        // next launch, because this is the only thing that offers it.
+        app.dispatch(Action::ShowNotice {
+            text: offer(&waiting.version, &waiting.advice),
+            tone: Tone::Info,
+        });
         return;
     }
     if announce {
@@ -253,7 +267,7 @@ fn report(
         Ok(UpdateStatus::NeedsAuthorisation { version, advice }) => {
             log::info!("updates: {version} downloaded, waiting for authorisation");
             app.dispatch(Action::ShowNotice {
-                text: format!("Version {version} is ready to install. {advice}"),
+                text: offer(&version, &advice),
                 tone: Tone::Info,
             });
             // Puts the button in the notice bar; the dialog comes when it is
@@ -363,6 +377,7 @@ fn check_and_install(install: &Installation, channel: UpdateChannel) -> Result<C
                 work,
                 bundle: install.bundle.clone(),
                 team: install.team.clone(),
+                advice: blocker.advice(),
             }),
         });
     }
@@ -480,15 +495,17 @@ impl Blocker {
         matches!(self, Blocker::NoPermission(_))
     }
 
-    /// Follows "Version … is available." in the notice bar, so it has to be
-    /// short enough to read without Details.
+    /// Follows "Version … is available." in the notice bar, or "Version … is
+    /// ready to install." for the one an administrator can let in — so it has
+    /// to be short enough to read without Details, and to say what the button
+    /// is about to ask for.
     fn advice(&self) -> String {
         match self {
             Blocker::Translocated | Blocker::ReadOnly => {
                 "Move Worktree Manager to Applications to install it.".into()
             }
             Blocker::NoPermission(folder) => format!(
-                "Installing it needs permission to change {}.",
+                "It needs an administrator's permission to change {}.",
                 folder.display()
             ),
         }
@@ -835,6 +852,19 @@ mod tests {
         assert!(verify_signature(notarised, &team).is_ok());
         // Signed, notarised, but by someone else: refused.
         assert!(verify_signature(notarised, "NOTTHISTEAM").is_err());
+    }
+
+    /// Two sentences from two places, and the second has to read as one with
+    /// the first — it is the whole of what the notice bar says before someone
+    /// is asked for a password.
+    #[test]
+    fn the_offer_says_what_the_button_will_ask_for() {
+        let advice = Blocker::NoPermission(PathBuf::from("/Applications")).advice();
+        assert_eq!(
+            offer("1.0.126", &advice),
+            "Version 1.0.126 is ready to install. \
+             It needs an administrator's permission to change /Applications."
+        );
     }
 
     /// The one blocker that is got past rather than reported.
