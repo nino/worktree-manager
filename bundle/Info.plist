@@ -6,8 +6,12 @@
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>Worktree Manager</string>
+	<!-- The product name, not the crate's: this is what Activity Monitor,
+	     `ps` and crash reports call the process, and what the Electron app
+	     it replaced was called. `scripts/bundle.sh` copies the binary to
+	     this name. -->
 	<key>CFBundleExecutable</key>
-	<string>worktree-manager</string>
+	<string>Worktree Manager</string>
 	<key>CFBundleIconFile</key>
 	<string>icon.icns</string>
 	<key>CFBundleIconName</key>
