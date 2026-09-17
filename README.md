@@ -44,8 +44,11 @@ underneath — each with branch, path, live git status, and one-click actions.
   launch and every six hours, and installs a newer signed build in the
   background; the notice bar then offers a restart. It only ever installs a
   notarised build signed by the same team as the running copy, so a tampered
-  download is refused. Builds you make yourself never update. Settings offers a
-  beta channel, which follows the prereleases published ahead of a stable one.
+  download is refused. On an account that cannot write to Applications, the
+  update is downloaded and checked, and installing it asks for an
+  administrator's password — only when you press the button. Builds you make
+  yourself never update. Settings offers a beta channel, which follows the
+  prereleases published ahead of a stable one.
 - **Persistent config** — worktrees root, editor command, and the repo list (with
   per-repo primary branch and init command) survive relaunches.
 - **Native, and quick about it** — real AppKit views, an immutable model snapshot,

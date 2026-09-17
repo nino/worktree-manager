@@ -160,7 +160,23 @@ equal to the running copy's, and `spctl` reporting a notarised Developer ID
 app. Only then is the bundle swapped — the old one is moved aside first and
 removed once the new one is in place, so a failure leaves something that runs.
 The running image is the old code until a restart, which the notice bar
-offers. None of this happens unless the running copy is itself an installed,
+offers.
+
+A standard account cannot write to `/Applications`, which used to be the end
+of it: the notice said a version was available and named the folder, and
+nothing else happened. Now the download is checked and held in the work
+directory, and the notice bar's button reads "Install and Restart". Pressing it
+hands the same steps `swap` takes — copy in beside, move the old one aside, put
+the new one in place, and put the old one back if that fails — to
+`osascript`'s `do shell script … with administrator privileges`, which is what
+raises macOS's authentication dialog; a standard account answers it with an
+administrator's name and password. Two things are deliberate. The dialog
+follows the button and never a background check, because a password prompt
+nobody asked for is indistinguishable from a phishing attempt. And the
+signature is verified a second time immediately before that command runs,
+because between the first check and the privileged copy the bundle sits in a
+directory this account can write to — what is authorised has to be what was
+checked. None of this happens unless the running copy is itself an installed,
 Developer-ID-signed build with a stamped version: a `cargo run` build has no
 Team ID to match and would think every release is an upgrade.
 

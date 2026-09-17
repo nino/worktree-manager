@@ -85,6 +85,13 @@ pub enum UpdateStatus {
     Downloading(String),
     /// Installed alongside the running copy; a restart switches to it.
     Ready(String),
+    /// Downloaded and checked, and waiting for an administrator to let it into
+    /// the folder the running copy lives in — what a standard account gets for
+    /// a copy in `/Applications`. `advice` names that folder.
+    NeedsAuthorisation {
+        version: String,
+        advice: String,
+    },
     /// A newer version exists, but the running copy cannot be replaced where
     /// it is. `advice` says what would let it update.
     Unreplaceable {
