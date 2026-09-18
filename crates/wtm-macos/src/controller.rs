@@ -102,6 +102,10 @@ pub struct ControllerIvars {
     /// in place of the list's own: it sits at the top with nothing selected,
     /// which is not what should be remembered.
     restore: RefCell<Option<(f64, Option<Focus>)>>,
+    /// The window's frame from before it went full screen, recorded in place
+    /// of the full-screen one until it leaves: the next launch opens a
+    /// window, and a window the size of the screen is not the one to open.
+    frame_before_full_screen: Cell<Option<NSRect>>,
     /// Id of the notice currently displayed, for the auto-clear timer.
     notice_id: Cell<u64>,
     /// When the app last became active; `None` until launch has settled.
@@ -295,6 +299,24 @@ define_class!(
 
         #[unsafe(method(windowDidMove:))]
         fn window_did_move(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
+
+        /// Before the transition starts, so none of its frames is recorded.
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn window_will_enter_full_screen(&self, _n: &NSNotification) {
+            let frame = self.window().map(|w| w.frame());
+            self.ivars().frame_before_full_screen.set(frame);
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn window_did_fail_to_enter_full_screen(&self, _w: &NSWindow) {
+            self.ivars().frame_before_full_screen.set(None);
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn window_did_exit_full_screen(&self, _n: &NSNotification) {
+            self.ivars().frame_before_full_screen.set(None);
             self.remember_ui_state();
         }
     }
@@ -948,6 +970,7 @@ impl Controller {
             query: RefCell::new(String::new()),
             collapsed: RefCell::new(saved.collapsed_repos.into_iter().collect()),
             restore: RefCell::new(Some((saved.scroll, saved.focus))),
+            frame_before_full_screen: Cell::new(None),
             collapsed_before_search: RefCell::new(None),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
@@ -1052,7 +1075,11 @@ impl Controller {
             )
         });
         iv.app.store_ui_state(UiState {
-            window: Some(window_frame(window.frame())),
+            window: Some(window_frame(
+                iv.frame_before_full_screen
+                    .get()
+                    .unwrap_or_else(|| window.frame()),
+            )),
             scroll,
             focus,
             // Mid-search every card is open; what is remembered is how they

@@ -126,7 +126,10 @@ backend on another OS to use. The controller records on every window move,
 scroll, selection change and card opened or closed — the core drops an
 unchanged value and writes a changed one 750ms after the first change not yet
 written, so a burst costs one write per interval, with a synchronous flush
-from `applicationWillTerminate:`.
+from `applicationWillTerminate:`. In full screen the frame from before it is
+recorded instead, taken in `windowWillEnterFullScreen:` so that none of the
+transition's frames is: the next launch opens a window, and one the size of
+the screen is not the window that was left.
 
 Restoring has two wrinkles. A frame is only reused when at least half of it
 lands on a screen's visible frame, summed across screens so a window that
