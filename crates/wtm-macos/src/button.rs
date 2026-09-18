@@ -203,15 +203,18 @@ fn draw_pill(bounds: NSRect, enabled: bool, pressed: bool) {
     if let Some(g) = NSGradient::initWithStartingColor_endingColor(mtm.alloc(), &bottom, &top) {
         g.drawInBezierPath_angle(&path, 90.0);
     }
-    crate::rowview::grain().setFill();
-    path.fill();
+    // Grain reads as dither on a dark ground.
+    if !crate::util::drawing_dark() {
+        crate::rowview::grain().setFill();
+        path.fill();
+    }
     // A bright hairline under the top edge, the same bevel the plates have.
     let bevel = NSRect::new(
         NSPoint::new(rect.origin.x + PILL_RADIUS, rect.size.height - 1.0),
         NSSize::new(rect.size.width - 2.0 * PILL_RADIUS, 1.0),
     );
     NSColor::whiteColor()
-        .colorWithAlphaComponent(0.45 * alpha)
+        .colorWithAlphaComponent(crate::util::by_appearance(0.45, 0.12) * alpha)
         .setFill();
     NSBezierPath::bezierPathWithRect(bevel).fill();
     NSColor::separatorColor()

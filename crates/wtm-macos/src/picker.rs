@@ -32,7 +32,7 @@ use objc2_foundation::{
 use wtm_core::fuzzy::{fuzzy_filter, Match};
 
 use crate::branchlabel::branch_label;
-use crate::util::{label, ns, REGULAR, SEMIBOLD};
+use crate::util::{label, ns, SEMIBOLD};
 
 const WIDTH: f64 = 300.0;
 const LIST_HEIGHT: f64 = 208.0;
@@ -477,9 +477,9 @@ impl BranchPicker {
         let ink = if selected {
             NSColor::alternateSelectedControlTextColor()
         } else {
-            NSColor::labelColor()
+            crate::util::primary_ink()
         };
-        let font = NSFont::monospacedSystemFontOfSize_weight(12.0, REGULAR);
+        let font = crate::util::branch_font();
         let bold = NSFont::monospacedSystemFontOfSize_weight(12.0, SEMIBOLD);
         let label = branch_label(&name, &font, &ink, Some((&bold, &matched)));
         let text = NSMutableAttributedString::initWithAttributedString(

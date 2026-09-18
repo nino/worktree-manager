@@ -4,14 +4,54 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSColor, NSFont, NSImage, NSImageSymbolConfiguration, NSTextField};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_app_kit::{
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSFont, NSImage,
+    NSImageSymbolConfiguration, NSTextField,
+};
+use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
 
 /// `NSFontWeight` values (the AppKit constants are extern statics, which are
 /// unsafe to read; the numbers are documented and stable).
 pub const REGULAR: f64 = 0.0;
 pub const MEDIUM: f64 = 0.23;
 pub const SEMIBOLD: f64 = 0.3;
+
+/// Dark Aqua, from the appearance currently being drawn into. Lit edges,
+/// grain and glows that read as bevels in light read as extra borders here.
+pub fn drawing_dark() -> bool {
+    let names = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
+        NSAppearanceNameDarkAqua
+    }]);
+    NSAppearance::currentDrawingAppearance()
+        .bestMatchFromAppearancesWithNames(&names)
+        .is_some_and(|name| &*name == unsafe { NSAppearanceNameDarkAqua })
+}
+
+pub fn by_appearance(light: f64, dark: f64) -> f64 {
+    if drawing_dark() {
+        dark
+    } else {
+        light
+    }
+}
+
+/// Branch-name ink: `labelColor`, blended toward the plate when dark so full
+/// white doesn't bloom. The blend is a static colour — rebuild it under the
+/// view's appearance when that changes (`performAsCurrentDrawingAppearance`).
+pub fn primary_ink() -> Retained<NSColor> {
+    let base = NSColor::labelColor();
+    if !drawing_dark() {
+        return base;
+    }
+    base.blendedColorWithFraction_ofColor(0.15, &NSColor::controlBackgroundColor())
+        .unwrap_or(base)
+}
+
+/// Regular monospace for branch names. Semibold packed too much lit ink into
+/// an unbroken run of glyphs; the bezel carries the emphasis instead.
+pub fn branch_font() -> Retained<NSFont> {
+    NSFont::monospacedSystemFontOfSize_weight(12.0, REGULAR)
+}
 
 pub fn ns(s: &str) -> Retained<NSString> {
     NSString::from_str(s)

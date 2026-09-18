@@ -6,15 +6,17 @@
 
 use std::cell::{Cell, RefCell};
 
+use block2::RcBlock;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSControlSize, NSFont,
-    NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
-    NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
+    NSAccessibility, NSAppearanceCustomization, NSBezelStyle, NSButton, NSCellImagePosition,
+    NSColor, NSControlSize, NSFont, NSImageSymbolConfiguration, NSLayoutAttribute,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSLayoutPriorityRequired, NSPasteboard, NSPasteboardTypeString, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
     NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
@@ -410,10 +412,42 @@ define_class!(
         fn pick_branch(&self, _s: Option<&AnyObject>) {
             self.open_picker();
         }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            self.paint_branch_title();
+        }
     }
 );
 
 impl WorktreeCell {
+    /// `primary_ink` snapshots when dark, so the title is rebuilt under this
+    /// view's appearance.
+    fn paint_branch_title(&self) {
+        let iv = self.ivars();
+        let enabled = iv.picker.isEnabled();
+        let picker = iv.picker.clone();
+        let shown = iv
+            .branch
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| "(detached)".to_owned());
+        self.effectiveAppearance()
+            .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
+                let ink = if enabled {
+                    crate::util::primary_ink()
+                } else {
+                    NSColor::disabledControlTextColor()
+                };
+                picker.setAttributedTitle(&branch_label(
+                    &shown,
+                    &crate::util::branch_font(),
+                    &ink,
+                    None,
+                ));
+            }));
+    }
+
     /// Open the branch picker under this row's branch button.
     pub fn open_picker(&self) {
         let iv = self.ivars();
@@ -448,10 +482,7 @@ impl WorktreeCell {
         let picker = PillButton::with_title(&ns(""), None, sel!(pickBranch:), mtm);
         picker.setBordered(false);
         picker.setControlSize(NSControlSize::Small);
-        picker.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
-            12.0,
-            crate::util::SEMIBOLD,
-        )));
+        picker.setFont(Some(&crate::util::branch_font()));
         if let Some(chevrons) = symbol_raised(
             "chevron.up.chevron.down",
             "Switch branch",
@@ -500,8 +531,9 @@ impl WorktreeCell {
         );
         let terminal = icon_button("terminal", "Open in terminal", mtm);
         let reveal = icon_button("folder", "Reveal in Finder", mtm);
+        // Same tint as the other icons: a red trash per row is a column of
+        // the loudest colour in the palette, and delete already confirms.
         let delete = icon_button("trash", "Delete worktree", mtm);
-        delete.setContentTintColor(Some(&NSColor::systemRedColor()));
 
         let this = mtm.alloc::<Self>().set_ivars(WorktreeCellIvars {
             app,
@@ -637,28 +669,17 @@ impl WorktreeCell {
         }
         let missing = w.prunable;
         let is_busy = busy.is_some();
-        // The branch button: an agent prefix is drawn as that agent's mark, so
-        // the title is attributed and carries its own colour — which means the
-        // disabled look has to be chosen here rather than left to AppKit.
+        // Attributed title carries its own colour, so the disabled look has
+        // to be chosen here rather than left to AppKit.
         let enabled = !is_busy && !missing;
-        let ink = if enabled {
-            NSColor::labelColor()
-        } else {
-            NSColor::disabledControlTextColor()
-        };
         let shown = w.branch.as_deref().unwrap_or("(detached)");
-        iv.picker.setAttributedTitle(&branch_label(
-            shown,
-            &NSFont::monospacedSystemFontOfSize_weight(12.0, crate::util::SEMIBOLD),
-            &ink,
-            None,
-        ));
+        iv.picker.setEnabled(enabled);
+        self.paint_branch_title();
         iv.picker
             .setToolTip(Some(&ns(&format!("Switch branch (current: {shown})"))));
         // The title may draw an agent prefix as a mark, which would otherwise
         // drop those words from the name assistive technology reads out.
         iv.picker.setAccessibilityLabel(Some(&ns(shown)));
-        iv.picker.setEnabled(enabled);
         for b in [&iv.push, &iv.pull, &iv.merge] {
             b.setEnabled(enabled);
         }
