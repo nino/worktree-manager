@@ -1,16 +1,20 @@
 //! A small rounded status badge ("staged", "↑3 origin/main"), drawn natively:
-//! a tinted capsule behind a system-font label. Colours are the system accent
-//! set so they adapt to light and dark appearance and increased contrast.
+//! a tinted capsule behind a system-font label. Colour is reserved for
+//! uncommitted work and a missing folder; everything else is luminance.
 
+use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBezierPath, NSColor, NSFont, NSLayoutConstraint, NSTextField, NSView};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2_app_kit::{
+    NSAppearanceCustomization, NSBezierPath, NSColor, NSFont, NSLayoutConstraint, NSTextField,
+    NSView,
+};
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use std::cell::RefCell;
 
 use crate::util::ns;
 
-/// Which colour family a badge uses.
+/// What a badge is reporting. Loudness is [`BadgeRank`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeTone {
     Clean,
@@ -25,21 +29,54 @@ pub enum BadgeTone {
     Primary,
 }
 
+/// How loud a badge is drawn. Only Attention and Alarm spend colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeRank {
+    Quiet,
+    Notable,
+    Attention,
+    Alarm,
+}
+
 impl BadgeTone {
-    fn color(self) -> Retained<NSColor> {
+    pub fn rank(self) -> BadgeRank {
         match self {
-            BadgeTone::Clean => NSColor::systemGreenColor(),
-            BadgeTone::Staged => NSColor::systemBlueColor(),
-            BadgeTone::Unstaged => NSColor::systemOrangeColor(),
-            BadgeTone::Untracked => NSColor::systemPurpleColor(),
-            BadgeTone::Ahead => NSColor::systemTealColor(),
-            BadgeTone::Behind => NSColor::systemRedColor(),
-            BadgeTone::Unpushed => NSColor::systemYellowColor(),
-            BadgeTone::Missing => NSColor::systemRedColor(),
-            BadgeTone::Muted => NSColor::systemGrayColor(),
-            BadgeTone::Primary => NSColor::controlAccentColor(),
+            BadgeTone::Staged | BadgeTone::Unstaged | BadgeTone::Untracked => BadgeRank::Attention,
+            BadgeTone::Missing => BadgeRank::Alarm,
+            BadgeTone::Unpushed => BadgeRank::Notable,
+            BadgeTone::Clean
+            | BadgeTone::Ahead
+            | BadgeTone::Behind
+            | BadgeTone::Muted
+            | BadgeTone::Primary => BadgeRank::Quiet,
         }
     }
+}
+
+impl BadgeRank {
+    fn ink(self) -> Retained<NSColor> {
+        match self {
+            BadgeRank::Quiet => NSColor::secondaryLabelColor(),
+            BadgeRank::Notable => NSColor::labelColor(),
+            BadgeRank::Attention => muted(&NSColor::systemOrangeColor()),
+            BadgeRank::Alarm => muted(&NSColor::systemRedColor()),
+        }
+    }
+
+    fn fill(self) -> Retained<NSColor> {
+        match self {
+            BadgeRank::Quiet => NSColor::labelColor().colorWithAlphaComponent(0.06),
+            BadgeRank::Notable => NSColor::labelColor().colorWithAlphaComponent(0.10),
+            BadgeRank::Attention | BadgeRank::Alarm => self.ink().colorWithAlphaComponent(0.14),
+        }
+    }
+}
+
+/// Blend a system hue toward the foreground so it pastels on dark and deepens
+/// on light. Resolves now; rebuild under the view's appearance if that changes.
+fn muted(base: &NSColor) -> Retained<NSColor> {
+    base.blendedColorWithFraction_ofColor(0.3, &NSColor::labelColor())
+        .unwrap_or_else(|| base.retain())
 }
 
 pub struct BadgeIvars {
@@ -60,8 +97,13 @@ define_class!(
             let bounds = self.bounds();
             let r = bounds.size.height / 2.0;
             let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, r, r);
-            self.ivars().tone.borrow().color().colorWithAlphaComponent(0.16).setFill();
+            self.ivars().tone.borrow().rank().fill().setFill();
             path.fill();
+        }
+
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            self.paint_ink();
         }
     }
 );
@@ -78,7 +120,6 @@ impl Badge {
             10.5,
             crate::util::MEDIUM,
         )));
-        label.setTextColor(Some(&tone.color()));
         label.setTranslatesAutoresizingMaskIntoConstraints(false);
         let this = mtm.alloc::<Self>().set_ivars(BadgeIvars {
             label: label.clone(),
@@ -105,6 +146,7 @@ impl Badge {
                 .constraintEqualToAnchor_constant(&this.bottomAnchor(), -1.5),
         ];
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&constraints));
+        this.paint_ink();
         this
     }
 
@@ -112,10 +154,20 @@ impl Badge {
     pub fn set(&self, text: &str, tone: BadgeTone, tooltip: &str) {
         let iv = self.ivars();
         iv.label.setStringValue(&ns(text));
-        iv.label.setTextColor(Some(&tone.color()));
         *iv.tone.borrow_mut() = tone;
         self.setToolTip(Some(&ns(tooltip)));
+        self.paint_ink();
+    }
+
+    /// Label ink is set here, not in `drawRect:`; blends snapshot at resolve.
+    fn paint_ink(&self) {
+        let rank = self.ivars().tone.borrow().rank();
         self.setNeedsDisplay(true);
+        let label = self.ivars().label.clone();
+        self.effectiveAppearance()
+            .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
+                label.setTextColor(Some(&rank.ink()));
+            }));
     }
 }
 
@@ -225,4 +277,99 @@ pub fn badges_for(
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wtm_core::{WorktreeInfo, WorktreeStatus};
+
+    fn clean_status() -> WorktreeStatus {
+        WorktreeStatus {
+            has_unstaged: false,
+            has_staged: false,
+            has_untracked: false,
+            trunk_ref: "origin/main".into(),
+            ahead_of_main: Some(0),
+            behind_main: Some(0),
+            unpushed: false,
+            unpushed_count: 0,
+            has_upstream: true,
+        }
+    }
+
+    fn worktree(status: Option<WorktreeStatus>) -> WorktreeInfo {
+        WorktreeInfo {
+            path: "/w".into(),
+            branch: Some("feature/thing".into()),
+            head: "abc1234".into(),
+            is_main: false,
+            locked: false,
+            prunable: false,
+            status,
+        }
+    }
+
+    fn ranks(w: &WorktreeInfo) -> Vec<BadgeRank> {
+        badges_for(w, "main")
+            .into_iter()
+            .map(|(_, tone, _)| tone.rank())
+            .collect()
+    }
+
+    fn coloured(w: &WorktreeInfo) -> usize {
+        ranks(w)
+            .into_iter()
+            .filter(|r| matches!(r, BadgeRank::Attention | BadgeRank::Alarm))
+            .count()
+    }
+
+    #[test]
+    fn a_clean_in_sync_worktree_spends_no_colour() {
+        assert_eq!(coloured(&worktree(Some(clean_status()))), 0);
+    }
+
+    #[test]
+    fn distance_from_the_trunk_stays_quiet() {
+        let mut s = clean_status();
+        s.ahead_of_main = Some(4);
+        s.behind_main = Some(264);
+        assert!(ranks(&worktree(Some(s)))
+            .iter()
+            .all(|r| *r == BadgeRank::Quiet));
+    }
+
+    #[test]
+    fn unpushed_commits_are_notable_rather_than_coloured() {
+        let mut s = clean_status();
+        s.unpushed = true;
+        s.unpushed_count = 2;
+        let w = worktree(Some(s));
+        assert!(ranks(&w).contains(&BadgeRank::Notable));
+        assert_eq!(coloured(&w), 0);
+    }
+
+    #[test]
+    fn only_uncommitted_work_and_a_missing_folder_are_coloured() {
+        let mut s = clean_status();
+        s.has_staged = true;
+        s.has_unstaged = true;
+        s.has_untracked = true;
+        assert_eq!(coloured(&worktree(Some(s))), 3);
+
+        let mut gone = worktree(None);
+        gone.prunable = true;
+        assert_eq!(coloured(&gone), 1);
+
+        // A row the app could not read is a gap in knowledge, not an alarm.
+        assert_eq!(coloured(&worktree(None)), 0);
+    }
+
+    #[test]
+    fn primary_and_locked_markers_are_labels_not_alerts() {
+        let mut main = worktree(Some(clean_status()));
+        main.is_main = true;
+        main.locked = true;
+        assert_eq!(coloured(&main), 0);
+    }
 }
