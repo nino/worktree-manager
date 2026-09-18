@@ -21,11 +21,29 @@ deleted. Anything the old app did that this one does not is in git history
 
 ```sh
 cargo run                      # dev build (menu bar + window)
-cargo test                     # unit tests + an end-to-end core test on a temp repo
+cargo test                     # unit tests, property tests + an end-to-end core test on a temp repo
 cargo fmt                      # format
 scripts/bundle.sh              # release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install    # …and copy it to /Applications
+scripts/monkey.sh              # random keys and clicks on a debug build until it crashes
+scripts/monkey.sh --minutes 10 # …as many runs as fit in ten minutes
+scripts/monkey.sh --sandbox    # just the monkey's demo repos, to run the app against by hand
 ```
+
+The property tests (`crates/wtm-core/tests/properties.rs`, proptest) feed the
+pure core random input. For a longer hunt than `cargo test`'s 256 cases:
+`PROPTEST_CASES=100000 cargo test --release -p wtm-core --test properties`.
+Whatever one finds becomes a unit test next to the code it broke.
+
+`scripts/monkey.sh` is for what only a debug build shows: objc2 checks each
+`msg_send!`'s types only with debug assertions on, so a wrong signature panics
+under `cargo run` and passes silently in a release build. It runs the app in a
+throwaway sandbox, drives it through `scripts/monkey.js` (JXA: keys with
+`CGEventPostToPid`, clicks with `CGEventPost`, positions from System Events),
+and reports a crash, a panic or a hang with the seed that replays it. It needs
+Accessibility and Screen Recording permission for the terminal, and moves the
+real pointer while it runs; a panel in the bottom-right corner shows the run,
+the step and the time left.
 
 Environment switches, all dev-only:
 
@@ -33,11 +51,14 @@ Environment switches, all dev-only:
 | --- | --- |
 | `WTM_USER_DATA=<dir>` | config, snapshot + window state live there instead of the real profile |
 | `WTM_APPEARANCE=dark\|light` | force an appearance without changing the system setting |
+| `WTM_NO_LAUNCH=1` | Open in Terminal, Reveal and Open in Editor (and a repo's init command) log instead of opening anything |
 | `RUST_LOG=info` | timings for refreshes and git runs |
 
 **Never test against the real config.** Use `WTM_USER_DATA` pointed at a
 throwaway directory and demo repos created for the purpose. The real profile is
-`~/Library/Application Support/Worktree Manager/`.
+`~/Library/Application Support/Worktree Manager/`. With `WTM_USER_DATA` set,
+the Electron file to import is looked for inside that directory too
+(`worktree-manager.json`), never in the real one.
 
 ## Layout
 
@@ -56,6 +77,7 @@ bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
                    the Electron app's; see "Releases")
 build/             Icon sources (icon.icns, Assets.car) copied into the bundle
 scripts/bundle.sh  Builds the .app
+scripts/monkey.*   The random UI driver (see "Commands")
 docs/architecture.md  How it fits together, and why the fiddly parts are so
 ```
 
