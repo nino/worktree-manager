@@ -92,15 +92,16 @@ pub struct ControllerIvars {
     /// The model the tree was last built from.
     shown: RefCell<Option<Arc<Model>>>,
     query: RefCell<String>,
+    /// Repos whose cards are closed, as the outline shows them.
     collapsed: RefCell<HashSet<String>>,
+    /// `collapsed` as it was before the current search, which opens every
+    /// card; put back when the search is cleared. `None` when not searching.
+    collapsed_before_search: RefCell<Option<HashSet<String>>>,
     /// The scroll offset and focused row this launch is coming back to,
     /// until `apply_restore` has put them back. Until then they are recorded
     /// in place of the list's own: it sits at the top with nothing selected,
     /// which is not what should be remembered.
     restore: RefCell<Option<(f64, Option<Focus>)>>,
-    /// `rebuild` is expanding cards to match what is remembered, so the
-    /// expansion notifications are not the user opening one.
-    syncing_expansion: Cell<bool>,
     /// Id of the notice currently displayed, for the auto-clear timer.
     notice_id: Cell<u64>,
     /// When the app last became active; `None` until launch has settled.
@@ -416,9 +417,7 @@ define_class!(
         #[unsafe(method(outlineViewItemWillExpand:))]
         fn will_expand(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
-                if !self.ivars().syncing_expansion.get() {
-                    self.ivars().collapsed.borrow_mut().remove(&id);
-                }
+                self.ivars().collapsed.borrow_mut().remove(&id);
                 self.sync_header_style(&id, None);
             }
         }
@@ -949,7 +948,7 @@ impl Controller {
             query: RefCell::new(String::new()),
             collapsed: RefCell::new(saved.collapsed_repos.into_iter().collect()),
             restore: RefCell::new(Some((saved.scroll, saved.focus))),
-            syncing_expansion: Cell::new(false),
+            collapsed_before_search: RefCell::new(None),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
             settings: RefCell::new(None),
@@ -1056,7 +1055,12 @@ impl Controller {
             window: Some(window_frame(window.frame())),
             scroll,
             focus,
-            collapsed_repos: iv.collapsed.borrow().iter().cloned().collect(),
+            // Mid-search every card is open; what is remembered is how they
+            // were before it.
+            collapsed_repos: match iv.collapsed_before_search.borrow().as_ref() {
+                Some(before) => before.iter().cloned().collect(),
+                None => iv.collapsed.borrow().iter().cloned().collect(),
+            },
         });
     }
 
@@ -1606,22 +1610,31 @@ impl Controller {
 
         let full = previous.is_none() || query_changed || roots_changed;
         if full {
+            // A search opens every card; clearing it closes again the ones
+            // that were closed before it.
+            {
+                let mut before = iv.collapsed_before_search.borrow_mut();
+                if searching {
+                    before.get_or_insert_with(|| iv.collapsed.borrow().clone());
+                } else if let Some(saved) = before.take() {
+                    *iv.collapsed.borrow_mut() = saved;
+                }
+            }
             outline.reloadData();
-            // Clone what the loop needs: expanding calls back into the
-            // delegate, which borrows these cells again.
+            // Clone what the loop needs: expanding and collapsing call back
+            // into the delegate, which borrows these cells again. The outline
+            // keeps an item's expansion across `reloadData`, so a card is
+            // closed here as well as opened.
             let roots = iv.tree.borrow().roots.clone();
             let collapsed = iv.collapsed.borrow().clone();
-            // Matching what is remembered is not the user opening a card, and
-            // a search expands every card without meaning to forget which
-            // ones were closed.
-            iv.syncing_expansion.set(true);
             for root in &roots {
                 let id = root.kind().repo_id().to_string();
                 if searching || !collapsed.contains(&id) {
                     unsafe { outline.expandItem(Some(root)) };
+                } else if unsafe { outline.isItemExpanded(Some(root)) } {
+                    unsafe { outline.collapseItem(Some(root)) };
                 }
             }
-            iv.syncing_expansion.set(false);
             self.sync_row_styles();
             return;
         }
