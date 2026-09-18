@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use serde_json::json;
+use wtm_core::branch_name;
 use wtm_core::branch_tool::split_tool_prefix;
 use wtm_core::command::build_command;
 use wtm_core::config::ConfigStore;
@@ -451,6 +452,37 @@ proptest! {
         let out = Command::new("/bin/sh").args(["-c", &line]).output().unwrap();
         prop_assert!(out.status.success(), "{}", line);
         prop_assert_eq!(String::from_utf8_lossy(&out.stdout), path.as_str());
+    }
+}
+
+// MARK: Branch names
+
+/// Names made of the pieces git's rules are about (dots, slashes, `.lock`,
+/// `@{`, a leading dash, HEAD, the forbidden characters), so most land on a
+/// boundary, or of arbitrary characters.
+fn branch_name_candidates() -> impl Strategy<Value = String> {
+    let piece = prop::sample::select(vec![
+        "a", "é", "😀", "x-y", ".", "..", "/", "//", ".lock", "lock", "@", "{", "@{", "-", " ",
+        "~", "^", ":", "?", "*", "[", "]", "\\", "\t", "\u{7f}", "HEAD",
+    ]);
+    prop_oneof![
+        prop::collection::vec(piece, 1..6).prop_map(|pieces| pieces.concat()),
+        "[^\\x00]{1,12}",
+    ]
+}
+
+proptest! {
+    /// Each case runs git. Outside any repository, so git does not read
+    /// `@{-1}` as the branch checked out before.
+    #[test]
+    fn branch_names_are_judged_as_git_judges_them(name in branch_name_candidates()) {
+        let git = Command::new("git")
+            .args(["check-ref-format", "--branch", &name])
+            .current_dir(std::env::temp_dir())
+            .output()
+            .unwrap();
+        let problem = branch_name::problem(&name);
+        prop_assert_eq!(problem.is_none(), git.status.success(), "{:?}: {:?}", name, problem);
     }
 }
 

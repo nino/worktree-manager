@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::branch_name;
 use crate::git::{
     add_worktree, assert_valid_ref, branch_exists, has_remote, list_worktrees_raw,
     resolve_trunk_ref, run_git, GitError,
@@ -28,6 +29,11 @@ pub async fn create_worktree(
     // the check below would blame the name for that.
     if tokio::fs::metadata(&repo.path).await.is_err() {
         return Err(format!("The repository folder is missing: {}", repo.path));
+    }
+    // The reason the dialog gives while the name is typed; git's own check
+    // below stays the authority.
+    if let Some(problem) = branch_name::problem(branch) {
+        return Err(problem);
     }
     assert_valid_ref(&repo.path, branch)
         .await
