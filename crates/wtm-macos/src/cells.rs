@@ -215,11 +215,29 @@ define_class!(
         fn copy_path(&self, _sender: Option<&AnyObject>) {
             copy_to_pasteboard(&self.ivars().path.borrow());
         }
+
+        /// `OutlineView` moves the disclosure chevron inside the card, which
+        /// puts it under this cell: the cell spans the whole row and AppKit
+        /// adds it above the chevron's button, so every click on the chevron
+        /// landed here and only selected the row. The leading strip the
+        /// content keeps clear for the chevron is left to what is beneath.
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            self.hit_test_past_chevron(point)
+        }
     }
 );
 
 impl RepoCell {
     pub const IDENTIFIER: &'static str = "wtm.repo";
+
+    fn hit_test_past_chevron(&self, point: NSPoint) -> Option<Retained<NSView>> {
+        // `point` is in the superview's coordinates, as the frame is.
+        if point.x - self.frame().origin.x < CONTENT_START {
+            return None;
+        }
+        unsafe { msg_send![super(self), hitTest: point] }
+    }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
         let name = label("", mtm);
