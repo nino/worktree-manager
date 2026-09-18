@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use log::{info, warn};
@@ -36,6 +36,7 @@ use crate::model::{Busy, Model, Notice, PendingCreation, RepoNode, Tone};
 use crate::paths::tildify;
 use crate::repos::{describe_add_failure, inspect_repo};
 use crate::types::*;
+use crate::ui_state::{UiState, UiStateStore};
 use crate::watcher::{linked_gitdir, WatchKey, Watcher};
 use crate::worktrees;
 
@@ -90,6 +91,12 @@ pub enum Action {
     },
 }
 
+/// How long after the first change of a burst the window state is written.
+/// A live resize or a flick of the scroll wheel produces one change per
+/// frame; this makes them one write per interval, and a crash loses at most
+/// that much.
+const UI_STATE_WRITE_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
+
 /// Callback for actions that need an answer beyond a model change.
 pub type Reply<T> = Box<dyn FnOnce(T) + Send + 'static>;
 
@@ -107,6 +114,12 @@ struct Inner {
     platform: Arc<dyn Platform>,
     dirs: AppDirs,
     store: Mutex<ConfigStore>,
+    ui_state: Mutex<UiStateStore>,
+    /// A delayed UI-state write is already scheduled.
+    ui_state_queued: AtomicBool,
+    /// Held for the length of a UI-state write, so that two writers never
+    /// share the temporary file.
+    ui_state_write: Mutex<()>,
     model: RwLock<Arc<Model>>,
     listeners: Mutex<Vec<Listener>>,
     /// Serialises mutating operations per worktree path, so a delete can never
@@ -136,6 +149,7 @@ impl App {
             .build()
             .expect("tokio runtime");
         let store = ConfigStore::load(&dirs);
+        let ui_state = UiStateStore::load(&dirs);
         let home = dirs.home.to_string_lossy().into_owned();
         let mut model = Model {
             config: store.config().clone(),
@@ -154,6 +168,9 @@ impl App {
             platform,
             dirs,
             store: Mutex::new(store),
+            ui_state: Mutex::new(ui_state),
+            ui_state_queued: AtomicBool::new(false),
+            ui_state_write: Mutex::new(()),
             model: RwLock::new(Arc::new(model)),
             listeners: Mutex::new(Vec::new()),
             locks: Mutex::new(HashMap::new()),
@@ -206,6 +223,46 @@ impl App {
 
     pub fn platform(&self) -> &dyn Platform {
         &*self.inner.platform
+    }
+
+    // MARK: Window state
+
+    /// What the window looked like when the app was last quit. A backend
+    /// reads this once, while it is building its window.
+    pub fn ui_state(&self) -> UiState {
+        self.inner.ui_state.lock().state().clone()
+    }
+
+    /// Record the window's current state. Cheap enough to call from every
+    /// scroll and every frame of a live resize: an unchanged value returns
+    /// immediately, and a changed one is written `UI_STATE_WRITE_DELAY` after
+    /// the first change that has not been written yet.
+    pub fn store_ui_state(&self, mut state: UiState) {
+        state.prune(&self.model().config);
+        if !self.inner.ui_state.lock().set(state) {
+            return;
+        }
+        if self.inner.ui_state_queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let app = self.clone();
+        self.inner.rt.spawn(async move {
+            tokio::time::sleep(UI_STATE_WRITE_DELAY).await;
+            app.inner.ui_state_queued.store(false, Ordering::Release);
+            app.flush_ui_state();
+        });
+    }
+
+    /// Write the recorded state now. The delayed write above would never
+    /// land once the app is quitting, so a backend calls this on the way out.
+    ///
+    /// The file is written outside the state's lock, which the main thread
+    /// takes on every scroll. The copy is taken inside the write lock, so
+    /// of two writers the later one always writes the newer state.
+    pub fn flush_ui_state(&self) {
+        let _writing = self.inner.ui_state_write.lock();
+        let store = self.inner.ui_state.lock().clone();
+        store.save();
     }
 
     // MARK: Dispatch

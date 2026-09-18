@@ -8,7 +8,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use wtm_core::{Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, Event};
+use wtm_core::{
+    Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, Event, Focus, UiState,
+    WindowFrame,
+};
 use wtm_platform::{AppDirs, Platform};
 
 struct StubPlatform;
@@ -289,6 +292,31 @@ fn add_repo_create_and_delete_worktree() {
     // Config and snapshot were persisted for the next launch.
     assert!(base.join("config/config.json").exists());
     assert!(base.join("config/snapshot.json").exists());
+
+    // So is the window state, with anything naming a repo that is no longer
+    // configured dropped on the way in.
+    app.store_ui_state(UiState {
+        window: Some(WindowFrame {
+            x: 12.0,
+            y: 34.0,
+            width: 900.0,
+            height: 600.0,
+        }),
+        scroll: 88.0,
+        focus: Some(Focus {
+            repo_id: "gone".into(),
+            worktree_path: None,
+        }),
+        collapsed_repos: ["gone".to_string(), repo_id.clone()].into(),
+    });
+    app.flush_ui_state();
+    assert!(base.join("config/ui-state.json").exists());
+    let saved = app.ui_state();
+    assert_eq!(saved.scroll, 88.0);
+    assert_eq!(saved.window.unwrap().width, 900.0);
+    assert_eq!(saved.collapsed_repos, [repo_id.clone()].into());
+    assert!(saved.focus.is_none());
+
     app.dispatch(Action::RemoveRepo(repo_id));
     assert!(app.model().repos.is_empty());
     let _ = std::fs::remove_dir_all(&base);
