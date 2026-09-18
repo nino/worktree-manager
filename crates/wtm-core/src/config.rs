@@ -27,7 +27,7 @@ impl ConfigStore {
     /// falling back to defaults when nothing is readable.
     pub fn load(dirs: &AppDirs) -> Self {
         let path = dirs.config_dir.join(CONFIG_FILE);
-        let config = read_json(&path, "config")
+        let mut config: AppConfig = read_json(&path, "config")
             .or_else(|| {
                 dirs.legacy_config_files.iter().find_map(|legacy| {
                     let c = read_json(legacy, "config")?;
@@ -36,6 +36,13 @@ impl ConfigStore {
                 })
             })
             .unwrap_or_else(|| defaults(&dirs.home));
+        // A display name doubles as a directory under the worktrees root.
+        // `add_repo` and `update_repo` sanitise it, but a file edited by hand
+        // or imported from the Electron app has been through neither, and a
+        // name of `..` would put new worktrees beside the root.
+        for repo in &mut config.repos {
+            repo.name = sanitize_repo_name(&repo.name);
+        }
         let store = Self { path, config };
         store.save();
         store
@@ -151,6 +158,35 @@ pub(crate) fn defaults(home: &Path) -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loaded_repo_name_stays_under_the_worktrees_root() {
+        let dir = std::env::temp_dir().join(format!("wtm-config-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dirs = AppDirs {
+            config_dir: dir.join("config"),
+            home: dir.clone(),
+            legacy_config_files: Vec::new(),
+        };
+        std::fs::create_dir_all(&dirs.config_dir).unwrap();
+        std::fs::write(
+            dirs.config_dir.join(CONFIG_FILE),
+            r#"{"worktreesRoot":"/w","editorCommand":"c","repos":[
+                {"id":"1","name":".","path":"/a","mainBranch":"main"},
+                {"id":"2","name":"..","path":"/b","mainBranch":"main"},
+                {"id":"3","name":"x/../y","path":"/c","mainBranch":"main"}]}"#,
+        )
+        .unwrap();
+        let store = ConfigStore::load(&dirs);
+        let names: Vec<&str> = store
+            .config()
+            .repos
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["repo", "-", "x---y"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn electron_store_file_round_trips() {

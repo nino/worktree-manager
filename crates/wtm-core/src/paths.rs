@@ -38,7 +38,10 @@ pub fn slugify_branch(branch: &str) -> String {
         }
         out.push(mapped);
     }
-    let trimmed = out.trim_matches('-');
+    // Leading dots go too: a slug of `.` alone (from `é.é`, which git
+    // accepts) would name the repo's own folder under the worktrees root, and
+    // any other would make a hidden directory.
+    let trimmed = out.trim_start_matches(['-', '.']).trim_end_matches('-');
     if trimmed.is_empty() {
         "worktree".to_string()
     } else {
@@ -56,11 +59,13 @@ pub fn worktree_path_for(worktrees_root: &str, repo_name: &str, branch: &str) ->
 /// Repo display names double as a directory segment under the worktrees root,
 /// so they must never contain path separators or traversal sequences.
 pub fn sanitize_repo_name(name: &str) -> String {
+    // Dots and whitespace are trimmed together: trimming one and then the
+    // other leaves `. x` as ` x`, which the next save would trim again.
     let cleaned: String = name
         .replace(['/', '\\'], "-")
         .replace("..", "-")
-        .trim()
-        .trim_start_matches('.')
+        .trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+        .trim_end()
         .to_string();
     if cleaned.is_empty() {
         "repo".to_string()
@@ -98,6 +103,19 @@ mod tests {
     }
 
     #[test]
+    fn slug_never_names_the_folder_it_sits_in() {
+        // Branch names git accepts, where every character but the dot
+        // becomes a dash.
+        assert_eq!(slugify_branch("é.é"), "worktree");
+        assert_eq!(slugify_branch("+.+"), "worktree");
+        assert_eq!(slugify_branch("é.x"), "x");
+        assert_eq!(
+            worktree_path_for("/root", "repo", "é.é"),
+            PathBuf::from("/root/repo/worktree")
+        );
+    }
+
+    #[test]
     fn worktree_path_nests_under_root_repo_slug() {
         assert_eq!(
             worktree_path_for("/home/me/.claude-worktrees", "myrepo", "feature/x"),
@@ -110,5 +128,11 @@ mod tests {
         assert_eq!(sanitize_repo_name("../etc"), "--etc");
         assert_eq!(sanitize_repo_name("a/b"), "a-b");
         assert_eq!(sanitize_repo_name("  "), "repo");
+    }
+
+    #[test]
+    fn sanitize_repo_name_is_stable_across_saves() {
+        assert_eq!(sanitize_repo_name(". x"), "x");
+        assert_eq!(sanitize_repo_name(". . x"), "x");
     }
 }
