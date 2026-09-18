@@ -69,8 +69,8 @@ crates/
   wtm-core         Everything that is not a widget: types, git runner and
                    parsers, create/delete/push/pull/switch, config store,
                    snapshot, window state, background fetch, file watcher,
-                   fuzzy matching, branch-prefix splitting, and the `App`
-                   facade. Tested.
+                   fuzzy matching, branch-prefix splitting, git's
+                   branch-name rules, and the `App` facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
