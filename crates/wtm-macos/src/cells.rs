@@ -416,6 +416,7 @@ define_class!(
         #[unsafe(method(viewDidChangeEffectiveAppearance))]
         fn view_did_change_effective_appearance(&self) {
             self.paint_branch_title();
+            self.paint_delete_tint();
         }
     }
 );
@@ -445,6 +446,23 @@ impl WorktreeCell {
                     &ink,
                     None,
                 ));
+            }));
+    }
+
+    /// Red in light. Dark gets the other icons' grey: there a red trash per
+    /// row is a column of the loudest colour in the palette, and delete
+    /// already confirms. Chosen under this view's appearance, so it is redone
+    /// when that changes.
+    fn paint_delete_tint(&self) {
+        let delete = self.ivars().delete.clone();
+        self.effectiveAppearance()
+            .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
+                let tint = if crate::util::drawing_dark() {
+                    NSColor::secondaryLabelColor()
+                } else {
+                    NSColor::systemRedColor()
+                };
+                delete.setContentTintColor(Some(&tint));
             }));
     }
 
@@ -531,8 +549,6 @@ impl WorktreeCell {
         );
         let terminal = icon_button("terminal", "Open in terminal", mtm);
         let reveal = icon_button("folder", "Reveal in Finder", mtm);
-        // Same tint as the other icons: a red trash per row is a column of
-        // the loudest colour in the palette, and delete already confirms.
         let delete = icon_button("trash", "Delete worktree", mtm);
 
         let this = mtm.alloc::<Self>().set_ivars(WorktreeCellIvars {
@@ -609,6 +625,7 @@ impl WorktreeCell {
             .constraintEqualToAnchor(&col.widthAnchor())
             .setActive(true);
         *this.ivars().top.borrow_mut() = Some(pin(&this, &col, PLATE_INSETS));
+        this.paint_delete_tint();
         this
     }
 

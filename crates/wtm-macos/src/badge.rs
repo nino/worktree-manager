@@ -1,6 +1,7 @@
 //! A small rounded status badge ("staged", "↑3 origin/main"), drawn natively:
-//! a tinted capsule behind a system-font label. Colour is reserved for
-//! uncommitted work and a missing folder; everything else is luminance.
+//! a tinted capsule behind a system-font label. In the light appearance each
+//! state has its own hue; in the dark one colour is reserved for uncommitted
+//! work and a missing folder, and everything else is luminance.
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -12,9 +13,9 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use std::cell::RefCell;
 
-use crate::util::ns;
+use crate::util::{drawing_dark, ns};
 
-/// What a badge is reporting. Loudness is [`BadgeRank`].
+/// What a badge is reporting. Loudness when dark is [`BadgeRank`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeTone {
     Clean,
@@ -29,7 +30,7 @@ pub enum BadgeTone {
     Primary,
 }
 
-/// How loud a badge is drawn. Only Attention and Alarm spend colour.
+/// How loud a badge is drawn when dark. Only Attention and Alarm spend colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeRank {
     Quiet,
@@ -39,6 +40,42 @@ pub enum BadgeRank {
 }
 
 impl BadgeTone {
+    /// The light appearance's colour: one system hue per state. Against
+    /// near-black a stack of rows turns these into a repeating high-chroma
+    /// pattern, which is why dark draws by [`BadgeRank`] instead.
+    fn hue(self) -> Retained<NSColor> {
+        match self {
+            BadgeTone::Clean => NSColor::systemGreenColor(),
+            BadgeTone::Staged => NSColor::systemBlueColor(),
+            BadgeTone::Unstaged => NSColor::systemOrangeColor(),
+            BadgeTone::Untracked => NSColor::systemPurpleColor(),
+            BadgeTone::Ahead => NSColor::systemTealColor(),
+            BadgeTone::Behind => NSColor::systemRedColor(),
+            BadgeTone::Unpushed => NSColor::systemYellowColor(),
+            BadgeTone::Missing => NSColor::systemRedColor(),
+            BadgeTone::Muted => NSColor::systemGrayColor(),
+            BadgeTone::Primary => NSColor::controlAccentColor(),
+        }
+    }
+
+    /// Label colour under the current drawing appearance.
+    fn ink(self) -> Retained<NSColor> {
+        if drawing_dark() {
+            self.rank().ink()
+        } else {
+            self.hue()
+        }
+    }
+
+    /// Capsule colour under the current drawing appearance.
+    fn fill(self) -> Retained<NSColor> {
+        if drawing_dark() {
+            self.rank().fill()
+        } else {
+            self.hue().colorWithAlphaComponent(0.16)
+        }
+    }
+
     pub fn rank(self) -> BadgeRank {
         match self {
             BadgeTone::Staged | BadgeTone::Unstaged | BadgeTone::Untracked => BadgeRank::Attention,
@@ -72,8 +109,8 @@ impl BadgeRank {
     }
 }
 
-/// Blend a system hue toward the foreground so it pastels on dark and deepens
-/// on light. Resolves now; rebuild under the view's appearance if that changes.
+/// Blend a system hue toward the foreground so it pastels on dark. Resolves
+/// now; rebuild under the view's appearance if that changes.
 fn muted(base: &NSColor) -> Retained<NSColor> {
     base.blendedColorWithFraction_ofColor(0.3, &NSColor::labelColor())
         .unwrap_or_else(|| base.retain())
@@ -97,7 +134,7 @@ define_class!(
             let bounds = self.bounds();
             let r = bounds.size.height / 2.0;
             let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, r, r);
-            self.ivars().tone.borrow().rank().fill().setFill();
+            self.ivars().tone.borrow().fill().setFill();
             path.fill();
         }
 
@@ -159,14 +196,15 @@ impl Badge {
         self.paint_ink();
     }
 
-    /// Label ink is set here, not in `drawRect:`; blends snapshot at resolve.
+    /// Label ink is set here, not in `drawRect:`, under this view's appearance:
+    /// that picks the scheme, and blends snapshot at resolve.
     fn paint_ink(&self) {
-        let rank = self.ivars().tone.borrow().rank();
+        let tone = *self.ivars().tone.borrow();
         self.setNeedsDisplay(true);
         let label = self.ivars().label.clone();
         self.effectiveAppearance()
             .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
-                label.setTextColor(Some(&rank.ink()));
+                label.setTextColor(Some(&tone.ink()));
             }));
     }
 }
@@ -279,6 +317,7 @@ pub fn badges_for(
     out
 }
 
+// Ranks govern only the dark appearance; in light every tone has its hue.
 #[cfg(test)]
 mod tests {
     use super::*;
