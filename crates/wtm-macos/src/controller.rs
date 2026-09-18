@@ -93,14 +93,13 @@ pub struct ControllerIvars {
     shown: RefCell<Option<Arc<Model>>>,
     query: RefCell<String>,
     collapsed: RefCell<HashSet<String>>,
-    /// The window state this launch is coming back to, until it has been
-    /// applied. While it is set nothing is recorded: the list is at the top
-    /// with nothing selected, which is not what should be remembered.
-    restore: RefCell<Option<UiState>>,
-    /// `apply_restore` is already queued for the next run-loop turn.
-    restore_queued: Cell<bool>,
+    /// The scroll offset and focused row this launch is coming back to,
+    /// until `apply_restore` has put them back. Until then they are recorded
+    /// in place of the list's own: it sits at the top with nothing selected,
+    /// which is not what should be remembered.
+    restore: RefCell<Option<(f64, Option<Focus>)>>,
     /// `rebuild` is expanding cards to match what is remembered, so the
-    /// expansion notifications are not the user opening or closing one.
+    /// expansion notifications are not the user opening one.
     syncing_expansion: Cell<bool>,
     /// Id of the notice currently displayed, for the auto-clear timer.
     notice_id: Cell<u64>,
@@ -419,7 +418,6 @@ define_class!(
             if let Some(id) = expanded_repo_id(n) {
                 if !self.ivars().syncing_expansion.get() {
                     self.ivars().collapsed.borrow_mut().remove(&id);
-                    self.remember_ui_state_later();
                 }
                 self.sync_header_style(&id, None);
             }
@@ -430,10 +428,7 @@ define_class!(
         #[unsafe(method(outlineViewItemWillCollapse:))]
         fn will_collapse(&self, n: &NSNotification) {
             if let Some(id) = expanded_repo_id(n) {
-                if !self.ivars().syncing_expansion.get() {
-                    self.ivars().collapsed.borrow_mut().insert(id);
-                    self.remember_ui_state_later();
-                }
+                self.ivars().collapsed.borrow_mut().insert(id);
             }
             // The rows about to slide away can no longer draw (see
             // `RowView::set_snapshot`): freeze each one as an image first.
@@ -462,8 +457,12 @@ define_class!(
             }
         }
 
+        /// Which cards are closed is recorded here and in `did_collapse`, not
+        /// in the `Will` notifications: there the rows have not moved yet,
+        /// and the selected row answers for the tree as it was.
         #[unsafe(method(outlineViewItemDidExpand:))]
         fn did_expand(&self, _n: &NSNotification) {
+            self.remember_ui_state();
             self.sync_row_styles_later();
         }
 
@@ -474,6 +473,7 @@ define_class!(
         /// never stay drawn open with nothing under it.
         #[unsafe(method(outlineViewItemDidCollapse:))]
         fn did_collapse(&self, n: &NSNotification) {
+            self.remember_ui_state();
             let Some(id) = expanded_repo_id(n) else { return };
             let _ = DispatchQueue::main().after(
                 dispatch2::DispatchTime::NOW.time(COLLAPSE_SETTLE_NS),
@@ -787,17 +787,12 @@ impl Controller {
         let Some(outline) = self.ivars().outline.borrow().clone() else {
             return;
         };
-        let key = ItemKind::Repo {
+        let kind = ItemKind::Repo {
             repo_id: repo_id.to_string(),
-        }
-        .key();
-        let Some(item) = self.ivars().items.borrow().get(&key).cloned() else {
+        };
+        let Some((item, row)) = self.row_of(&outline, &kind) else {
             return;
         };
-        let row = unsafe { outline.rowForItem(Some(&item)) };
-        if row < 0 {
-            return;
-        }
         let style = self.row_style_excluding(&outline, &item, leaving);
         if let Some(v) = outline.rowViewAtRow_makeIfNecessary(row, false) {
             if let Some(v) = v.downcast_ref::<RowView>() {
@@ -813,12 +808,7 @@ impl Controller {
     /// Expand/collapse notifications arrive mid-operation, where the outline
     /// forbids re-entrant height changes; sync on the next run-loop turn.
     fn sync_row_styles_later(&self) {
-        DispatchQueue::main().exec_async(|| {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(c) = controller(mtm) {
-                c.sync_row_styles();
-            }
-        });
+        on_next_turn(|c| c.sync_row_styles());
     }
 
     /// Row views are reused by the outline, so after any structural change
@@ -940,7 +930,6 @@ impl Controller {
         // to be known before the first tree is built, or every card would
         // open and then shut again in front of the user.
         let saved = app.ui_state();
-        let collapsed: HashSet<String> = saved.collapsed_repos.iter().cloned().collect();
         let this = mtm.alloc::<Self>().set_ivars(ControllerIvars {
             app,
             window: RefCell::new(None),
@@ -958,9 +947,8 @@ impl Controller {
             tree: RefCell::new(Tree::default()),
             shown: RefCell::new(None),
             query: RefCell::new(String::new()),
-            collapsed: RefCell::new(collapsed),
-            restore: RefCell::new(Some(saved)),
-            restore_queued: Cell::new(false),
+            collapsed: RefCell::new(saved.collapsed_repos.into_iter().collect()),
+            restore: RefCell::new(Some((saved.scroll, saved.focus))),
             syncing_expansion: Cell::new(false),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
@@ -1004,33 +992,35 @@ impl Controller {
         }
     }
 
-    /// The cell of the selected row, when a worktree is selected.
-    fn selected_worktree_cell(&self) -> Option<Retained<WorktreeCell>> {
+    /// The selected row and what it shows.
+    fn selected_item(&self) -> Option<(NSInteger, ItemKind)> {
         let outline = self.ivars().outline.borrow().clone()?;
         let row = outline.selectedRow();
         if row < 0 {
             return None;
         }
         let item = outline.itemAtRow(row)?;
-        let item = item.downcast_ref::<WTMItem>()?;
-        if !matches!(item.kind(), ItemKind::Worktree { .. }) {
+        Some((row, item.downcast_ref::<WTMItem>()?.kind()))
+    }
+
+    /// The cell of the selected row, when a worktree is selected.
+    fn selected_worktree_cell(&self) -> Option<Retained<WorktreeCell>> {
+        let (row, kind) = self.selected_item()?;
+        if !matches!(kind, ItemKind::Worktree { .. }) {
             return None;
         }
-        outline
+        self.ivars()
+            .outline
+            .borrow()
+            .as_ref()?
             .viewAtColumn_row_makeIfNecessary(0, row, false)?
             .downcast::<WorktreeCell>()
             .ok()
     }
 
     fn selected_repo_id(&self) -> Option<String> {
-        let outline = self.ivars().outline.borrow().clone()?;
-        let row = outline.selectedRow();
-        if row >= 0 {
-            if let Some(item) = outline.itemAtRow(row) {
-                if let Some(i) = item.downcast_ref::<WTMItem>() {
-                    return Some(i.kind().repo_id().to_string());
-                }
-            }
+        if let Some((_, kind)) = self.selected_item() {
+            return Some(kind.repo_id().to_string());
         }
         self.ivars()
             .shown
@@ -1045,171 +1035,105 @@ impl Controller {
 
     /// Record where the window is, how far the list is scrolled, which row
     /// has the keyboard and which cards are closed. Called from every window
-    /// move, scroll and selection change; the core discards an unchanged
-    /// value and coalesces the rest into one write.
+    /// move, scroll, selection change and card opened or closed; the core
+    /// discards an unchanged value and coalesces the rest into one write.
     fn remember_ui_state(&self) {
         let iv = self.ivars();
-        if iv.restore.borrow().is_some() {
-            // Still coming up. The list is at the top with nothing selected,
-            // which would overwrite what we are about to restore.
+        let Some(window) = iv.window.borrow().clone() else {
             return;
-        }
-        let mut state = UiState::default();
-        if let Some(w) = iv.window.borrow().as_ref() {
-            let f = w.frame();
-            state.window = Some(WindowFrame {
-                x: f.origin.x,
-                y: f.origin.y,
-                width: f.size.width,
-                height: f.size.height,
-            });
-        }
-        if let Some(scroll) = iv.scroll.borrow().as_ref() {
-            state.scroll = scroll.contentView().bounds().origin.y;
-        }
-        state.focus = self.focused_row();
-        state.collapsed_repos = iv.collapsed.borrow().iter().cloned().collect();
-        iv.app.store_ui_state(state);
-    }
-
-    /// As above, on the next run-loop turn. Expansion notifications arrive
-    /// while the outline is rearranging its rows, and reading the selected
-    /// row from in there answers for the tree as it was a moment ago.
-    fn remember_ui_state_later(&self) {
-        DispatchQueue::main().exec_async(|| {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(c) = controller(mtm) {
-                c.remember_ui_state();
-            }
+        };
+        let pending = iv.restore.borrow().clone();
+        let (scroll, focus) = pending.unwrap_or_else(|| {
+            let scroll = iv.scroll.borrow();
+            (
+                scroll
+                    .as_ref()
+                    .map_or(0.0, |s| s.contentView().bounds().origin.y),
+                self.selected_item().and_then(|(_, kind)| kind.focus()),
+            )
+        });
+        iv.app.store_ui_state(UiState {
+            window: Some(window_frame(window.frame())),
+            scroll,
+            focus,
+            collapsed_repos: iv.collapsed.borrow().iter().cloned().collect(),
         });
     }
 
-    /// The focused row, by identity. A pending creation is not recorded: it
-    /// is gone by the next launch.
-    fn focused_row(&self) -> Option<Focus> {
-        let outline = self.ivars().outline.borrow().clone()?;
-        let row = outline.selectedRow();
-        if row < 0 {
-            return None;
-        }
-        let item = outline.itemAtRow(row)?;
-        match item.downcast_ref::<WTMItem>()?.kind() {
-            ItemKind::Repo { repo_id } => Some(Focus {
-                repo_id,
-                worktree_path: None,
-            }),
-            ItemKind::Worktree { repo_id, path } => Some(Focus {
-                repo_id,
-                worktree_path: Some(path),
-            }),
-            ItemKind::Pending { .. } => None,
-        }
+    /// The outline row showing `kind`, and its item. `None` when it is not in
+    /// the tree, or sits inside a card that is closed.
+    fn row_of(
+        &self,
+        outline: &NSOutlineView,
+        kind: &ItemKind,
+    ) -> Option<(Retained<WTMItem>, NSInteger)> {
+        let item = self.ivars().items.borrow().get(&kind.key()).cloned()?;
+        let row = unsafe { outline.rowForItem(Some(&item)) };
+        (row >= 0).then_some((item, row))
     }
 
     /// Put the list back where it was, once there is a list to put back.
     ///
-    /// Called after every rebuild until it can run: with nothing cached in
-    /// `snapshot.json` the rows only exist after the first listing, and an
+    /// Called after every model change until it has run: with nothing cached
+    /// in `snapshot.json` the rows only exist after the first listing, and an
     /// offset clamped against a one-row-tall outline would come out at zero.
     /// The work itself waits for the next run-loop turn, because the outline's
     /// height settles after the reload that is still in progress here.
-    fn restore_ui_state(&self) {
-        let iv = self.ivars();
-        if iv.restore.borrow().is_none() || iv.restore_queued.get() {
-            return;
+    fn restore_ui_state(&self, model: &Model) {
+        // Each card has to hold its worktrees, from the cached snapshot or
+        // from the listing that replaces it.
+        if self.ivars().restore.borrow().is_some()
+            && model
+                .repos
+                .iter()
+                .all(|r| r.loaded || !r.worktrees.is_empty())
+        {
+            on_next_turn(|c| c.apply_restore());
         }
-        let model = iv.app.model();
-        let rows = iv
-            .outline
-            .borrow()
-            .as_ref()
-            .map(|o| o.numberOfRows())
-            .unwrap_or(0);
-        // Nothing to restore onto when there are no repos at all; otherwise
-        // wait until each card holds its worktrees, from the cached snapshot
-        // or from the listing that replaces it.
-        let ready = model.repos.is_empty()
-            || (rows > 0
-                && model
-                    .repos
-                    .iter()
-                    .all(|r| r.loaded || !r.worktrees.is_empty()));
-        if !ready {
-            return;
-        }
-        iv.restore_queued.set(true);
-        DispatchQueue::main().exec_async(|| {
-            let mtm = MainThreadMarker::new().expect("main queue");
-            if let Some(c) = controller(mtm) {
-                c.apply_restore();
-                c.ivars().restore_queued.set(false);
-            }
-        });
     }
 
     /// Select the remembered row and scroll to the remembered offset, once.
-    /// A later listing must never yank the list out from under someone who is
-    /// already using it, so the state is taken rather than read.
+    /// A later listing must never move the list under someone who is already
+    /// using it, so the state is taken rather than read.
     fn apply_restore(&self) {
         let iv = self.ivars();
-        let state = iv.restore.borrow().clone();
-        let Some(state) = state else {
+        let (Some(outline), Some(scroll)) =
+            (iv.outline.borrow().clone(), iv.scroll.borrow().clone())
+        else {
             return;
         };
-        let Some(outline) = iv.outline.borrow().clone() else {
+        let Some((offset, focus)) = iv.restore.borrow_mut().take() else {
             return;
         };
-        if let Some(f) = &state.focus {
-            let key = match &f.worktree_path {
-                Some(path) => ItemKind::Worktree {
-                    repo_id: f.repo_id.clone(),
-                    path: path.clone(),
-                }
-                .key(),
-                None => ItemKind::Repo {
-                    repo_id: f.repo_id.clone(),
-                }
-                .key(),
-            };
-            // `rowForItem` answers -1 for a worktree that is gone, or one
-            // inside a card that is closed; either way there is nothing to
-            // select and the tree simply starts unselected.
-            let item = iv.items.borrow().get(&key).cloned();
-            if let Some(item) = item {
-                let row = unsafe { outline.rowForItem(Some(&item)) };
-                if row >= 0 {
-                    outline.selectRowIndexes_byExtendingSelection(
-                        &NSIndexSet::indexSetWithIndex(row as usize),
-                        false,
-                    );
-                }
-            }
+        // Nothing is found for a worktree that is gone, or one inside a card
+        // that is closed; either way the tree simply starts unselected.
+        let row = focus
+            .map(ItemKind::from)
+            .and_then(|kind| self.row_of(&outline, &kind));
+        if let Some((_, row)) = row {
+            outline.selectRowIndexes_byExtendingSelection(
+                &NSIndexSet::indexSetWithIndex(row as usize),
+                false,
+            );
         }
         // Selecting does not scroll, so the offset is applied after it and
         // wins. It is clamped here because the list may be shorter than it
         // was — worktrees deleted elsewhere, or a card closed.
-        if let Some(scroll) = iv.scroll.borrow().clone() {
-            let clip = scroll.contentView();
-            let document = scroll
-                .documentView()
-                .map(|d| d.frame().size.height)
-                .unwrap_or(0.0);
-            let max = (document - clip.bounds().size.height).max(0.0);
-            let y = state.scroll.clamp(0.0, max);
-            if y > 0.0 {
-                clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
-                scroll.reflectScrolledClipView(&clip);
-            }
+        let clip = scroll.contentView();
+        let document = scroll.documentView().map_or(0.0, |d| d.frame().size.height);
+        let y = offset.clamp(0.0, (document - clip.bounds().size.height).max(0.0));
+        if y > 0.0 {
+            clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
+            scroll.reflectScrolledClipView(&clip);
         }
-        // Cleared last: the selection and the scroll above are this launch
-        // catching up, not the user moving about, and recording them
-        // half-applied would write back a list scrolled to the top.
-        *iv.restore.borrow_mut() = None;
     }
 
     // MARK: Window construction
 
     fn build_window(&self, mtm: MainThreadMarker) {
+        // Read before the window exists: from then on each of its moves is
+        // recorded over this.
+        let saved_frame = self.ivars().app.ui_state().window;
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
@@ -1502,17 +1426,8 @@ impl Controller {
         // Back where it was, unless that frame no longer lands on a screen —
         // the display it was on may be gone, and a window off the edge cannot
         // be dragged back.
-        let saved = iv
-            .restore
-            .borrow()
-            .as_ref()
-            .and_then(|s| s.window)
-            .filter(|f| f.is_usable_on(&screen_frames(mtm)));
-        match saved {
-            Some(f) => window.setFrame_display(
-                NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height)),
-                false,
-            ),
+        match saved_frame.filter(|f| f.is_usable_on(&screen_frames(mtm))) {
+            Some(f) => window.setFrame_display(ns_rect(f), false),
             None => window.center(),
         }
         window.makeKeyAndOrderFront(None);
@@ -1530,7 +1445,7 @@ impl Controller {
         let model = self.ivars().app.model();
         self.rebuild(false);
         self.update_chrome(&model);
-        self.restore_ui_state();
+        self.restore_ui_state(&model);
     }
 
     fn update_chrome(&self, model: &Model) {
@@ -1740,9 +1655,7 @@ impl Controller {
                 unsafe { outline.reloadItem_reloadChildren(Some(root), true) };
                 let is_collapsed = iv.collapsed.borrow().contains(&repo_id);
                 if !is_collapsed {
-                    iv.syncing_expansion.set(true);
                     unsafe { outline.expandItem(Some(root)) };
-                    iv.syncing_expansion.set(false);
                 }
                 continue;
             }
@@ -1788,16 +1701,31 @@ impl Controller {
 fn screen_frames(mtm: MainThreadMarker) -> Vec<WindowFrame> {
     NSScreen::screens(mtm)
         .iter()
-        .map(|s| {
-            let f = s.visibleFrame();
-            WindowFrame {
-                x: f.origin.x,
-                y: f.origin.y,
-                width: f.size.width,
-                height: f.size.height,
-            }
-        })
+        .map(|s| window_frame(s.visibleFrame()))
         .collect()
+}
+
+fn window_frame(r: NSRect) -> WindowFrame {
+    WindowFrame {
+        x: r.origin.x,
+        y: r.origin.y,
+        width: r.size.width,
+        height: r.size.height,
+    }
+}
+
+fn ns_rect(f: WindowFrame) -> NSRect {
+    NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height))
+}
+
+/// Run `f` on the controller on the next turn of the main run loop.
+fn on_next_turn(f: impl FnOnce(&Controller) + Send + 'static) {
+    DispatchQueue::main().exec_async(move || {
+        let mtm = MainThreadMarker::new().expect("main queue");
+        if let Some(c) = controller(mtm) {
+            f(c);
+        }
+    });
 }
 
 /// What the notice bar shows of a message: its first two lines, with a count

@@ -307,14 +307,14 @@ fn add_repo_create_and_delete_worktree() {
             repo_id: "gone".into(),
             worktree_path: None,
         }),
-        collapsed_repos: vec!["gone".into(), repo_id.clone()],
+        collapsed_repos: ["gone".to_string(), repo_id.clone()].into(),
     });
     app.flush_ui_state();
     assert!(base.join("config/ui-state.json").exists());
     let saved = app.ui_state();
     assert_eq!(saved.scroll, 88.0);
     assert_eq!(saved.window.unwrap().width, 900.0);
-    assert_eq!(saved.collapsed_repos, vec![repo_id.clone()]);
+    assert_eq!(saved.collapsed_repos, [repo_id.clone()].into());
     assert!(saved.focus.is_none());
 
     app.dispatch(Action::RemoveRepo(repo_id));

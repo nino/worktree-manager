@@ -123,9 +123,10 @@ list was scrolled, which row had the keyboard and which cards were closed
 NSUserDefaults or AppKit's window restoration, so `WTM_USER_DATA` sandboxes a
 dev run's window along with its config, and the values are plain enough for a
 backend on another OS to use. The controller records on every window move,
-scroll and selection change — the core drops an unchanged value and coalesces
-the rest into one write 750ms later, with a synchronous flush from
-`applicationWillTerminate:`.
+scroll, selection change and card opened or closed — the core drops an
+unchanged value and writes a changed one 750ms after the first change not yet
+written, so a burst costs one write per interval, with a synchronous flush
+from `applicationWillTerminate:`.
 
 Restoring has two wrinkles. A frame is only reused when at least half of it
 lands on a screen's visible frame, summed across screens so a window that
@@ -136,10 +137,11 @@ because the tree is rebuilt from a fresh listing: the state is applied once,
 on the run-loop turn after the first tree that has its worktrees in it — from
 the cached snapshot, or from the first listing when there is none — since the
 outline's height only settles after its reload, and an offset clamped against
-a one-row outline comes out at zero. Until it has been applied nothing is
-recorded, or the list sitting at the top would be written over what is about
-to be restored. A pending creation is never recorded: it is not there next
-time.
+a one-row outline comes out at zero. Until it has been applied the saved
+offset and row are recorded in place of the list's own, or the list sitting
+at the top would be written over what is about to be restored; the frame and
+the closed cards are live from the start. A pending creation is never
+recorded: it is not there next time.
 
 **Fresh without asking.** Each worktree directory (and, for linked worktrees,
 its `.git/worktrees/<name>` metadata dir) is watched with FSEvents via

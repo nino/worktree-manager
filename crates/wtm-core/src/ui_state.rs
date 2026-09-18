@@ -11,12 +11,13 @@
 //! every launch, and a repo added or a worktree deleted in between would make
 //! an index point at something else.
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
-use log::warn;
 use serde::{Deserialize, Serialize};
 use wtm_platform::AppDirs;
 
+use crate::config::{read_json, write_json};
 use crate::types::AppConfig;
 
 const UI_STATE_FILE: &str = "ui-state.json";
@@ -96,9 +97,9 @@ pub struct UiState {
     /// How far the list was scrolled from the top, in points.
     pub scroll: f64,
     pub focus: Option<Focus>,
-    /// Repos whose cards were closed, sorted — an unordered list would look
-    /// like a change on every comparison and rewrite the file for nothing.
-    pub collapsed_repos: Vec<String>,
+    /// Repos whose cards were closed. A set, so the same cards closed in a
+    /// different order compare equal and do not rewrite the file.
+    pub collapsed_repos: BTreeSet<String>,
 }
 
 impl UiState {
@@ -112,8 +113,6 @@ impl UiState {
     pub fn prune(&mut self, config: &AppConfig) {
         let known = |id: &str| config.repos.iter().any(|r| r.id == id);
         self.collapsed_repos.retain(|id| known(id));
-        self.collapsed_repos.sort();
-        self.collapsed_repos.dedup();
         if self.focus.as_ref().is_some_and(|f| !known(&f.repo_id)) {
             self.focus = None;
         }
@@ -121,7 +120,7 @@ impl UiState {
 }
 
 /// Owns the file and the last value written to it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UiStateStore {
     path: PathBuf,
     state: UiState,
@@ -132,7 +131,7 @@ impl UiStateStore {
     /// readable — a first launch, or a file from a future version.
     pub fn load(dirs: &AppDirs) -> Self {
         let path = dirs.config_dir.join(UI_STATE_FILE);
-        let state = read(&path).unwrap_or_default();
+        let state = read_json(&path, "UI state").unwrap_or_default();
         Self { path, state }
     }
 
@@ -151,44 +150,17 @@ impl UiStateStore {
     }
 
     pub fn save(&self) {
-        if let Some(dir) = self.path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                warn!("cannot create config dir {}: {e}", dir.display());
-                return;
-            }
-        }
-        let json = match serde_json::to_string_pretty(&self.state) {
-            Ok(j) => j,
-            Err(e) => {
-                warn!("cannot serialise UI state: {e}");
-                return;
-            }
-        };
-        // Write-then-rename, as for the config: a crash mid-write must not
-        // leave a truncated file that the next launch ignores.
-        let tmp = self.path.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &self.path)) {
-            warn!("cannot write UI state {}: {e}", self.path.display());
-        }
-    }
-}
-
-fn read(path: &Path) -> Option<UiState> {
-    let text = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            warn!("ignoring unreadable UI state {}: {e}", path.display());
-            None
-        }
+        write_json(&self.path, &self.state, "UI state");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::config::defaults;
     use crate::types::RepoConfig;
-    use crate::update::UpdateChannel;
 
     fn frame(x: f64, y: f64, width: f64, height: f64) -> WindowFrame {
         WindowFrame {
@@ -200,22 +172,23 @@ mod tests {
     }
 
     fn config(repo_ids: &[&str]) -> AppConfig {
-        AppConfig {
-            worktrees_root: "/w".into(),
-            editor_command: "code".into(),
-            update_channel: UpdateChannel::default(),
-            repos: repo_ids
-                .iter()
-                .map(|id| RepoConfig {
-                    id: (*id).to_string(),
-                    name: (*id).to_string(),
-                    path: format!("/{id}"),
-                    main_branch: "main".into(),
-                    init_command: String::new(),
-                    commands: Vec::new(),
-                })
-                .collect(),
-        }
+        let mut config = defaults(Path::new("/h"));
+        config.repos = repo_ids
+            .iter()
+            .map(|id| RepoConfig {
+                id: (*id).to_string(),
+                name: (*id).to_string(),
+                path: format!("/{id}"),
+                main_branch: "main".into(),
+                init_command: String::new(),
+                commands: Vec::new(),
+            })
+            .collect();
+        config
+    }
+
+    fn ids(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
     }
 
     #[test]
@@ -235,7 +208,7 @@ mod tests {
                 repo_id: "r1".into(),
                 worktree_path: Some("/w/a".into()),
             }),
-            collapsed_repos: vec!["r2".into()],
+            collapsed_repos: ids(&["r2"]),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""collapsedRepos":["r2"]"#), "{json}");
@@ -304,27 +277,12 @@ mod tests {
                 repo_id: "gone".into(),
                 worktree_path: Some("/w/a".into()),
             }),
-            collapsed_repos: vec!["r2".into(), "gone".into(), "r1".into()],
+            collapsed_repos: ids(&["r2", "gone", "r1"]),
             ..UiState::default()
         };
         s.prune(&config(&["r1", "r2"]));
-        assert_eq!(s.collapsed_repos, vec!["r1".to_string(), "r2".to_string()]);
+        assert_eq!(s.collapsed_repos, ids(&["r1", "r2"]));
         assert!(s.focus.is_none());
-    }
-
-    #[test]
-    fn pruning_sorts_and_dedups_so_equal_states_compare_equal() {
-        let mut a = UiState {
-            collapsed_repos: vec!["r2".into(), "r1".into(), "r2".into()],
-            ..UiState::default()
-        };
-        let mut b = UiState {
-            collapsed_repos: vec!["r1".into(), "r2".into()],
-            ..UiState::default()
-        };
-        a.prune(&config(&["r1", "r2"]));
-        b.prune(&config(&["r1", "r2"]));
-        assert_eq!(a, b);
     }
 
     #[test]
@@ -347,7 +305,7 @@ mod tests {
                 repo_id: "r1".into(),
                 worktree_path: None,
             }),
-            collapsed_repos: vec!["r2".into()],
+            collapsed_repos: ids(&["r2"]),
         };
         assert!(store.set(state.clone()));
         // The same value again is not a change, so nothing is rewritten.

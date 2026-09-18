@@ -91,9 +91,10 @@ pub enum Action {
     },
 }
 
-/// How long a burst of window changes is left to settle before the state is
-/// written. A live resize or a flick of the scroll wheel produces one change
-/// per frame, and none of them is worth a file write of its own.
+/// How long after the first change of a burst the window state is written.
+/// A live resize or a flick of the scroll wheel produces one change per
+/// frame; this makes them one write per interval, and a crash loses at most
+/// that much.
 const UI_STATE_WRITE_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// Callback for actions that need an answer beyond a model change.
@@ -114,8 +115,11 @@ struct Inner {
     dirs: AppDirs,
     store: Mutex<ConfigStore>,
     ui_state: Mutex<UiStateStore>,
-    /// A debounced UI-state write is already scheduled.
+    /// A delayed UI-state write is already scheduled.
     ui_state_queued: AtomicBool,
+    /// Held for the length of a UI-state write, so that two writers never
+    /// share the temporary file.
+    ui_state_write: Mutex<()>,
     model: RwLock<Arc<Model>>,
     listeners: Mutex<Vec<Listener>>,
     /// Serialises mutating operations per worktree path, so a delete can never
@@ -166,6 +170,7 @@ impl App {
             store: Mutex::new(store),
             ui_state: Mutex::new(ui_state),
             ui_state_queued: AtomicBool::new(false),
+            ui_state_write: Mutex::new(()),
             model: RwLock::new(Arc::new(model)),
             listeners: Mutex::new(Vec::new()),
             locks: Mutex::new(HashMap::new()),
@@ -230,7 +235,8 @@ impl App {
 
     /// Record the window's current state. Cheap enough to call from every
     /// scroll and every frame of a live resize: an unchanged value returns
-    /// immediately, and a changed one is written once the burst has settled.
+    /// immediately, and a changed one is written `UI_STATE_WRITE_DELAY` after
+    /// the first change that has not been written yet.
     pub fn store_ui_state(&self, mut state: UiState) {
         state.prune(&self.model().config);
         if !self.inner.ui_state.lock().set(state) {
@@ -243,15 +249,20 @@ impl App {
         self.inner.rt.spawn(async move {
             tokio::time::sleep(UI_STATE_WRITE_DELAY).await;
             app.inner.ui_state_queued.store(false, Ordering::Release);
-            app.inner.ui_state.lock().save();
+            app.flush_ui_state();
         });
     }
 
-    /// Write the recorded state now. The debounced write above would never
+    /// Write the recorded state now. The delayed write above would never
     /// land once the app is quitting, so a backend calls this on the way out.
+    ///
+    /// The file is written outside the state's lock, which the main thread
+    /// takes on every scroll. The copy is taken inside the write lock, so
+    /// of two writers the later one always writes the newer state.
     pub fn flush_ui_state(&self) {
-        self.inner.ui_state_queued.store(false, Ordering::Release);
-        self.inner.ui_state.lock().save();
+        let _writing = self.inner.ui_state_write.lock();
+        let store = self.inner.ui_state.lock().clone();
+        store.save();
     }
 
     // MARK: Dispatch
