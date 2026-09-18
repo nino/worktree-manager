@@ -870,13 +870,19 @@ impl Controller {
                     Some(v) => v.downcast::<RepoCell>().ok()?,
                     None => RepoCell::new(app.clone(), mtm),
                 };
+                // Worktrees only: the rows also hold creations in flight and
+                // failed ones, which the total ("of N") does not count.
                 let visible = self
                     .ivars()
                     .tree
                     .borrow()
                     .children
                     .get(&item.kind().key())
-                    .map(|c| c.len())
+                    .map(|c| {
+                        c.iter()
+                            .filter(|i| matches!(i.kind(), ItemKind::Worktree { .. }))
+                            .count()
+                    })
                     .unwrap_or(0);
                 cell.configure(
                     node,
