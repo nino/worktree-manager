@@ -187,6 +187,7 @@ pub struct RepoCellIvars {
     path_label: Retained<NSTextField>,
     error: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
+    new_worktree: RefCell<Option<Retained<Button>>>,
 }
 
 define_class!(
@@ -265,6 +266,7 @@ impl RepoCell {
             path_label: path_label.clone(),
             error: error.clone(),
             spinner: spinner.clone(),
+            new_worktree: RefCell::new(None),
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, REPO_ROW_HEIGHT))]
@@ -278,6 +280,7 @@ impl RepoCell {
         new_wt.setControlSize(NSControlSize::Small);
         new_wt.setBezelStyle(NSBezelStyle::Push);
         new_wt.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        *this.ivars().new_worktree.borrow_mut() = Some(new_wt.clone());
         let settings = icon_button("gearshape", "Repo settings", mtm);
         wire(&settings, target, sel!(repoSettings:));
 
@@ -329,6 +332,12 @@ impl RepoCell {
                 iv.error.setHidden(false);
             }
             None => iv.error.setHidden(true),
+        }
+        // Nothing can be created where nothing could be listed: git failed
+        // in this repo (most often, its folder is gone), and the error beside
+        // the path says why.
+        if let Some(button) = iv.new_worktree.borrow().as_ref() {
+            button.setEnabled(node.error.is_none());
         }
         if !node.loaded {
             unsafe { iv.spinner.startAnimation(None) };

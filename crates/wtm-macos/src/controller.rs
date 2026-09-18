@@ -148,7 +148,7 @@ define_class!(
         #[unsafe(method(newWorktree:))]
         fn new_worktree(&self, _s: Option<&AnyObject>) {
             let Some(w) = self.window() else { return };
-            if let Some(repo_id) = self.selected_repo_id() {
+            if let Some(repo_id) = self.creatable_repo_id() {
                 dialogs::create_worktree(&self.ivars().app, &w, &repo_id);
             }
         }
@@ -215,7 +215,7 @@ define_class!(
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
             if item.action() == Some(sel!(newWorktree:)) {
-                self.selected_repo_id().is_some()
+                self.creatable_repo_id().is_some()
             } else if item.action() == Some(sel!(switchBranch:)) {
                 self.selected_worktree_cell().is_some()
             } else {
@@ -1034,6 +1034,17 @@ impl Controller {
             .repos
             .first()
             .map(|r| r.repo.id.clone())
+    }
+
+    /// The selected repo, if a worktree can be created in it: not one whose
+    /// listing failed, as the card's own New Worktree button is disabled for.
+    fn creatable_repo_id(&self) -> Option<String> {
+        let repo_id = self.selected_repo_id()?;
+        let model = self.ivars().app.model();
+        model
+            .repo(&repo_id)
+            .is_some_and(|node| node.error.is_none())
+            .then_some(repo_id)
     }
 
     // MARK: Window state
