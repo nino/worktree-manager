@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use log::{info, warn};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use wtm_platform::AppDirs;
 
 use crate::paths::sanitize_repo_name;
@@ -25,15 +27,22 @@ impl ConfigStore {
     /// falling back to defaults when nothing is readable.
     pub fn load(dirs: &AppDirs) -> Self {
         let path = dirs.config_dir.join(CONFIG_FILE);
-        let config = read(&path)
+        let mut config: AppConfig = read_json(&path, "config")
             .or_else(|| {
                 dirs.legacy_config_files.iter().find_map(|legacy| {
-                    let c = read(legacy)?;
+                    let c = read_json(legacy, "config")?;
                     info!("imported configuration from {}", legacy.display());
                     Some(c)
                 })
             })
             .unwrap_or_else(|| defaults(&dirs.home));
+        // A display name doubles as a directory under the worktrees root.
+        // `add_repo` and `update_repo` sanitise it, but a file edited by hand
+        // or imported from the Electron app has been through neither, and a
+        // name of `..` would put new worktrees beside the root.
+        for repo in &mut config.repos {
+            repo.name = sanitize_repo_name(&repo.name);
+        }
         let store = Self { path, config };
         store.save();
         store
@@ -96,39 +105,45 @@ impl ConfigStore {
     }
 
     fn save(&self) {
-        if let Some(dir) = self.path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
-                warn!("cannot create config dir {}: {e}", dir.display());
-                return;
-            }
-        }
-        // Write-then-rename so a crash mid-write never leaves a truncated file.
-        let tmp = self.path.with_extension("json.tmp");
-        let json = match serde_json::to_string_pretty(&self.config) {
-            Ok(j) => j,
-            Err(e) => {
-                warn!("cannot serialise config: {e}");
-                return;
-            }
-        };
-        if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &self.path)) {
-            warn!("cannot write config {}: {e}", self.path.display());
-        }
+        write_json(&self.path, &self.config, "config");
     }
 }
 
-fn read(path: &Path) -> Option<AppConfig> {
+/// Read a JSON file, or `None` when there is none or it does not parse (a
+/// file from a future version, or one edited by hand).
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path, what: &str) -> Option<T> {
     let text = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str::<AppConfig>(&text) {
-        Ok(c) => Some(c),
+    match serde_json::from_str(&text) {
+        Ok(v) => Some(v),
         Err(e) => {
-            warn!("ignoring unreadable config {}: {e}", path.display());
+            warn!("ignoring unreadable {what} {}: {e}", path.display());
             None
         }
     }
 }
 
-fn defaults(home: &Path) -> AppConfig {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T, what: &str) {
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            warn!("cannot create config dir {}: {e}", dir.display());
+            return;
+        }
+    }
+    let json = match serde_json::to_string_pretty(value) {
+        Ok(j) => j,
+        Err(e) => {
+            warn!("cannot serialise {what}: {e}");
+            return;
+        }
+    };
+    // Write-then-rename so a crash mid-write never leaves a truncated file.
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, path)) {
+        warn!("cannot write {what} {}: {e}", path.display());
+    }
+}
+
+pub(crate) fn defaults(home: &Path) -> AppConfig {
     AppConfig {
         worktrees_root: home
             .join(".claude-worktrees")
@@ -143,6 +158,35 @@ fn defaults(home: &Path) -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loaded_repo_name_stays_under_the_worktrees_root() {
+        let dir = std::env::temp_dir().join(format!("wtm-config-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dirs = AppDirs {
+            config_dir: dir.join("config"),
+            home: dir.clone(),
+            legacy_config_files: Vec::new(),
+        };
+        std::fs::create_dir_all(&dirs.config_dir).unwrap();
+        std::fs::write(
+            dirs.config_dir.join(CONFIG_FILE),
+            r#"{"worktreesRoot":"/w","editorCommand":"c","repos":[
+                {"id":"1","name":".","path":"/a","mainBranch":"main"},
+                {"id":"2","name":"..","path":"/b","mainBranch":"main"},
+                {"id":"3","name":"x/../y","path":"/c","mainBranch":"main"}]}"#,
+        )
+        .unwrap();
+        let store = ConfigStore::load(&dirs);
+        let names: Vec<&str> = store
+            .config()
+            .repos
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["repo", "-", "x---y"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn electron_store_file_round_trips() {

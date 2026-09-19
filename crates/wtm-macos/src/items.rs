@@ -6,6 +6,7 @@
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::NSObject;
+use wtm_core::Focus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemKind {
@@ -29,6 +30,34 @@ impl ItemKind {
             ItemKind::Repo { repo_id }
             | ItemKind::Worktree { repo_id, .. }
             | ItemKind::Pending { repo_id, .. } => repo_id,
+        }
+    }
+
+    /// The row as the window state remembers it. A pending creation is not
+    /// remembered: it is gone by the next launch.
+    pub fn focus(self) -> Option<Focus> {
+        match self {
+            ItemKind::Repo { repo_id } => Some(Focus {
+                repo_id,
+                worktree_path: None,
+            }),
+            ItemKind::Worktree { repo_id, path } => Some(Focus {
+                repo_id,
+                worktree_path: Some(path),
+            }),
+            ItemKind::Pending { .. } => None,
+        }
+    }
+}
+
+impl From<Focus> for ItemKind {
+    fn from(f: Focus) -> Self {
+        match f.worktree_path {
+            Some(path) => ItemKind::Worktree {
+                repo_id: f.repo_id,
+                path,
+            },
+            None => ItemKind::Repo { repo_id: f.repo_id },
         }
     }
 }

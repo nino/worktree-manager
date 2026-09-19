@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
+use log::info;
 use wtm_platform::{AppDirs, Platform};
 
 /// Bundle id macOS uses when no default terminal override has been set.
@@ -11,8 +13,25 @@ pub const DEFAULT_TERMINAL_BUNDLE_ID: &str = "com.apple.Terminal";
 
 pub struct MacPlatform;
 
+/// `WTM_NO_LAUNCH=1` (dev only) logs what would be opened instead of opening
+/// it. `scripts/monkey.sh` presses row buttons at random, and every press of
+/// Open in Terminal, Reveal or Open in Editor would otherwise leave a window
+/// of another app behind, which then takes the focus.
+fn launching_disabled(what: &str) -> bool {
+    static DISABLED: OnceLock<bool> = OnceLock::new();
+    let disabled = *DISABLED
+        .get_or_init(|| std::env::var("WTM_NO_LAUNCH").is_ok_and(|v| !v.is_empty() && v != "0"));
+    if disabled {
+        info!("WTM_NO_LAUNCH: not opening {what}");
+    }
+    disabled
+}
+
 impl Platform for MacPlatform {
     fn spawn_detached(&self, command_line: &str) -> std::io::Result<()> {
+        if launching_disabled(command_line) {
+            return Ok(());
+        }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
         Command::new(shell)
             .args(["-lc", command_line])
@@ -27,6 +46,9 @@ impl Platform for MacPlatform {
     /// (without `-n`, so a running instance is reused). Opening a directory
     /// makes the terminal start a shell there.
     fn open_in_terminal(&self, path: &Path) -> std::io::Result<()> {
+        if launching_disabled(&format!("a terminal in {}", path.display())) {
+            return Ok(());
+        }
         Command::new("open")
             .arg("-b")
             .arg(default_terminal_bundle_id())
@@ -39,6 +61,9 @@ impl Platform for MacPlatform {
     }
 
     fn reveal(&self, path: &Path) -> std::io::Result<()> {
+        if launching_disabled(&format!("{} in Finder", path.display())) {
+            return Ok(());
+        }
         Command::new("open")
             .arg(path)
             .stdin(Stdio::null())
@@ -57,10 +82,16 @@ impl Platform for MacPlatform {
 /// app's electron-store file on first launch.
 pub fn app_dirs() -> AppDirs {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-    let config_dir = std::env::var_os("WTM_USER_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("Library/Application Support/Worktree Manager"));
-    let legacy = home.join("Library/Application Support/worktree-manager/worktree-manager.json");
+    let sandbox = std::env::var_os("WTM_USER_DATA").map(PathBuf::from);
+    // A sandboxed run looks for the Electron file inside the sandbox too.
+    // Reading the real one would fill an empty sandbox with the real repos,
+    // whose worktrees a test run can then delete.
+    let legacy = match &sandbox {
+        Some(dir) => dir.join("worktree-manager.json"),
+        None => home.join("Library/Application Support/worktree-manager/worktree-manager.json"),
+    };
+    let config_dir =
+        sandbox.unwrap_or_else(|| home.join("Library/Application Support/Worktree Manager"));
     AppDirs {
         config_dir,
         home,

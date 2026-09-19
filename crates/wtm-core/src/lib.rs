@@ -6,6 +6,8 @@
 //! - [`worktrees`], [`repos`]: orchestration (create/delete safety ladder,
 //!   push/pull/switch, adding repositories).
 //! - [`config`]: load/save of the configuration file.
+//! - [`ui_state`]: the window frame, scroll offset and focused row that a
+//!   backend restores at the next launch.
 //! - [`app`]: the [`App`] facade the UI talks to — synchronous, thread-safe
 //!   [`Action`] dispatch, a shared [`Model`] snapshot, and change events.
 //!
@@ -13,6 +15,7 @@
 //! behind the traits in `wtm-platform`.
 
 pub mod app;
+pub mod branch_name;
 pub mod branch_tool;
 pub mod command;
 pub mod config;
@@ -23,6 +26,7 @@ pub mod model;
 pub mod paths;
 pub mod repos;
 pub mod types;
+pub mod ui_state;
 pub mod update;
 pub mod watcher;
 pub mod worktrees;
@@ -30,3 +34,4 @@ pub mod worktrees;
 pub use app::{Action, App, Event, Reply};
 pub use model::{Busy, Model, PendingCreation, RepoNode};
 pub use types::*;
+pub use ui_state::{Focus, UiState, WindowFrame};

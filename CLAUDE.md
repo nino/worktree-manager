@@ -21,23 +21,44 @@ deleted. Anything the old app did that this one does not is in git history
 
 ```sh
 cargo run                      # dev build (menu bar + window)
-cargo test                     # unit tests + an end-to-end core test on a temp repo
+cargo test                     # unit tests, property tests + an end-to-end core test on a temp repo
 cargo fmt                      # format
 scripts/bundle.sh              # release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install    # …and copy it to /Applications
+scripts/monkey.sh              # random keys and clicks on a debug build until it crashes
+scripts/monkey.sh --minutes 10 # …as many runs as fit in ten minutes
+scripts/monkey.sh --sandbox    # just the monkey's demo repos, to run the app against by hand
 ```
+
+The property tests (`crates/wtm-core/tests/properties.rs`, proptest) feed the
+pure core random input. For a longer hunt than `cargo test`'s 256 cases:
+`PROPTEST_CASES=100000 cargo test --release -p wtm-core --test properties`.
+Whatever one finds becomes a unit test next to the code it broke.
+
+`scripts/monkey.sh` is for what only a debug build shows: objc2 checks each
+`msg_send!`'s types only with debug assertions on, so a wrong signature panics
+under `cargo run` and passes silently in a release build. It runs the app in a
+throwaway sandbox, drives it through `scripts/monkey.js` (JXA: keys with
+`CGEventPostToPid`, clicks with `CGEventPost`, positions from System Events),
+and reports a crash, a panic or a hang with the seed that replays it. It needs
+Accessibility and Screen Recording permission for the terminal, and moves the
+real pointer while it runs; a panel in the bottom-right corner shows the run,
+the step and the time left.
 
 Environment switches, all dev-only:
 
 | variable | effect |
 | --- | --- |
-| `WTM_USER_DATA=<dir>` | config + snapshot live there instead of the real profile |
+| `WTM_USER_DATA=<dir>` | config, snapshot + window state live there instead of the real profile |
 | `WTM_APPEARANCE=dark\|light` | force an appearance without changing the system setting |
+| `WTM_NO_LAUNCH=1` | Open in Terminal, Reveal and Open in Editor (and a repo's init command) log instead of opening anything |
 | `RUST_LOG=info` | timings for refreshes and git runs |
 
 **Never test against the real config.** Use `WTM_USER_DATA` pointed at a
 throwaway directory and demo repos created for the purpose. The real profile is
-`~/Library/Application Support/Worktree Manager/`.
+`~/Library/Application Support/Worktree Manager/`. With `WTM_USER_DATA` set,
+the Electron file to import is looked for inside that directory too
+(`worktree-manager.json`), never in the real one.
 
 ## Layout
 
@@ -47,14 +68,16 @@ crates/
                    terminal, reveal, app directories). No dependencies.
   wtm-core         Everything that is not a widget: types, git runner and
                    parsers, create/delete/push/pull/switch, config store,
-                   snapshot, background fetch, file watcher, fuzzy matching,
-                   branch-prefix splitting, and the `App` facade. Tested.
+                   snapshot, window state, background fetch, file watcher,
+                   fuzzy matching, branch-prefix splitting, git's
+                   branch-name rules, and the `App` facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
                    the Electron app's; see "Releases")
 build/             Icon sources (icon.icns, Assets.car) copied into the bundle
 scripts/bundle.sh  Builds the .app
+scripts/monkey.*   The random UI driver (see "Commands")
 docs/architecture.md  How it fits together, and why the fiddly parts are so
 ```
 
@@ -77,6 +100,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   publishes, and hands the slow part to tokio. See `docs/architecture.md`.
 - **Config** is JSON in the same shape the Electron app used, and that app's
   file is imported on first launch if present.
+- **The window comes back as it was**: its frame, the list's scroll offset,
+  the focused row and which cards were closed live in `ui-state.json` beside
+  the config, so `WTM_USER_DATA` sandboxes them too. Rows are remembered by
+  identity, never by index. A frame less than half on any screen is ignored
+  and the window centres instead.
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.
@@ -207,4 +235,5 @@ Settings → Secrets and variables → Actions:
 | `APPLE_API_ISSUER_ID` | the issuer UUID |
 
 Local `scripts/bundle.sh` builds are ad-hoc signed, which is enough for a
-stable identity (window-frame autosave) but is not a Developer ID signature.
+stable identity (the user defaults the announcement is marked seen in) but is
+not a Developer ID signature.

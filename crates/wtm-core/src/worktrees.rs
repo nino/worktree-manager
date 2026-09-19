@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::branch_name;
 use crate::git::{
     add_worktree, assert_valid_ref, branch_exists, has_remote, list_worktrees_raw,
     resolve_trunk_ref, run_git, GitError,
@@ -23,6 +24,16 @@ pub async fn create_worktree(
     let branch = params.branch.trim();
     if branch.is_empty() {
         return Err("A branch name is required.".into());
+    }
+    // Before the name: git cannot start in a folder that is not there, and
+    // the check below would blame the name for that.
+    if tokio::fs::metadata(&repo.path).await.is_err() {
+        return Err(format!("The repository folder is missing: {}", repo.path));
+    }
+    // The reason the dialog gives while the name is typed; git's own check
+    // below stays the authority.
+    if let Some(problem) = branch_name::problem(branch) {
+        return Err(problem);
     }
     assert_valid_ref(&repo.path, branch)
         .await
@@ -268,4 +279,35 @@ pub async fn switch_branch(repo: &RepoConfig, worktree_path: &str, branch: &str)
         return e;
     }
     op_result(run_git(worktree_path, &["switch", branch]).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn creating_in_a_missing_repo_folder_says_so() {
+        let repo = RepoConfig {
+            id: "r".into(),
+            name: "r".into(),
+            path: "/nonexistent/wtm-missing-repo".into(),
+            main_branch: "main".into(),
+            init_command: String::new(),
+            commands: Vec::new(),
+        };
+        let params = CreateWorktreeParams {
+            repo_id: "r".into(),
+            // A valid name, which this used to be refused as.
+            branch: "e5x7or9".into(),
+            new_branch: true,
+            base_ref: None,
+        };
+        let err = create_worktree(&repo, "/nonexistent/root", &params)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "The repository folder is missing: /nonexistent/wtm-missing-repo"
+        );
+    }
 }

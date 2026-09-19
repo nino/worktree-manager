@@ -16,3 +16,6 @@ uuid = { workspace = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
 regex = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

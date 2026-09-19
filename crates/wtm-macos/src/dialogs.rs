@@ -8,16 +8,18 @@ use std::path::PathBuf;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAlertThirdButtonReturn, NSComboBox,
-    NSControl, NSFont, NSLayoutAttribute, NSLayoutPriorityDefaultLow, NSModalResponse,
-    NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSStackView,
-    NSStackViewDistribution, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
-    NSView, NSWindow,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAlertThirdButtonReturn, NSColor, NSComboBox,
+    NSControl, NSControlTextEditingDelegate, NSFont, NSLayoutAttribute, NSLayoutPriorityDefaultLow,
+    NSLineBreakMode, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking,
+    NSSegmentedControl, NSStackView, NSStackViewDistribution, NSTextAlignment, NSTextField,
+    NSTextFieldDelegate, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
 };
-use objc2_foundation::{NSArray, NSObject, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 use wtm_core::{
     Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, DeleteWorktreeResult,
 };
@@ -36,6 +38,7 @@ pub struct CallbackIvars {
 define_class!(
     /// An `NSObject` whose `invoke:` action runs a Rust closure — the target
     /// for controls inside sheets, where there is no long-lived controller.
+    /// Made a text field's delegate (`watch`), it runs on every keystroke.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "WTMCallback"]
@@ -45,11 +48,20 @@ define_class!(
     impl Callback {
         #[unsafe(method(invoke:))]
         fn invoke(&self, _sender: Option<&AnyObject>) {
-            if let Some(f) = self.ivars().f.borrow().as_ref() {
-                f();
-            }
+            self.call();
         }
     }
+
+    unsafe impl NSObjectProtocol for Callback {}
+
+    unsafe impl NSControlTextEditingDelegate for Callback {
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, _n: &NSNotification) {
+            self.call();
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for Callback {}
 );
 
 impl Callback {
@@ -64,6 +76,18 @@ impl Callback {
         unsafe {
             control.setTarget(Some(self.as_ref()));
             control.setAction(Some(sel!(invoke:)));
+        }
+    }
+
+    /// Run on every keystroke in `field`. A field holds its delegate weakly,
+    /// so the caller keeps this alive as long as the field.
+    pub fn watch(&self, field: &NSTextField) {
+        unsafe { field.setDelegate(Some(ProtocolObject::from_ref(self))) };
+    }
+
+    fn call(&self) {
+        if let Some(f) = self.ivars().f.borrow().as_ref() {
+            f();
         }
     }
 }
@@ -243,10 +267,36 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
         return;
     };
     let a = alert(&format!("New worktree — {}", node.repo.name), "", mtm);
-    a.addButtonWithTitle(&ns("Create"));
+    let create = a.addButtonWithTitle(&ns("Create"));
     a.addButtonWithTitle(&ns("Cancel"));
 
     let branch = text_field("", "e.g., feature/my-thing", mtm);
+    // Why git would refuse the name, checked as it is typed, with Create
+    // off until there is one it would take; a bad name used to become a
+    // failed row under the card. The line is there even when empty: an
+    // alert does not grow once it is on screen.
+    let problem = label("", mtm);
+    problem.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    problem.setTextColor(Some(&NSColor::systemRedColor()));
+    problem.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    create.setEnabled(false);
+    let watcher = {
+        let (branch, problem, create) = (branch.clone(), problem.clone(), create.clone());
+        Callback::new(
+            move || {
+                let name = branch.stringValue().to_string();
+                let name = name.trim();
+                // An empty field is not wrong yet, only not a name.
+                let reason = (!name.is_empty())
+                    .then(|| wtm_core::branch_name::problem(name))
+                    .flatten();
+                problem.setStringValue(&ns(reason.as_deref().unwrap_or("")));
+                create.setEnabled(!name.is_empty() && reason.is_none());
+            },
+            mtm,
+        )
+    };
+    watcher.watch(&branch);
     let modes = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&[ns("New branch"), ns("Existing branch")]),
@@ -281,6 +331,7 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
 
     let f = form(mtm);
     f.addArrangedSubview(&row("Branch name:", &branch, mtm));
+    f.addArrangedSubview(&row("", &problem, mtm));
     f.addArrangedSubview(&row("", &modes, mtm));
     f.addArrangedSubview(&base_row);
     finish(&f);
@@ -290,7 +341,7 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     let app = app.clone();
     let repo_id = repo_id.to_string();
     let default_base = node.default_base_ref.clone();
-    let _keep = toggle; // lives as long as the block below
+    let _keep = (toggle, watcher); // live as long as the block below
     sheet(&a, window, move |resp| {
         let _ = &_keep;
         if resp != NSAlertFirstButtonReturn {
