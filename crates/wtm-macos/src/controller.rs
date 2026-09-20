@@ -26,7 +26,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSURL,
+    NSSize, NSUserDefaults, NSURL,
 };
 use wtm_core::model::Tone;
 use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
@@ -58,6 +58,10 @@ pub fn main_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
 /// How long after a collapse the card is checked to be closed: the outline's
 /// row animation is 0.25s.
 const COLLAPSE_SETTLE_NS: i64 = 400_000_000;
+
+/// Where AppKit kept the window's frame for versions before `ui-state.json`,
+/// which set the frame autosave name `WTMMainWindow`.
+const LEGACY_FRAME_KEY: &str = "NSWindow Frame WTMMainWindow";
 
 const TOOLBAR_ADD: &str = "wtm.add";
 const TOOLBAR_REFRESH: &str = "wtm.refresh";
@@ -102,6 +106,10 @@ pub struct ControllerIvars {
     /// in place of the list's own: it sits at the top with nothing selected,
     /// which is not what should be remembered.
     restore: RefCell<Option<(f64, Option<Focus>)>>,
+    /// The window's frame from before it went full screen, recorded in place
+    /// of the full-screen one until it leaves: the next launch opens a
+    /// window, and a window the size of the screen is not the one to open.
+    frame_before_full_screen: Cell<Option<NSRect>>,
     /// Id of the notice currently displayed, for the auto-clear timer.
     notice_id: Cell<u64>,
     /// When the app last became active; `None` until launch has settled.
@@ -295,6 +303,24 @@ define_class!(
 
         #[unsafe(method(windowDidMove:))]
         fn window_did_move(&self, _n: &NSNotification) {
+            self.remember_ui_state();
+        }
+
+        /// Before the transition starts, so none of its frames is recorded.
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn window_will_enter_full_screen(&self, _n: &NSNotification) {
+            let frame = self.window().map(|w| w.frame());
+            self.ivars().frame_before_full_screen.set(frame);
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn window_did_fail_to_enter_full_screen(&self, _w: &NSWindow) {
+            self.ivars().frame_before_full_screen.set(None);
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn window_did_exit_full_screen(&self, _n: &NSNotification) {
+            self.ivars().frame_before_full_screen.set(None);
             self.remember_ui_state();
         }
     }
@@ -954,6 +980,7 @@ impl Controller {
             query: RefCell::new(String::new()),
             collapsed: RefCell::new(saved.collapsed_repos.into_iter().collect()),
             restore: RefCell::new(Some((saved.scroll, saved.focus))),
+            frame_before_full_screen: Cell::new(None),
             collapsed_before_search: RefCell::new(None),
             notice_id: Cell::new(0),
             last_activation: Cell::new(None),
@@ -1069,7 +1096,11 @@ impl Controller {
             )
         });
         iv.app.store_ui_state(UiState {
-            window: Some(window_frame(window.frame())),
+            window: Some(window_frame(
+                iv.frame_before_full_screen
+                    .get()
+                    .unwrap_or_else(|| window.frame()),
+            )),
             scroll,
             focus,
             // Mid-search every card is open; what is remembered is how they
@@ -1153,8 +1184,14 @@ impl Controller {
 
     fn build_window(&self, mtm: MainThreadMarker) {
         // Read before the window exists: from then on each of its moves is
-        // recorded over this.
-        let saved_frame = self.ivars().app.ui_state().window;
+        // recorded over this. Until a launch has recorded one, the frame
+        // AppKit autosaved for earlier versions is used instead.
+        let saved_frame = self
+            .ivars()
+            .app
+            .ui_state()
+            .window
+            .or_else(legacy_autosaved_frame);
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
@@ -1735,6 +1772,28 @@ fn screen_frames(mtm: MainThreadMarker) -> Vec<WindowFrame> {
         .collect()
 }
 
+/// The frame versions before `ui-state.json` had AppKit autosave. They
+/// restored its size (their `window.center()` replaced only the position), so
+/// without it the first launch after the update would open at the default
+/// size.
+fn legacy_autosaved_frame() -> Option<WindowFrame> {
+    let saved = NSUserDefaults::standardUserDefaults().stringForKey(&ns(LEGACY_FRAME_KEY))?;
+    parse_autosaved_frame(&saved.to_string())
+}
+
+/// AppKit's frame string is the window's frame, `x y width height` in screen
+/// coordinates, followed by the frame of the screen it was on.
+fn parse_autosaved_frame(saved: &str) -> Option<WindowFrame> {
+    let mut numbers = saved.split_whitespace().map(|n| n.parse::<f64>());
+    let mut next = || numbers.next()?.ok();
+    Some(WindowFrame {
+        x: next()?,
+        y: next()?,
+        width: next()?,
+        height: next()?,
+    })
+}
+
 fn window_frame(r: NSRect) -> WindowFrame {
     WindowFrame {
         x: r.origin.x,
@@ -1791,7 +1850,24 @@ fn matches(query: &str, w: &wtm_core::WorktreeInfo, home: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::notice_summary;
+    use super::{notice_summary, parse_autosaved_frame};
+    use wtm_core::WindowFrame;
+
+    #[test]
+    fn an_autosaved_frame_is_read_up_to_the_screen() {
+        assert_eq!(
+            parse_autosaved_frame("256 187 1000 732 0 0 1512 949 "),
+            Some(WindowFrame {
+                x: 256.0,
+                y: 187.0,
+                width: 1000.0,
+                height: 732.0,
+            })
+        );
+        assert_eq!(parse_autosaved_frame(""), None);
+        assert_eq!(parse_autosaved_frame("256 187 1000"), None);
+        assert_eq!(parse_autosaved_frame("256 187 wide 732"), None);
+    }
 
     #[test]
     fn summary_keeps_short_notices_and_folds_long_ones() {
