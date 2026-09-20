@@ -182,13 +182,20 @@ impl RowView {
 
     fn apply_snapshot(&self) {
         let Some(layer) = self.layer() else { return };
-        let snapshot = self.ivars().snapshot.borrow();
+        let image = self
+            .ivars()
+            .snapshot
+            .borrow()
+            .as_ref()
+            .and_then(|rep| rep.CGImage());
+        // `contents` is typed `id`, and a CGImage is the object it takes. The
+        // image comes from the typed binding: sending `CGImage` by hand as an
+        // object return fails objc2's encoding check in debug builds.
+        let contents: *const AnyObject = image
+            .as_ref()
+            .map_or(std::ptr::null(), |i| Retained::as_ptr(i).cast());
         unsafe {
-            let image: *mut AnyObject = match snapshot.as_ref() {
-                Some(rep) => msg_send![&**rep, CGImage],
-                None => std::ptr::null_mut(),
-            };
-            let _: () = msg_send![&*layer, setContents: image];
+            let _: () = msg_send![&*layer, setContents: contents];
         }
     }
 
