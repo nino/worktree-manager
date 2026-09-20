@@ -26,7 +26,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSURL,
+    NSSize, NSUserDefaults, NSURL,
 };
 use wtm_core::model::Tone;
 use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
@@ -58,6 +58,10 @@ pub fn main_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
 /// How long after a collapse the card is checked to be closed: the outline's
 /// row animation is 0.25s.
 const COLLAPSE_SETTLE_NS: i64 = 400_000_000;
+
+/// Where AppKit kept the window's frame for versions before `ui-state.json`,
+/// which set the frame autosave name `WTMMainWindow`.
+const LEGACY_FRAME_KEY: &str = "NSWindow Frame WTMMainWindow";
 
 const TOOLBAR_ADD: &str = "wtm.add";
 const TOOLBAR_REFRESH: &str = "wtm.refresh";
@@ -1163,8 +1167,14 @@ impl Controller {
 
     fn build_window(&self, mtm: MainThreadMarker) {
         // Read before the window exists: from then on each of its moves is
-        // recorded over this.
-        let saved_frame = self.ivars().app.ui_state().window;
+        // recorded over this. Until a launch has recorded one, the frame
+        // AppKit autosaved for earlier versions is used instead.
+        let saved_frame = self
+            .ivars()
+            .app
+            .ui_state()
+            .window
+            .or_else(legacy_autosaved_frame);
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
@@ -1745,6 +1755,28 @@ fn screen_frames(mtm: MainThreadMarker) -> Vec<WindowFrame> {
         .collect()
 }
 
+/// The frame versions before `ui-state.json` had AppKit autosave. They
+/// restored its size (their `window.center()` replaced only the position), so
+/// without it the first launch after the update would open at the default
+/// size.
+fn legacy_autosaved_frame() -> Option<WindowFrame> {
+    let saved = NSUserDefaults::standardUserDefaults().stringForKey(&ns(LEGACY_FRAME_KEY))?;
+    parse_autosaved_frame(&saved.to_string())
+}
+
+/// AppKit's frame string is the window's frame, `x y width height` in screen
+/// coordinates, followed by the frame of the screen it was on.
+fn parse_autosaved_frame(saved: &str) -> Option<WindowFrame> {
+    let mut numbers = saved.split_whitespace().map(|n| n.parse::<f64>());
+    let mut next = || numbers.next()?.ok();
+    Some(WindowFrame {
+        x: next()?,
+        y: next()?,
+        width: next()?,
+        height: next()?,
+    })
+}
+
 fn window_frame(r: NSRect) -> WindowFrame {
     WindowFrame {
         x: r.origin.x,
@@ -1801,7 +1833,24 @@ fn matches(query: &str, w: &wtm_core::WorktreeInfo, home: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::notice_summary;
+    use super::{notice_summary, parse_autosaved_frame};
+    use wtm_core::WindowFrame;
+
+    #[test]
+    fn an_autosaved_frame_is_read_up_to_the_screen() {
+        assert_eq!(
+            parse_autosaved_frame("256 187 1000 732 0 0 1512 949 "),
+            Some(WindowFrame {
+                x: 256.0,
+                y: 187.0,
+                width: 1000.0,
+                height: 732.0,
+            })
+        );
+        assert_eq!(parse_autosaved_frame(""), None);
+        assert_eq!(parse_autosaved_frame("256 187 1000"), None);
+        assert_eq!(parse_autosaved_frame("256 187 wide 732"), None);
+    }
 
     #[test]
     fn summary_keeps_short_notices_and_folds_long_ones() {

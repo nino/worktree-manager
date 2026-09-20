@@ -131,6 +131,12 @@ recorded instead, taken in `windowWillEnterFullScreen:` so that none of the
 transition's frames is: the next launch opens a window, and one the size of
 the screen is not the window that was left.
 
+Earlier versions set the frame autosave name `WTMMainWindow`, so AppKit kept
+the frame in the user defaults (`NSWindow Frame WTMMainWindow`) and restored
+its size; `window.center()` replaced only the position. Until `ui-state.json`
+has a frame, that one is used, through the same on-screen check, so the first
+launch after the update keeps the window's size.
+
 Restoring has two wrinkles. A frame is only reused when at least half of it
 lands on a screen's visible frame, summed across screens so a window that
 straddled two comes back straddling; a display that has been unplugged would
