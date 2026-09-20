@@ -2,20 +2,24 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 version: 2
 updates:
-  # pnpm workspace at the repo root; "npm" is the ecosystem name Dependabot
-  # uses for pnpm lockfiles too.
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    groups:
-      js-dependencies:
-        patterns:
-          - "*"
-
   # Keep the actions in .github/workflows from going stale.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # The workspace root; Dependabot follows `members` from there.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # The objc2 crates share types across their API boundaries, so a bump
+      # that lands on its own stops the others compiling. They have to move
+      # together or not at all.
+      objc2:
+        patterns:
+          - "objc2*"
+          - "block2"
+          - "dispatch2"

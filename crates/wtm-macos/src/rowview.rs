@@ -18,11 +18,12 @@ use objc2::{
     Message,
 };
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSBezierPath, NSBitmapImageRep,
-    NSColor, NSDeviceRGBColorSpace, NSGradient, NSGraphicsContext, NSImage, NSShadow,
-    NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
+    NSBezierPath, NSBitmapImageRep, NSColor, NSDeviceRGBColorSpace, NSGradient, NSGraphicsContext,
+    NSImage, NSShadow, NSTableRowView, NSView, NSViewLayerContentsRedrawPolicy,
 };
-use objc2_foundation::{NSArray, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+
+use crate::util::{by_appearance, drawing_dark};
 
 /// Space above each card (between cards).
 pub const CARD_GAP: f64 = 12.0;
@@ -223,16 +224,6 @@ impl RowView {
 
 // MARK: Palette
 
-/// Whether the appearance being drawn into is a dark one.
-fn drawing_dark() -> bool {
-    let names = NSArray::from_slice(&[unsafe { NSAppearanceNameAqua }, unsafe {
-        NSAppearanceNameDarkAqua
-    }]);
-    NSAppearance::currentDrawingAppearance()
-        .bestMatchFromAppearancesWithNames(&names)
-        .is_some_and(|name| &*name == unsafe { NSAppearanceNameDarkAqua })
-}
-
 fn card_fill() -> Retained<NSColor> {
     NSColor::controlBackgroundColor()
 }
@@ -243,11 +234,11 @@ fn card_border() -> Retained<NSColor> {
     NSColor::separatorColor().colorWithAlphaComponent(0.42)
 }
 
-/// The well the plates sit in: the window ground, toned a little towards the
-/// card, so it reads as recessed under the raised plates.
+/// Recessed well under the plates. Dark Aqua's window and control fills are
+/// nearly the same colour, so the well has to be pushed down by hand.
 fn well_fill() -> Retained<NSColor> {
     NSColor::windowBackgroundColor()
-        .blendedColorWithFraction_ofColor(0.02, &NSColor::blackColor())
+        .blendedColorWithFraction_ofColor(by_appearance(0.02, 0.42), &NSColor::blackColor())
         .unwrap_or_else(NSColor::windowBackgroundColor)
 }
 
@@ -325,7 +316,9 @@ fn build_grain() -> Retained<NSColor> {
     NSColor::colorWithPatternImage(&image)
 }
 
-/// Plates are raised: the card colour, lifted by a drop shadow.
+/// Raised plates: card colour, with the drop shadow doing the lift. The well
+/// is darkened instead of lifting this fill, so the face of the window stays
+/// the system control colour.
 fn plate_fill() -> Retained<NSColor> {
     NSColor::controlBackgroundColor()
 }
@@ -375,17 +368,21 @@ fn shadow(blur: f64, dy: f64, alpha: f64) {
 
 // MARK: Drawing
 
-/// The keyboard selection: an accent-coloured outline with a glow, around the
-/// header band of a repo or the plate of a worktree.
+/// Keyboard selection: accent outline plus glow, dimmed when dark so it
+/// doesn't bloom.
 fn draw_selection(path: &NSBezierPath) {
     NSGraphicsContext::saveGraphicsState_class();
     let accent = NSColor::controlAccentColor();
     let glow = NSShadow::new();
-    glow.setShadowColor(Some(&accent.colorWithAlphaComponent(0.7)));
-    glow.setShadowBlurRadius(5.0);
+    glow.setShadowColor(Some(
+        &accent.colorWithAlphaComponent(by_appearance(0.7, 0.30)),
+    ));
+    glow.setShadowBlurRadius(by_appearance(5.0, 3.0));
     glow.setShadowOffset(NSSize::new(0.0, 0.0));
     glow.set();
-    accent.colorWithAlphaComponent(0.9).setStroke();
+    accent
+        .colorWithAlphaComponent(by_appearance(0.9, 0.75))
+        .setStroke();
     path.setLineWidth(2.0);
     path.stroke();
     NSGraphicsContext::restoreGraphicsState_class();
@@ -445,9 +442,13 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                     })
                     .unwrap_or_else(|| base.clone())
             };
-            // Light on top in the dark appearance, the way a lit surface reads
-            // there, and the other way round in the light one.
-            let (deep, shallow) = (tone(0.26, 0.06), tone(0.12, 0.02));
+            // Light on top when dark. Weaker blue there: a wash on a light
+            // card is a coloured band on a near-black one.
+            let (deep, shallow) = if dark {
+                (tone(0.12, 0.05), tone(0.05, 0.02))
+            } else {
+                (tone(0.26, 0.06), tone(0.12, 0.02))
+            };
             let (top, bottom) = if dark {
                 (shallow, deep)
             } else {
@@ -467,12 +468,13 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
             ) {
                 g.drawInBezierPath_angle(&band_path, -90.0);
             }
-            // Grain over the band, like brushed metal under glass.
-            grain().setFill();
-            band_path.fill();
-            // The Aqua bevel. Faint in the dark appearance, where a bright
-            // line just inside the card's own border reads as a second border
-            // rather than as a lit edge.
+            // Grain reads as dither on a dark ground.
+            if !dark {
+                grain().setFill();
+                band_path.fill();
+            }
+            // Hairline bevel. Faint when dark: a bright inner line reads as a
+            // second border.
             NSColor::whiteColor()
                 .colorWithAlphaComponent(if dark { 0.10 } else { 0.35 })
                 .setFill();
@@ -588,12 +590,13 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
             plate_fill().setFill();
             plate_path.fill();
             NSGraphicsContext::restoreGraphicsState_class();
-            // A faint highlight along the plate's top edge, like a machined bevel.
             let bevel = NSRect::new(
                 NSPoint::new(plate.origin.x + 1.0, plate.origin.y + 0.5),
                 NSSize::new(plate.size.width - 2.0, 1.0),
             );
-            NSColor::whiteColor().colorWithAlphaComponent(0.3).setFill();
+            NSColor::whiteColor()
+                .colorWithAlphaComponent(by_appearance(0.30, 0.10))
+                .setFill();
             NSBezierPath::bezierPathWithRect(bevel).fill();
             NSColor::separatorColor()
                 .colorWithAlphaComponent(0.34)
