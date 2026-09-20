@@ -1,3 +1,6 @@
 /target
 .DS_Store
 *.log
+
+# proptest replays a failure it saved here; a real one becomes a unit test instead
+*.proptest-regressions

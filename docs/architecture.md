@@ -11,6 +11,7 @@ cargo test                # unit tests + an end-to-end core test on a temp repo
 scripts/bundle.sh         # release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install   # …and copy it to /Applications
 WTM_USER_DATA=/tmp/x cargo run   # sandboxed config dir (never touches real config)
+scripts/monkey.sh         # random input on a debug build, in a sandbox, until it crashes
 ```
 
 Config lives in `~/Library/Application Support/Worktree Manager/config.json`,

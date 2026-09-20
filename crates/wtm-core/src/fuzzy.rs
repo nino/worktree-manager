@@ -9,7 +9,9 @@ pub struct Match {
     pub start: usize,
     /// Distance between the first and last matched characters.
     pub span: usize,
-    /// Character index of each matched query character, in order.
+    /// Character index into the candidate of each matched character, in
+    /// order. Two query characters can land on one candidate character, so
+    /// there may be fewer positions than query characters.
     pub positions: Vec<usize>,
 }
 
@@ -18,10 +20,19 @@ pub struct Match {
 /// subsequence. An empty query matches everything at position 0.
 pub fn fuzzy_match(query: &str, candidate: &str) -> Option<Match> {
     let mut positions = Vec::with_capacity(query.chars().count());
-    let mut chars = candidate.chars().flat_map(char::to_lowercase).enumerate();
+    // Lowercasing can turn one character into two (`İ` is `i` plus a
+    // combining dot), so each lowercased character keeps the index of the
+    // character it came from; counting the lowercased ones would shift every
+    // position after an `İ` onto the wrong letter.
+    let mut chars = candidate
+        .chars()
+        .enumerate()
+        .flat_map(|(i, c)| c.to_lowercase().map(move |l| (i, l)));
     for qc in query.chars().flat_map(char::to_lowercase) {
         let (i, _) = chars.by_ref().find(|(_, c)| *c == qc)?;
-        positions.push(i);
+        if positions.last() != Some(&i) {
+            positions.push(i);
+        }
     }
     let start = positions.first().copied().unwrap_or(0);
     let span = positions.last().map(|l| l - start).unwrap_or(0);
@@ -72,6 +83,14 @@ mod tests {
             fuzzy_match("", "main").unwrap().positions,
             Vec::<usize>::new()
         );
+    }
+
+    #[test]
+    fn positions_index_the_candidate_as_written() {
+        // `İ` lowercases to two characters; the `a` is still the third.
+        assert_eq!(fuzzy_match("A", "İ\ta").unwrap().positions, vec![2]);
+        // A query holding both halves matches the one character once.
+        assert_eq!(fuzzy_match("i\u{307}", "İx").unwrap().positions, vec![0]);
     }
 
     #[test]
