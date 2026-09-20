@@ -437,7 +437,9 @@ proptest! {
 }
 
 proptest! {
-    // Each case starts a shell, so fewer of them.
+    // Each case starts a shell, so fewer of them by default. PROPTEST_CASES
+    // wins over this, so the deep run in the header above starts one shell
+    // per case — 100,000 of them, a few minutes.
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// Paths are user-controlled (a folder name, a branch slug), and the

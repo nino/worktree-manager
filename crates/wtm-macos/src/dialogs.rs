@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -280,23 +281,6 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     problem.setTextColor(Some(&NSColor::systemRedColor()));
     problem.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     create.setEnabled(false);
-    let watcher = {
-        let (branch, problem, create) = (branch.clone(), problem.clone(), create.clone());
-        Callback::new(
-            move || {
-                let name = branch.stringValue().to_string();
-                let name = name.trim();
-                // An empty field is not wrong yet, only not a name.
-                let reason = (!name.is_empty())
-                    .then(|| wtm_core::branch_name::problem(name))
-                    .flatten();
-                problem.setStringValue(&ns(reason.as_deref().unwrap_or("")));
-                create.setEnabled(!name.is_empty() && reason.is_none());
-            },
-            mtm,
-        )
-    };
-    watcher.watch(&branch);
     let modes = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &NSArray::from_retained_slice(&[ns("New branch"), ns("Existing branch")]),
@@ -321,10 +305,54 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     base.setPlaceholderString(Some(&ns(&format!("e.g., {}", node.default_base_ref))));
 
     let base_row = row("Base ref:", &base, mtm);
+    // git judges a base ref by the same rules, and one it refuses became the
+    // same failed row, so both fields are checked.
+    let validate: Rc<dyn Fn()> = {
+        let (branch, base, modes, problem, create) = (
+            branch.clone(),
+            base.clone(),
+            modes.clone(),
+            problem.clone(),
+            create.clone(),
+        );
+        Rc::new(move || {
+            let name = branch.stringValue().to_string();
+            let name = name.trim();
+            let base_ref = base.stringValue().to_string();
+            let base_ref = base_ref.trim();
+            // An empty name is not wrong yet, only not a name; an empty base
+            // ref means the repo's trunk, and it is only used for a new
+            // branch.
+            let reason = (!name.is_empty())
+                .then(|| wtm_core::branch_name::problem(name))
+                .flatten()
+                .or_else(|| {
+                    (modes.selectedSegment() == 0 && !base_ref.is_empty())
+                        .then(|| wtm_core::branch_name::problem(base_ref))
+                        .flatten()
+                        .map(|reason| format!("Base ref: {reason}"))
+                });
+            problem.setStringValue(&ns(reason.as_deref().unwrap_or("")));
+            create.setEnabled(!name.is_empty() && reason.is_none());
+        })
+    };
+    let watcher = Callback::new(
+        {
+            let validate = validate.clone();
+            move || validate()
+        },
+        mtm,
+    );
+    watcher.watch(&branch);
+    watcher.watch(&base);
     let modes_c = modes.clone();
     let base_row_c = base_row.clone();
     let toggle = Callback::new(
-        move || base_row_c.setHidden(modes_c.selectedSegment() != 0),
+        move || {
+            base_row_c.setHidden(modes_c.selectedSegment() != 0);
+            // A base ref that no longer applies must not hold Create back.
+            validate();
+        },
         mtm,
     );
     toggle.attach(&modes);

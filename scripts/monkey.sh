@@ -77,7 +77,8 @@ if [[ -z $binary ]]; then
     (cd "$root" && cargo build)
   fi
 fi
-[[ -x $binary ]] || { echo "no binary at $binary" >&2; exit 2; }
+# --sandbox makes demo repos and stops; it never runs the app.
+(( sandbox_only )) || [[ -x $binary ]] || { echo "no binary at $binary" >&2; exit 2; }
 
 # MARK: Sandbox
 
