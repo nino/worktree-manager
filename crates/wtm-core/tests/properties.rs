@@ -22,7 +22,7 @@ use wtm_core::command::build_command;
 use wtm_core::config::ConfigStore;
 use wtm_core::fuzzy::{fuzzy_filter, fuzzy_match};
 use wtm_core::git::{
-    parse_left_right_count, parse_ref_candidates, parse_status_porcelain_v2,
+    nonempty_lines, parse_left_right_count, parse_refs, parse_status_porcelain_v2,
     parse_worktree_porcelain, GitError, ParsedWorktree,
 };
 use wtm_core::paths::{sanitize_repo_name, slugify_branch, tildify, worktree_path_for};
@@ -233,7 +233,8 @@ proptest! {
         parse_worktree_porcelain(&text);
         parse_status_porcelain_v2(&text);
         parse_left_right_count(&text);
-        parse_ref_candidates(&text);
+        parse_refs(&text);
+        nonempty_lines(&text);
     }
 
     #[test]
@@ -284,22 +285,29 @@ proptest! {
     }
 
     #[test]
-    fn ref_candidates_keep_every_real_branch_in_order(
+    fn refs_keep_every_real_branch_in_order(
         refs in prop::collection::vec(
-            ("[A-Za-z0-9._/-]{1,20}", prop::option::of("refs/[a-z/]{1,20}")),
+            (
+                prop::sample::select(vec!["heads", "remotes"]),
+                "[A-Za-z0-9._/-]{1,20}",
+                prop::option::of("refs/[a-z/]{1,20}"),
+            ),
             0..10,
         ),
     ) {
         let text: String = refs
             .iter()
-            .map(|(name, symref)| format!("{name}\t{}\n", symref.as_deref().unwrap_or("")))
+            .map(|(kind, name, symref)| {
+                format!("refs/{kind}/{name}\t{name}\t{}\n", symref.as_deref().unwrap_or(""))
+            })
             .collect();
-        let expected: Vec<String> = refs
-            .into_iter()
-            .filter(|(_, symref)| symref.is_none())
-            .map(|(name, _)| name)
+        let real = || refs.iter().filter(|(_, _, symref)| symref.is_none());
+        let candidates: Vec<String> = real().map(|(_, name, _)| name.clone()).collect();
+        let remote: Vec<String> = real()
+            .filter(|(kind, _, _)| *kind == "remotes")
+            .map(|(_, name, _)| name.clone())
             .collect();
-        prop_assert_eq!(parse_ref_candidates(&text), expected);
+        prop_assert_eq!(parse_refs(&text), (candidates, remote));
     }
 }
 

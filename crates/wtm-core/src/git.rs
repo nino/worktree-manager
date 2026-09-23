@@ -4,9 +4,10 @@
 //! the UI thread. A global semaphore bounds concurrency so refreshing many
 //! worktrees at once does not fork-storm the machine.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use tokio::process::Command;
 use tokio::sync::Semaphore;
@@ -246,21 +247,39 @@ pub fn parse_left_right_count(output: &str) -> (u32, u32) {
     (behind, ahead)
 }
 
-/// Parse `for-each-ref --format=%(refname:short)%09%(symref)`, dropping
-/// symbolic refs (e.g. `origin/HEAD`, an alias rather than a real branch).
-pub fn parse_ref_candidates(output: &str) -> Vec<String> {
+/// The non-blank lines of git's output, trimmed.
+pub fn nonempty_lines(output: &str) -> Vec<String> {
     output
         .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| {
-            let (name, symref) = l.split_once('\t').unwrap_or((l, ""));
-            if !symref.is_empty() || name.is_empty() {
-                None
-            } else {
-                Some(name.to_string())
-            }
-        })
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
         .collect()
+}
+
+/// Parse `for-each-ref --format=%(refname)%09%(refname:short)%09%(symref)`
+/// over `refs/heads` and `refs/remotes` into the base-ref candidates (short
+/// names) and the remote-tracking branches as `<remote>/<branch>`. Those are
+/// taken from the full name, because `:short` writes `remotes/origin/x` when
+/// a local branch is also called `origin/x`. Symbolic refs (`origin/HEAD`,
+/// an alias rather than a real branch) are dropped.
+pub fn parse_refs(output: &str) -> (Vec<String>, Vec<String>) {
+    let mut candidates = Vec::new();
+    let mut remote_branches = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.split('\t');
+        let (Some(full), Some(short)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if short.is_empty() || !fields.next().unwrap_or("").is_empty() {
+            continue;
+        }
+        candidates.push(short.to_string());
+        if let Some(remote_branch) = full.strip_prefix("refs/remotes/") {
+            remote_branches.push(remote_branch.to_string());
+        }
+    }
+    (candidates, remote_branches)
 }
 
 // MARK: High-level operations
@@ -422,27 +441,43 @@ pub async fn list_branches(repo_path: &str) -> GitResult<Vec<String>> {
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
     )
     .await?;
-    Ok(out
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect())
+    Ok(nonempty_lines(&out))
 }
 
-/// List local branches and remote-tracking branches, for base-ref suggestions.
-pub async fn list_base_ref_candidates(repo_path: &str) -> GitResult<Vec<String>> {
+/// Local and remote-tracking branches for base-ref suggestions, and the
+/// remote-tracking ones again as `<remote>/<branch>` (see [`parse_refs`]).
+pub async fn list_refs(repo_path: &str) -> GitResult<(Vec<String>, Vec<String>)> {
     let out = run_git(
         repo_path,
         &[
             "for-each-ref",
-            "--format=%(refname:short)%09%(symref)",
+            "--format=%(refname)%09%(refname:short)%09%(symref)",
             "refs/heads",
             "refs/remotes",
         ],
     )
     .await?;
-    Ok(parse_ref_candidates(&out))
+    Ok(parse_refs(&out))
+}
+
+/// Every remote-tracking ref and the commit it points at, to tell whether a
+/// fetch moved anything.
+pub async fn remote_refs_state(repo_path: &str) -> GitResult<String> {
+    run_git(
+        repo_path,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/remotes",
+        ],
+    )
+    .await
+}
+
+/// The repo's remotes, in `git remote` order.
+pub async fn list_remotes(repo_path: &str) -> GitResult<Vec<String>> {
+    let out = run_git(repo_path, &["remote"]).await?;
+    Ok(nonempty_lines(&out))
 }
 
 /// Validate a user-supplied branch/ref name (also rejects a leading `-`,
@@ -480,26 +515,67 @@ pub async fn fetch_repo(repo_path: &str) -> GitResult<()> {
     run_git(repo_path, &["fetch", "--prune"]).await.map(|_| ())
 }
 
+/// `git fetch --all --prune`: every remote, not only the default one.
+pub async fn fetch_all_remotes(repo_path: &str) -> GitResult<()> {
+    run_git(repo_path, &["fetch", "--quiet", "--all", "--prune"])
+        .await
+        .map(|_| ())
+}
+
+/// Held while a repo's remote-tracking refs are fetched, or while a worktree
+/// is made from one. Two fetches of the same repo would otherwise fight over
+/// a ref's lock file, and a fetch could move the ref a checkout is reading.
+pub async fn lock_refs(repo_path: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    type Locks = parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+    static LOCKS: OnceLock<Locks> = OnceLock::new();
+    let lock = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .entry(repo_path.to_string())
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+/// Fetch one branch from one remote, which moves its remote-tracking branch
+/// too. The name goes in as `refs/heads/<branch>` because git would read a
+/// bare `+x`, a valid branch name, as a forced fetch of `x`.
+pub async fn fetch_branch(repo_path: &str, remote: &str, branch: &str) -> GitResult<()> {
+    let source = format!("refs/heads/{branch}");
+    run_git(repo_path, &["fetch", "--quiet", "--", remote, &source])
+        .await
+        .map(|_| ())
+}
+
+/// Where a new worktree's branch comes from.
+pub enum AddBranch<'a> {
+    /// A new branch starting at `base`. `--no-track`: even when basing off
+    /// origin/main, the new branch must not adopt it as upstream — "push
+    /// sets upstream on first push" relies on the branch having no upstream
+    /// until pushed.
+    New { base: &'a str },
+    /// A local branch that already exists.
+    Existing,
+    /// A new branch that tracks `upstream`, a full remote-tracking ref such
+    /// as `refs/remotes/origin/fix`, so that push and pull work in it from
+    /// the start. The full ref cannot be mistaken for a tag or a local branch
+    /// that happens to be called `origin/fix`.
+    Tracking { upstream: &'a str },
+}
+
 /// Create a new worktree.
 pub async fn add_worktree(
     repo_path: &str,
     worktree_path: &str,
     branch: &str,
-    new_branch: bool,
-    base_ref: Option<&str>,
+    how: AddBranch<'_>,
 ) -> GitResult<()> {
-    let mut args: Vec<&str> = vec!["worktree", "add"];
-    if new_branch {
-        // --no-track: even when basing off origin/main, the new branch must not
-        // adopt it as upstream — "push sets upstream on first push" relies on
-        // the branch having no upstream until pushed.
-        args.extend(["--no-track", "-b", branch, worktree_path]);
-        if let Some(b) = base_ref {
-            args.push(b);
-        }
-    } else {
-        args.extend([worktree_path, branch]);
-    }
+    let args: &[&str] = match how {
+        AddBranch::New { base } => &["--no-track", "-b", branch, worktree_path, base],
+        AddBranch::Existing => &[worktree_path, branch],
+        AddBranch::Tracking { upstream } => &["--track", "-b", branch, worktree_path, upstream],
+    };
+    let args: Vec<&str> = ["worktree", "add"].iter().chain(args).copied().collect();
     run_git(repo_path, &args).await.map(|_| ())
 }
 
@@ -558,13 +634,25 @@ mod tests {
     }
 
     #[test]
-    fn ref_candidates_drop_symrefs_and_blanks() {
-        let out = "main\t\nfeature/foo\t\norigin/main\t\norigin/HEAD\trefs/remotes/origin/main\n\n";
-        assert_eq!(
-            parse_ref_candidates(out),
-            vec!["main", "feature/foo", "origin/main"]
-        );
-        assert!(parse_ref_candidates("").is_empty());
+    fn refs_drop_symrefs_and_blanks() {
+        let out = "refs/heads/main\tmain\t\n\
+                   refs/heads/feature/foo\tfeature/foo\t\n\
+                   refs/remotes/origin/main\torigin/main\t\n\
+                   refs/remotes/origin/HEAD\torigin/HEAD\trefs/remotes/origin/main\n\n";
+        let (candidates, remote) = parse_refs(out);
+        assert_eq!(candidates, vec!["main", "feature/foo", "origin/main"]);
+        assert_eq!(remote, vec!["origin/main"]);
+        assert_eq!(parse_refs(""), (vec![], vec![]));
+    }
+
+    #[test]
+    fn remote_branches_come_from_the_full_name() {
+        // A local branch called origin/x makes git's short names longer.
+        let out = "refs/heads/origin/x\theads/origin/x\t\n\
+                   refs/remotes/origin/x\tremotes/origin/x\t\n";
+        let (candidates, remote) = parse_refs(out);
+        assert_eq!(candidates, vec!["heads/origin/x", "remotes/origin/x"]);
+        assert_eq!(remote, vec!["origin/x"]);
     }
 
     #[test]

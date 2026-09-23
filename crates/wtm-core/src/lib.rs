@@ -23,6 +23,7 @@ pub mod fetcher;
 pub mod fuzzy;
 pub mod git;
 pub mod model;
+pub mod new_worktree;
 pub mod paths;
 pub mod repos;
 pub mod types;
@@ -32,6 +33,6 @@ pub mod watcher;
 pub mod worktrees;
 
 pub use app::{Action, App, Event, Reply};
-pub use model::{Busy, Model, PendingCreation, RepoNode};
+pub use model::{BranchLocation, Busy, Model, PendingCreation, RepoNode};
 pub use types::*;
 pub use ui_state::{Focus, UiState, WindowFrame};

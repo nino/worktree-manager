@@ -22,10 +22,11 @@ use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use wtm_core::{
-    Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, DeleteWorktreeResult,
+    new_worktree, Action, App, BranchLocation, CreateWorktreeParams, DeleteRefusal,
+    DeleteWorktreeParams, DeleteWorktreeResult,
 };
 
-use crate::util::{label, ns};
+use crate::util::{label, ns, secondary_label};
 
 pub(crate) const FORM_WIDTH: f64 = 420.0;
 const LABEL_WIDTH: f64 = 120.0;
@@ -274,12 +275,11 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     let branch = text_field("", "e.g., feature/my-thing", mtm);
     // Why git would refuse the name, checked as it is typed, with Create
     // off until there is one it would take; a bad name used to become a
-    // failed row under the card. The line is there even when empty: an
-    // alert does not grow once it is on screen.
-    let problem = label("", mtm);
-    problem.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-    problem.setTextColor(Some(&NSColor::systemRedColor()));
-    problem.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    // failed row under the card. It also says when the branch will come
+    // from a remote. The line is there even when empty: an alert does not
+    // grow once it is on screen.
+    let note = secondary_label("", 11.0, mtm);
+    note.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
     create.setEnabled(false);
     let modes = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
@@ -305,35 +305,46 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     base.setPlaceholderString(Some(&ns(&format!("e.g., {}", node.default_base_ref))));
 
     let base_row = row("Base ref:", &base, mtm);
-    // git judges a base ref by the same rules, and one it refuses became the
-    // same failed row, so both fields are checked.
+    // Where the name was last found, with the name, so that Create sends what
+    // the note showed and not what a listing that has landed since, and not
+    // yet been shown, would say.
+    let shown = Rc::new(RefCell::new((String::new(), BranchLocation::Nowhere)));
     let validate: Rc<dyn Fn()> = {
-        let (branch, base, modes, problem, create) = (
+        let (app, repo_id, branch, base, modes, note, create, shown) = (
+            app.clone(),
+            repo_id.to_string(),
             branch.clone(),
             base.clone(),
             modes.clone(),
-            problem.clone(),
+            note.clone(),
             create.clone(),
+            shown.clone(),
         );
         Rc::new(move || {
             let name = branch.stringValue().to_string();
-            let name = name.trim();
-            let base_ref = base.stringValue().to_string();
-            let base_ref = base_ref.trim();
-            // An empty name is not wrong yet, only not a name; an empty base
-            // ref means the repo's trunk, and it is only used for a new
-            // branch.
-            let reason = (!name.is_empty())
-                .then(|| wtm_core::branch_name::problem(name))
-                .flatten()
-                .or_else(|| {
-                    (modes.selectedSegment() == 0 && !base_ref.is_empty())
-                        .then(|| wtm_core::branch_name::problem(base_ref))
-                        .flatten()
-                        .map(|reason| format!("Base ref: {reason}"))
-                });
-            problem.setStringValue(&ns(reason.as_deref().unwrap_or("")));
-            create.setEnabled(!name.is_empty() && reason.is_none());
+            let place = locate(&app, &repo_id, name.trim());
+            let check = new_worktree::check(
+                &name,
+                modes.selectedSegment() == 0,
+                &base.stringValue().to_string(),
+                &place,
+            );
+            *shown.borrow_mut() = (name.trim().to_string(), place);
+            let (text, color) = match &check.create {
+                Err(reason) => (reason.clone(), NSColor::systemRedColor()),
+                Ok(_) => (
+                    check.note.clone().unwrap_or_default(),
+                    NSColor::secondaryLabelColor(),
+                ),
+            };
+            note.setTextColor(Some(&color));
+            note.setStringValue(&ns(&text));
+            // Not while it is being typed in: a fetch landing mid-edit would
+            // take the keyboard away from it.
+            if !check.from_remote || base.currentEditor().is_none() {
+                base.setEnabled(!check.from_remote);
+            }
+            create.setEnabled(check.create.is_ok());
         })
     };
     let watcher = Callback::new(
@@ -348,10 +359,13 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     let modes_c = modes.clone();
     let base_row_c = base_row.clone();
     let toggle = Callback::new(
-        move || {
-            base_row_c.setHidden(modes_c.selectedSegment() != 0);
-            // A base ref that no longer applies must not hold Create back.
-            validate();
+        {
+            let validate = validate.clone();
+            move || {
+                base_row_c.setHidden(modes_c.selectedSegment() != 0);
+                // A base ref that no longer applies must not hold Create back.
+                validate();
+            }
         },
         mtm,
     );
@@ -359,44 +373,74 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
 
     let f = form(mtm);
     f.addArrangedSubview(&row("Branch name:", &branch, mtm));
-    f.addArrangedSubview(&row("", &problem, mtm));
+    f.addArrangedSubview(&row("", &note, mtm));
     f.addArrangedSubview(&row("", &modes, mtm));
     f.addArrangedSubview(&base_row);
     finish(&f);
     a.setAccessoryView(Some(&f));
     a.window().setInitialFirstResponder(Some(&branch));
 
+    // The remote branches known now are as of the last fetch, which can be
+    // minutes old; a branch pushed since would be taken for a new one. Fetch,
+    // and check the name again when the listing lands.
+    OPEN_SHEET_CHECKS.with(|c| c.borrow_mut().push(validate.clone()));
+    app.dispatch(Action::FetchRepo(repo_id.to_string()));
+
     let app = app.clone();
     let repo_id = repo_id.to_string();
-    let default_base = node.default_base_ref.clone();
     let _keep = (toggle, watcher); // live as long as the block below
     sheet(&a, window, move |resp| {
         let _ = &_keep;
+        OPEN_SHEET_CHECKS.with(|c| c.borrow_mut().retain(|f| !Rc::ptr_eq(f, &validate)));
         if resp != NSAlertFirstButtonReturn {
             return;
         }
         let name = branch.stringValue().to_string();
-        if name.trim().is_empty() {
-            return;
-        }
-        let new_branch = modes.selectedSegment() == 0;
-        let base_ref = if new_branch {
-            let b = base.stringValue().to_string();
-            Some(if b.trim().is_empty() {
-                default_base.clone()
-            } else {
-                b.trim().to_string()
-            })
+        let (shown_name, place) = shown.borrow().clone();
+        let place = if shown_name == name.trim() {
+            place
         } else {
-            None
+            locate(&app, &repo_id, name.trim())
+        };
+        let check = new_worktree::check(
+            &name,
+            modes.selectedSegment() == 0,
+            &base.stringValue().to_string(),
+            &place,
+        );
+        // Create is off whenever this is an error.
+        let Ok(source) = check.create else {
+            return;
         };
         app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
             repo_id: repo_id.clone(),
             branch: name.trim().to_string(),
-            new_branch,
-            base_ref,
+            source,
         }));
     });
+}
+
+/// Where the latest listing of `repo_id` puts a branch called `name`.
+fn locate(app: &App, repo_id: &str, name: &str) -> BranchLocation {
+    app.model()
+        .repo(repo_id)
+        .map(|n| n.locate_branch(name))
+        .unwrap_or(BranchLocation::Nowhere)
+}
+
+thread_local! {
+    /// Each open New Worktree sheet's check of its fields, run again on every
+    /// model change while the sheet is up. There can be more than one: ⌘N
+    /// while a sheet is up queues another.
+    static OPEN_SHEET_CHECKS: RefCell<Vec<Rc<dyn Fn()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Called by the controller on every model change, on the main thread.
+pub fn model_changed() {
+    // Cloned out, so the cell is not borrowed while AppKit runs the checks.
+    for check in OPEN_SHEET_CHECKS.with(|c| c.borrow().clone()) {
+        check();
+    }
 }
 
 // MARK: Repo settings

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use log::warn;
 
-use crate::git::{fetch_repo, has_remote};
+use crate::git::{fetch_repo, has_remote, lock_refs};
 use crate::types::RepoConfig;
 
 /// How often to fetch: 8 minutes and 43 seconds.
@@ -19,6 +19,7 @@ pub async fn fetch_all(repos: Vec<RepoConfig>) -> usize {
             if !has_remote(&repo.path, "origin").await {
                 return false;
             }
+            let _refs = lock_refs(&repo.path).await;
             match fetch_repo(&repo.path).await {
                 Ok(()) => true,
                 Err(e) => {

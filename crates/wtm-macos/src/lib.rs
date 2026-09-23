@@ -4,7 +4,6 @@
 //! Layering: this crate depends on `wtm-core` and `wtm-platform`; nothing in
 //! the core depends on it. The executable calls [`run`] with a core `App`.
 
-pub mod announcement;
 pub mod badge;
 pub mod branchlabel;
 pub mod button;

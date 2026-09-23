@@ -58,6 +58,15 @@ pub struct RepoNode {
     pub branches: Vec<String>,
     /// Local + remote-tracking branches, for the base-ref picker.
     pub base_ref_candidates: Vec<String>,
+    /// The repo's remotes, in `git remote` order. Neither this nor
+    /// `remote_branches` is in the snapshot: only the New Worktree sheet reads
+    /// them, and the first listing after launch fills them in.
+    #[serde(skip)]
+    pub remotes: Vec<String>,
+    /// Remote-tracking branches as `<remote>/<branch>`, for finding a branch
+    /// that only a remote has.
+    #[serde(skip)]
+    pub remote_branches: Vec<String>,
     /// Populated if listing worktrees failed.
     pub error: Option<String>,
     /// False until the first listing after launch has completed (a cached
@@ -74,6 +83,8 @@ impl RepoNode {
             worktrees: Vec::new(),
             branches: Vec::new(),
             base_ref_candidates: Vec::new(),
+            remotes: Vec::new(),
+            remote_branches: Vec::new(),
             error: None,
             loaded: false,
         }
@@ -82,6 +93,42 @@ impl RepoNode {
     pub fn worktree(&self, path: &str) -> Option<&WorktreeInfo> {
         self.worktrees.iter().find(|w| w.path == path)
     }
+
+    /// Where the last listing saw a branch called `branch`. Each remote is
+    /// asked for `<remote>/<branch>`, as git maps a remote's branches, rather
+    /// than each ref being split at a slash: a remote's name can have one.
+    pub fn locate_branch(&self, branch: &str) -> BranchLocation {
+        if self.branches.iter().any(|b| b == branch) {
+            return BranchLocation::Local;
+        }
+        let mut on: Vec<String> = self
+            .remotes
+            .iter()
+            .filter(|remote| {
+                let tracking = format!("{remote}/{branch}");
+                self.remote_branches.iter().any(|r| *r == tracking)
+            })
+            .cloned()
+            .collect();
+        match on.len() {
+            0 => BranchLocation::Nowhere,
+            1 => BranchLocation::Remote(on.remove(0)),
+            _ => BranchLocation::Remotes(on),
+        }
+    }
+}
+
+/// Where a branch named in the New Worktree sheet is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchLocation {
+    /// There is a local branch of that name.
+    Local,
+    /// Not a local branch, and this remote is the only one that has it.
+    Remote(String),
+    /// Not a local branch, and each of these remotes has one of that name,
+    /// so which is meant cannot be told.
+    Remotes(Vec<String>),
+    Nowhere,
 }
 
 /// Tone of the one-line notice under the toolbar.
@@ -155,5 +202,83 @@ impl Model {
                 None => RepoNode::placeholder(repo.clone()),
             })
             .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(branches: &[&str], remotes: &[&str], remote_branches: &[&str]) -> RepoNode {
+        let strings = |s: &[&str]| s.iter().map(|s| s.to_string()).collect();
+        RepoNode {
+            branches: strings(branches),
+            remotes: strings(remotes),
+            remote_branches: strings(remote_branches),
+            ..RepoNode::placeholder(RepoConfig {
+                id: "r".into(),
+                name: "r".into(),
+                path: "/r".into(),
+                main_branch: "main".into(),
+                init_command: String::new(),
+                commands: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_local_branch_is_local_whatever_the_remotes_have() {
+        let n = node(
+            &["main", "fix"],
+            &["origin"],
+            &["origin/main", "origin/fix"],
+        );
+        assert_eq!(n.locate_branch("fix"), BranchLocation::Local);
+    }
+
+    #[test]
+    fn a_branch_one_remote_has_is_on_that_remote() {
+        let n = node(
+            &["main"],
+            &["origin", "fork"],
+            &["origin/main", "fork/review/x"],
+        );
+        assert_eq!(
+            n.locate_branch("review/x"),
+            BranchLocation::Remote("fork".into())
+        );
+    }
+
+    #[test]
+    fn a_branch_several_remotes_have_names_them_all_in_order() {
+        let n = node(
+            &["main"],
+            &["origin", "upstream", "fork"],
+            &["upstream/x", "origin/x", "fork/y"],
+        );
+        assert_eq!(
+            n.locate_branch("x"),
+            BranchLocation::Remotes(vec!["origin".into(), "upstream".into()])
+        );
+    }
+
+    #[test]
+    fn a_remote_with_a_slash_in_its_name_is_matched_whole() {
+        let n = node(&[], &["team/alice"], &["team/alice/fix"]);
+        assert_eq!(
+            n.locate_branch("fix"),
+            BranchLocation::Remote("team/alice".into())
+        );
+        assert_eq!(n.locate_branch("alice/fix"), BranchLocation::Nowhere);
+    }
+
+    #[test]
+    fn nothing_is_found_where_nothing_is() {
+        let n = node(&["main"], &["origin"], &["origin/main"]);
+        assert_eq!(n.locate_branch("new-thing"), BranchLocation::Nowhere);
+        assert_eq!(n.locate_branch(""), BranchLocation::Nowhere);
+        // A remote-tracking ref of a remote that is gone from `git remote`.
+        let n = node(&[], &[], &["old/x"]);
+        assert_eq!(n.locate_branch("x"), BranchLocation::Nowhere);
     }
 }

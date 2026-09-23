@@ -242,7 +242,6 @@ define_class!(
             self.model_changed();
             self.ivars().app.start();
             crate::updater::start(&self.ivars().app, mtm);
-            crate::announcement::show_if_unseen(mtm);
             self.ivars().last_activation.set(Some(std::time::Instant::now()));
         }
 
@@ -1504,6 +1503,7 @@ impl Controller {
         self.rebuild(false);
         self.update_chrome(&model);
         self.restore_ui_state(&model);
+        dialogs::model_changed();
     }
 
     fn update_chrome(&self, model: &Model) {
