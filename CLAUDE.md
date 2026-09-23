@@ -70,7 +70,8 @@ crates/
                    parsers, create/delete/push/pull/switch, config store,
                    snapshot, window state, background fetch, file watcher,
                    fuzzy matching, branch-prefix splitting, git's
-                   branch-name rules, and the `App` facade. Tested.
+                   branch-name rules, the New Worktree sheet's checks, and
+                   the `App` facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
@@ -108,9 +109,12 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   ref exists, else the local trunk; new branches are created `--no-track`.
 - **A branch only a remote has** is spotted as its name is typed in the New
   Worktree sheet ("Branch will be pulled from origin."), in either mode. Create
-  fetches it and checks it out tracking that remote. A name on several remotes
-  is an error and Create stays off. Opening the sheet fetches the repo, and
-  the sheet re-checks on every model change (`dialogs::model_changed`).
+  fetches it and checks it out tracking that remote; if that fetch fails, the
+  worktree starts at the last fetched commit and the notice bar says so. A name
+  on several remotes is an error and Create stays off. The note and what Create
+  sends both come from `wtm_core::new_worktree::check`. Opening the sheet
+  fetches every remote of the repo, and each open sheet re-checks on every
+  model change (`dialogs::model_changed`).
 - **Delete is a safety ladder**: the path is checked against git's own worktree
   list, the primary tree is refused, the branch is revalidated against what the
   row showed, and `git worktree remove` runs without `--force` first — a dirty

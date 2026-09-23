@@ -58,12 +58,14 @@ pub struct RepoNode {
     pub branches: Vec<String>,
     /// Local + remote-tracking branches, for the base-ref picker.
     pub base_ref_candidates: Vec<String>,
-    /// The repo's remotes, in `git remote` order.
-    #[serde(default)]
+    /// The repo's remotes, in `git remote` order. Neither this nor
+    /// `remote_branches` is in the snapshot: only the New Worktree sheet reads
+    /// them, and the first listing after launch fills them in.
+    #[serde(skip)]
     pub remotes: Vec<String>,
     /// Remote-tracking branches as `<remote>/<branch>`, for finding a branch
     /// that only a remote has.
-    #[serde(default)]
+    #[serde(skip)]
     pub remote_branches: Vec<String>,
     /// Populated if listing worktrees failed.
     pub error: Option<String>,

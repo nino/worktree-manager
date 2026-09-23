@@ -30,8 +30,8 @@ use crate::command::build_command;
 use crate::config::ConfigStore;
 use crate::fetcher::{fetch_all, FETCH_INTERVAL};
 use crate::git::{
-    list_base_ref_candidates, list_branches, list_remote_branches, list_remotes, list_worktrees,
-    resolve_trunk_ref, worktree_status,
+    fetch_all_remotes, list_branches, list_refs, list_remotes, list_worktrees, lock_refs,
+    remote_refs_state, resolve_trunk_ref, worktree_status,
 };
 use crate::model::{Busy, Model, Notice, PendingCreation, RepoNode, Tone};
 use crate::paths::tildify;
@@ -47,9 +47,10 @@ pub enum Action {
     RefreshAll,
     /// Re-list one repo.
     RefreshRepo(String),
-    /// `git fetch` one repo now, then re-list it if that fetched. The New
-    /// Worktree sheet asks for this when it opens, so that a branch pushed
-    /// since the last cycle can be found by name.
+    /// Fetch every remote of one repo now, then re-list it if a
+    /// remote-tracking ref moved. The New Worktree sheet asks for this when
+    /// it opens, so that a branch pushed since the last cycle can be found by
+    /// name.
     FetchRepo(String),
     /// Re-read one worktree's status only.
     RefreshWorktree {
@@ -470,12 +471,11 @@ impl App {
             e.0
         };
         let trunk = resolve_trunk_ref(&repo.path, &repo.main_branch).await;
-        let (worktrees, branches, candidates, remotes, remote_branches) = tokio::join!(
+        let (worktrees, branches, refs, remotes) = tokio::join!(
             list_worktrees(&repo.path, &trunk),
             list_branches(&repo.path),
-            list_base_ref_candidates(&repo.path),
-            list_remotes(&repo.path),
-            list_remote_branches(&repo.path)
+            list_refs(&repo.path),
+            list_remotes(&repo.path)
         );
         {
             let mut m = self.inner.repo_seq.lock();
@@ -490,9 +490,8 @@ impl App {
             Err(e) => (Vec::new(), Some(e.detail())),
         };
         let branches = branches.unwrap_or_default();
-        let candidates = candidates.unwrap_or_default();
+        let (candidates, remote_branches) = refs.unwrap_or_default();
         let remotes = remotes.unwrap_or_default();
-        let remote_branches = remote_branches.unwrap_or_default();
         self.update(|m| {
             // A creation whose branch git now lists has landed.
             m.pending.retain(|p| {
@@ -673,7 +672,10 @@ impl App {
                 worktrees::create_worktree(&repo, &root, &params).await
             };
             match outcome {
-                Ok(path) => {
+                Ok((path, warning)) => {
+                    if let Some(warning) = warning {
+                        app.notify(Tone::Error, warning);
+                    }
                     let init = repo.init_command.trim().to_string();
                     if !init.is_empty() {
                         // Fire and forget in the worktree, through the login
@@ -769,7 +771,18 @@ impl App {
         };
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            if fetch_all(vec![repo]).await > 0 {
+            let before = remote_refs_state(&repo.path).await.ok();
+            let fetched = {
+                let _refs = lock_refs(&repo.path).await;
+                fetch_all_remotes(&repo.path).await
+            };
+            if let Err(e) = fetched {
+                warn!("fetching {}: {}", repo.name, e.detail());
+                return;
+            }
+            // Most openings find nothing new, and a re-list costs a git
+            // status per worktree.
+            if remote_refs_state(&repo.path).await.ok() != before {
                 app.refresh_repo(repo_id).await;
                 app.rewatch();
             }

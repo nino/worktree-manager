@@ -4,12 +4,10 @@
 
 use std::path::Path;
 
-use log::warn;
-
 use crate::branch_name;
 use crate::git::{
-    add_tracking_worktree, add_worktree, assert_valid_ref, branch_exists, fetch_branch, has_remote,
-    list_worktrees_raw, ref_exists, resolve_trunk_ref, run_git, GitError,
+    add_worktree, assert_valid_ref, branch_exists, fetch_branch, has_remote, list_worktrees_raw,
+    lock_refs, ref_exists, resolve_trunk_ref, run_git, AddBranch, GitError,
 };
 use crate::paths::worktree_path_for;
 use crate::types::{
@@ -17,12 +15,14 @@ use crate::types::{
     GitOpResult, RepoConfig,
 };
 
-/// Create a worktree; resolves with its on-disk path.
+/// Create a worktree; resolves with its on-disk path, and with a warning
+/// when a branch from a remote could not be fetched first and starts where
+/// the last fetch left it.
 pub async fn create_worktree(
     repo: &RepoConfig,
     worktrees_root: &str,
     params: &CreateWorktreeParams,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     let branch = params.branch.trim();
     if branch.is_empty() {
         return Err("A branch name is required.".into());
@@ -60,6 +60,12 @@ pub async fn create_worktree(
         }
         _ => {}
     }
+    // The name reaches `git fetch`, which would also take a URL or a path.
+    if let BranchSource::Remote(remote) = &params.source {
+        if !has_remote(&repo.path, remote).await {
+            return Err(format!("There is no remote called \"{remote}\"."));
+        }
+    }
 
     let target = worktree_path_for(worktrees_root, &repo.name, branch);
     let target_str = target.to_string_lossy().into_owned();
@@ -70,34 +76,61 @@ pub async fn create_worktree(
         .await
         .map_err(|e| format!("Cannot create {}: {e}", worktrees_root))?;
 
+    let mut warning = None;
     let added = match &params.source {
         BranchSource::New { .. } => {
             let base = match base_ref {
                 Some(b) => b.to_string(),
                 None => resolve_trunk_ref(&repo.path, &repo.main_branch).await,
             };
-            add_worktree(&repo.path, &target_str, branch, true, Some(&base)).await
+            add_worktree(
+                &repo.path,
+                &target_str,
+                branch,
+                AddBranch::New { base: &base },
+            )
+            .await
         }
-        BranchSource::Existing => add_worktree(&repo.path, &target_str, branch, false, None).await,
+        BranchSource::Existing => {
+            add_worktree(&repo.path, &target_str, branch, AddBranch::Existing).await
+        }
         BranchSource::Remote(remote) => {
-            let upstream = fetch_upstream(repo, remote, branch).await?;
-            add_tracking_worktree(&repo.path, &target_str, branch, &upstream).await
+            // Held from the fetch to the checkout, so no other fetch of the
+            // repo fails on the ref's lock or moves it in between.
+            let _refs = lock_refs(&repo.path).await;
+            let upstream;
+            (upstream, warning) = fetch_upstream(repo, remote, branch).await?;
+            let how = AddBranch::Tracking {
+                upstream: &upstream,
+            };
+            add_worktree(&repo.path, &target_str, branch, how).await
         }
     };
     added.map_err(|e| e.detail())?;
-    Ok(target_str)
+    Ok((target_str, warning))
 }
 
 /// Fetch `branch` from `remote` and return its remote-tracking ref, so the
 /// new worktree starts where the remote is now rather than where it was at
-/// the last fetch. Offline, the last fetch is what there is.
-async fn fetch_upstream(repo: &RepoConfig, remote: &str, branch: &str) -> Result<String, String> {
-    if let Err(e) = fetch_branch(&repo.path, remote, branch).await {
-        warn!("fetching {branch} from {remote}: {}", e.detail());
-    }
+/// the last fetch. Offline, the last fetch is what there is, and the second
+/// value says so.
+async fn fetch_upstream(
+    repo: &RepoConfig,
+    remote: &str,
+    branch: &str,
+) -> Result<(String, Option<String>), String> {
+    let warning = fetch_branch(&repo.path, remote, branch)
+        .await
+        .err()
+        .map(|e| {
+            format!(
+                "Could not fetch \"{branch}\" from {remote}, so it starts where the last fetch left it: {}",
+                e.detail()
+            )
+        });
     let upstream = format!("refs/remotes/{remote}/{branch}");
     if ref_exists(&repo.path, &upstream).await {
-        Ok(upstream)
+        Ok((upstream, warning))
     } else {
         Err(format!("{remote} has no branch \"{branch}\"."))
     }

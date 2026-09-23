@@ -159,8 +159,11 @@ its `.git/worktrees/<name>` metadata dir) is watched with FSEvents via
 worktree's* status only. A `git switch` in a terminal updates the right row.
 Repos are also `git fetch --prune`d every 8m43s and re-listed after any cycle
 that fetched, and a full refresh runs when the app becomes active. Opening the
-New Worktree sheet fetches its repo once more, and the sheet checks the name
-again when that listing lands, so a branch pushed a minute ago is found.
+New Worktree sheet fetches every remote of its repo and re-lists it if a
+remote-tracking ref moved; the sheet checks the name again when that listing
+lands, so a branch pushed a minute ago is found. Fetches of one repo, and
+making a worktree from a remote branch, take a per-repo lock (`lock_refs`), so
+they never contend for a ref's lock file.
 
 **Bounded git.** All git calls run through one runner with a 12-process
 semaphore; a repo's worktree statuses are computed concurrently. Every process
