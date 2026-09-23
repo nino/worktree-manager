@@ -106,6 +106,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.
+- **A branch only a remote has** is spotted as its name is typed in the New
+  Worktree sheet ("Branch will be pulled from origin."), in either mode. Create
+  fetches it and checks it out tracking that remote. A name on several remotes
+  is an error and Create stays off. Opening the sheet fetches the repo, and
+  the sheet re-checks on every model change (`dialogs::model_changed`).
 - **Delete is a safety ladder**: the path is checked against git's own worktree
   list, the primary tree is refused, the branch is revalidated against what the
   row showed, and `git worktree remove` runs without `--force` first — a dirty

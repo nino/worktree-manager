@@ -445,6 +445,33 @@ pub async fn list_base_ref_candidates(repo_path: &str) -> GitResult<Vec<String>>
     Ok(parse_ref_candidates(&out))
 }
 
+/// The repo's remotes, in `git remote` order.
+pub async fn list_remotes(repo_path: &str) -> GitResult<Vec<String>> {
+    let out = run_git(repo_path, &["remote"]).await?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+/// Remote-tracking branches as `<remote>/<branch>`. `lstrip=2` rather than
+/// `:short`, which writes `remotes/origin/x` when a local branch is also
+/// called `origin/x`.
+pub async fn list_remote_branches(repo_path: &str) -> GitResult<Vec<String>> {
+    let out = run_git(
+        repo_path,
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=2)%09%(symref)",
+            "refs/remotes",
+        ],
+    )
+    .await?;
+    Ok(parse_ref_candidates(&out))
+}
+
 /// Validate a user-supplied branch/ref name (also rejects a leading `-`,
 /// closing the option-injection hole for positional ref arguments).
 pub async fn assert_valid_ref(repo_path: &str, name: &str) -> GitResult<()> {
@@ -480,6 +507,16 @@ pub async fn fetch_repo(repo_path: &str) -> GitResult<()> {
     run_git(repo_path, &["fetch", "--prune"]).await.map(|_| ())
 }
 
+/// Fetch one branch from one remote, which moves its remote-tracking branch
+/// too. The name goes in as `refs/heads/<branch>` because git would read a
+/// bare `+x`, a valid branch name, as a forced fetch of `x`.
+pub async fn fetch_branch(repo_path: &str, remote: &str, branch: &str) -> GitResult<()> {
+    let source = format!("refs/heads/{branch}");
+    run_git(repo_path, &["fetch", "--quiet", "--", remote, &source])
+        .await
+        .map(|_| ())
+}
+
 /// Create a new worktree.
 pub async fn add_worktree(
     repo_path: &str,
@@ -501,6 +538,32 @@ pub async fn add_worktree(
         args.extend([worktree_path, branch]);
     }
     run_git(repo_path, &args).await.map(|_| ())
+}
+
+/// Create a worktree on a new branch that tracks `upstream`, a full
+/// remote-tracking ref such as `refs/remotes/origin/fix`, so that push and
+/// pull work in it from the start. The full ref cannot be mistaken for a tag
+/// or a local branch that happens to be called `origin/fix`.
+pub async fn add_tracking_worktree(
+    repo_path: &str,
+    worktree_path: &str,
+    branch: &str,
+    upstream: &str,
+) -> GitResult<()> {
+    run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            branch,
+            worktree_path,
+            upstream,
+        ],
+    )
+    .await
+    .map(|_| ())
 }
 
 #[cfg(test)]

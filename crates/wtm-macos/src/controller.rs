@@ -1503,6 +1503,7 @@ impl Controller {
         self.rebuild(false);
         self.update_chrome(&model);
         self.restore_ui_state(&model);
+        dialogs::model_changed();
     }
 
     fn update_chrome(&self, model: &Model) {

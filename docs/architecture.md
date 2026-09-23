@@ -158,7 +158,9 @@ its `.git/worktrees/<name>` metadata dir) is watched with FSEvents via
 `notify`; events are debounced per worktree (350 ms) and re-read *that
 worktree's* status only. A `git switch` in a terminal updates the right row.
 Repos are also `git fetch --prune`d every 8m43s and re-listed after any cycle
-that fetched, and a full refresh runs when the app becomes active.
+that fetched, and a full refresh runs when the app becomes active. Opening the
+New Worktree sheet fetches its repo once more, and the sheet checks the name
+again when that listing lands, so a branch pushed a minute ago is found.
 
 **Bounded git.** All git calls run through one runner with a 12-process
 semaphore; a repo's worktree statuses are computed concurrently. Every process
@@ -167,11 +169,13 @@ reads never trigger the watcher), `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`.
 
 **Same safety rules as the Electron app.** Create validates the ref with
 `check-ref-format`, refuses existing paths and branches, and creates new
-branches `--no-track`. Delete verifies the path against git's own list, refuses
-the primary tree, revalidates the branch the user saw, and runs
-`git worktree remove` without `--force` first — a dirty tree comes back as
-`Dirty` and the UI asks a second, destructive-styled question. Mutations are
-serialised per worktree path.
+branches `--no-track`. A branch only one remote has is fetched first and
+checked out `--track`ing it; one that several remotes have is refused in the
+sheet, since which to track cannot be told. Delete verifies the path against
+git's own list, refuses the primary tree, revalidates the branch the user saw,
+and runs `git worktree remove` without `--force` first — a dirty tree comes
+back as `Dirty` and the UI asks a second, destructive-styled question.
+Mutations are serialised per worktree path.
 
 ## Adding a platform
 

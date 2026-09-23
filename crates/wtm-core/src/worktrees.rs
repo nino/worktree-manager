@@ -4,15 +4,17 @@
 
 use std::path::Path;
 
+use log::warn;
+
 use crate::branch_name;
 use crate::git::{
-    add_worktree, assert_valid_ref, branch_exists, has_remote, list_worktrees_raw,
-    resolve_trunk_ref, run_git, GitError,
+    add_tracking_worktree, add_worktree, assert_valid_ref, branch_exists, fetch_branch, has_remote,
+    list_worktrees_raw, ref_exists, resolve_trunk_ref, run_git, GitError,
 };
 use crate::paths::worktree_path_for;
 use crate::types::{
-    CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, DeleteWorktreeResult, GitOpResult,
-    RepoConfig,
+    BranchSource, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, DeleteWorktreeResult,
+    GitOpResult, RepoConfig,
 };
 
 /// Create a worktree; resolves with its on-disk path.
@@ -38,22 +40,25 @@ pub async fn create_worktree(
     assert_valid_ref(&repo.path, branch)
         .await
         .map_err(|_| format!("Not a valid branch name: {branch}"))?;
-    let base_ref = params
-        .base_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|b| !b.is_empty());
+    let base_ref = match &params.source {
+        BranchSource::New { base_ref } => base_ref.as_deref().map(str::trim),
+        _ => None,
+    }
+    .filter(|b| !b.is_empty());
     if let Some(b) = base_ref {
         assert_valid_ref(&repo.path, b)
             .await
             .map_err(|_| format!("Not a valid base ref: {b}"))?;
     }
     let exists = branch_exists(&repo.path, branch).await;
-    if params.new_branch && exists {
-        return Err(format!("Branch \"{branch}\" already exists."));
-    }
-    if !params.new_branch && !exists {
-        return Err(format!("Branch \"{branch}\" does not exist."));
+    match (&params.source, exists) {
+        (BranchSource::New { .. } | BranchSource::Remote(_), true) => {
+            return Err(format!("Branch \"{branch}\" already exists."));
+        }
+        (BranchSource::Existing, false) => {
+            return Err(format!("Branch \"{branch}\" does not exist."));
+        }
+        _ => {}
     }
 
     let target = worktree_path_for(worktrees_root, &repo.name, branch);
@@ -65,21 +70,37 @@ pub async fn create_worktree(
         .await
         .map_err(|e| format!("Cannot create {}: {e}", worktrees_root))?;
 
-    let base = match (base_ref, params.new_branch) {
-        (Some(b), _) => Some(b.to_string()),
-        (None, true) => Some(resolve_trunk_ref(&repo.path, &repo.main_branch).await),
-        (None, false) => None,
+    let added = match &params.source {
+        BranchSource::New { .. } => {
+            let base = match base_ref {
+                Some(b) => b.to_string(),
+                None => resolve_trunk_ref(&repo.path, &repo.main_branch).await,
+            };
+            add_worktree(&repo.path, &target_str, branch, true, Some(&base)).await
+        }
+        BranchSource::Existing => add_worktree(&repo.path, &target_str, branch, false, None).await,
+        BranchSource::Remote(remote) => {
+            let upstream = fetch_upstream(repo, remote, branch).await?;
+            add_tracking_worktree(&repo.path, &target_str, branch, &upstream).await
+        }
     };
-    add_worktree(
-        &repo.path,
-        &target_str,
-        branch,
-        params.new_branch,
-        base.as_deref(),
-    )
-    .await
-    .map_err(|e| e.detail())?;
+    added.map_err(|e| e.detail())?;
     Ok(target_str)
+}
+
+/// Fetch `branch` from `remote` and return its remote-tracking ref, so the
+/// new worktree starts where the remote is now rather than where it was at
+/// the last fetch. Offline, the last fetch is what there is.
+async fn fetch_upstream(repo: &RepoConfig, remote: &str, branch: &str) -> Result<String, String> {
+    if let Err(e) = fetch_branch(&repo.path, remote, branch).await {
+        warn!("fetching {branch} from {remote}: {}", e.detail());
+    }
+    let upstream = format!("refs/remotes/{remote}/{branch}");
+    if ref_exists(&repo.path, &upstream).await {
+        Ok(upstream)
+    } else {
+        Err(format!("{remote} has no branch \"{branch}\"."))
+    }
 }
 
 /// Delete a worktree.
@@ -299,8 +320,7 @@ mod tests {
             repo_id: "r".into(),
             // A valid name, which this used to be refused as.
             branch: "e5x7or9".into(),
-            new_branch: true,
-            base_ref: None,
+            source: BranchSource::New { base_ref: None },
         };
         let err = create_worktree(&repo, "/nonexistent/root", &params)
             .await

@@ -127,16 +127,26 @@ pub struct WorktreeInfo {
     pub status: Option<WorktreeStatus>,
 }
 
+/// Where the branch of a new worktree comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchSource {
+    /// Create the branch from `base_ref`, or from the repo's trunk ref when
+    /// there is none.
+    New { base_ref: Option<String> },
+    /// Check out a local branch that already exists.
+    Existing,
+    /// Fetch the branch from this remote, which is the only one that has it,
+    /// and check it out as a local branch tracking it.
+    Remote(String),
+}
+
 /// Parameters for creating a new worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateWorktreeParams {
     pub repo_id: String,
     /// Branch name to create/check out in the new worktree.
     pub branch: String,
-    /// If true, create a new branch; otherwise check out an existing one.
-    pub new_branch: bool,
-    /// Optional base ref for a new branch (defaults to the repo's trunk ref).
-    pub base_ref: Option<String>,
+    pub source: BranchSource,
 }
 
 /// Outcome of a git operation triggered from the UI (push/pull/switch…).

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wtm_core::{
-    Action, App, CreateWorktreeParams, DeleteRefusal, DeleteWorktreeParams, Event, Focus, UiState,
-    WindowFrame,
+    Action, App, BranchLocation, BranchSource, CreateWorktreeParams, DeleteRefusal,
+    DeleteWorktreeParams, Event, Focus, UiState, WindowFrame,
 };
 use wtm_platform::{AppDirs, Platform};
 
@@ -31,7 +31,7 @@ impl Platform for StubPlatform {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) {
+fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -42,6 +42,47 @@ fn git(dir: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn commit(dir: &Path, message: &str) {
+    git(
+        dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+    );
+}
+
+/// An app with its config in `base/config` and worktrees under `base/wts`,
+/// and a channel that hears every model change.
+fn app_in(base: &Path) -> (App, mpsc::Receiver<Event>) {
+    let dirs = AppDirs {
+        config_dir: base.join("config"),
+        home: base.to_path_buf(),
+        legacy_config_files: vec![],
+    };
+    let app = App::new(Arc::new(StubPlatform), dirs);
+    let (tx, rx) = mpsc::channel();
+    app.subscribe(move |e| {
+        let _ = tx.send(e);
+    });
+    app.dispatch(Action::SetSettings(wtm_core::AppSettings {
+        worktrees_root: base.join("wts").to_string_lossy().into_owned(),
+        editor_command: "true".into(),
+        update_channel: Default::default(),
+    }));
+    (app, rx)
 }
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -78,39 +119,10 @@ fn add_repo_create_and_delete_worktree() {
     let repo = base.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
-    git(
-        &repo,
-        &[
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "init",
-        ],
-    );
+    commit(&repo, "init");
     let repo = std::fs::canonicalize(&repo).unwrap();
 
-    let dirs = AppDirs {
-        config_dir: base.join("config"),
-        home: base.clone(),
-        legacy_config_files: vec![],
-    };
-    let app = App::new(Arc::new(StubPlatform), dirs);
-    let (tx, rx) = mpsc::channel();
-    app.subscribe(move |e| {
-        let _ = tx.send(e);
-    });
-    app.dispatch(Action::SetSettings(wtm_core::AppSettings {
-        worktrees_root: base.join("wts").to_string_lossy().into_owned(),
-        editor_command: "true".into(),
-        update_channel: Default::default(),
-    }));
+    let (app, rx) = app_in(&base);
 
     // Add the repo by a path inside it (a file), exercising root resolution.
     app.dispatch(Action::AddRepos(vec![repo.join(".git").join("HEAD")]));
@@ -141,8 +153,7 @@ fn add_repo_create_and_delete_worktree() {
     app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
         repo_id: repo_id.clone(),
         branch: "feature/x".into(),
-        new_branch: true,
-        base_ref: None,
+        source: BranchSource::New { base_ref: None },
     }));
     assert_eq!(
         app.model().pending.len(),
@@ -173,8 +184,7 @@ fn add_repo_create_and_delete_worktree() {
     app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
         repo_id: repo_id.clone(),
         branch: "feature/x".into(),
-        new_branch: true,
-        base_ref: None,
+        source: BranchSource::New { base_ref: None },
     }));
     wait_for(&app, &rx, "creation error", |m| {
         m.pending.iter().any(|p| p.error.is_some())
@@ -319,5 +329,85 @@ fn add_repo_create_and_delete_worktree() {
 
     app.dispatch(Action::RemoveRepo(repo_id));
     assert!(app.model().repos.is_empty());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn check_out_a_branch_only_a_remote_has() {
+    let base = temp_dir("remote");
+    git(&base, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+    let author = base.join("author");
+    std::fs::create_dir_all(&author).unwrap();
+    git(&author, &["init", "-q", "-b", "main"]);
+    commit(&author, "init");
+    git(&author, &["remote", "add", "origin", "../remote.git"]);
+    git(&author, &["push", "-q", "origin", "main"]);
+    git(&author, &["switch", "-q", "-c", "review/x"]);
+    commit(&author, "one");
+    git(&author, &["push", "-q", "origin", "review/x"]);
+    git(&base, &["clone", "-q", "remote.git", "repo"]);
+    let repo = std::fs::canonicalize(base.join("repo")).unwrap();
+    // Pushed after the clone last fetched: checking the branch out must
+    // fetch it, or the worktree would start a commit behind.
+    commit(&author, "two");
+    git(&author, &["push", "-q", "origin", "review/x"]);
+    let tip = git(&author, &["rev-parse", "HEAD"]);
+
+    let (app, rx) = app_in(&base);
+    app.dispatch(Action::AddRepos(vec![repo.clone()]));
+    wait_for(&app, &rx, "repo listed", |m| {
+        m.repos.len() == 1 && m.repos[0].loaded
+    });
+    let model = app.model();
+    let node = &model.repos[0];
+    assert_eq!(node.remotes, ["origin"]);
+    assert_eq!(node.locate_branch("main"), BranchLocation::Local);
+    assert_eq!(
+        node.locate_branch("review/x"),
+        BranchLocation::Remote("origin".into())
+    );
+    assert_eq!(node.locate_branch("review/y"), BranchLocation::Nowhere);
+    let repo_id = node.repo.id.clone();
+
+    app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
+        repo_id: repo_id.clone(),
+        branch: "review/x".into(),
+        source: BranchSource::Remote("origin".into()),
+    }));
+    wait_for(&app, &rx, "worktree created", |m| {
+        m.pending.is_empty() && m.repos[0].worktrees.len() == 2
+    });
+    let model = app.model();
+    let wt = model.repos[0]
+        .worktrees
+        .iter()
+        .find(|w| !w.is_main)
+        .unwrap();
+    assert_eq!(wt.branch.as_deref(), Some("review/x"));
+    let wt_path = Path::new(&wt.path);
+    assert_eq!(git(wt_path, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        git(wt_path, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/review/x"
+    );
+    assert!(wt.status.as_ref().expect("status computed").has_upstream);
+    assert_eq!(
+        model.repos[0].locate_branch("review/x"),
+        BranchLocation::Local
+    );
+
+    // A branch the remote does not have fails on its placeholder.
+    app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
+        repo_id,
+        branch: "review/gone".into(),
+        source: BranchSource::Remote("origin".into()),
+    }));
+    wait_for(&app, &rx, "creation error", |m| {
+        m.pending.iter().any(|p| p.error.is_some())
+    });
+    assert_eq!(
+        app.model().pending[0].error.as_deref(),
+        Some("origin has no branch \"review/gone\".")
+    );
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -30,7 +30,8 @@ use crate::command::build_command;
 use crate::config::ConfigStore;
 use crate::fetcher::{fetch_all, FETCH_INTERVAL};
 use crate::git::{
-    list_base_ref_candidates, list_branches, list_worktrees, resolve_trunk_ref, worktree_status,
+    list_base_ref_candidates, list_branches, list_remote_branches, list_remotes, list_worktrees,
+    resolve_trunk_ref, worktree_status,
 };
 use crate::model::{Busy, Model, Notice, PendingCreation, RepoNode, Tone};
 use crate::paths::tildify;
@@ -46,6 +47,10 @@ pub enum Action {
     RefreshAll,
     /// Re-list one repo.
     RefreshRepo(String),
+    /// `git fetch` one repo now, then re-list it if that fetched. The New
+    /// Worktree sheet asks for this when it opens, so that a branch pushed
+    /// since the last cycle can be found by name.
+    FetchRepo(String),
     /// Re-read one worktree's status only.
     RefreshWorktree {
         repo_id: String,
@@ -272,6 +277,7 @@ impl App {
         match action {
             Action::RefreshAll => self.refresh_all(),
             Action::RefreshRepo(id) => self.spawn_refresh_repo(id),
+            Action::FetchRepo(id) => self.spawn_fetch_repo(id),
             Action::RefreshWorktree { repo_id, path } => self.spawn_refresh_worktree(repo_id, path),
             Action::AddRepos(paths) => self.add_repos(paths),
             Action::UpdateRepo(repo) => {
@@ -464,10 +470,12 @@ impl App {
             e.0
         };
         let trunk = resolve_trunk_ref(&repo.path, &repo.main_branch).await;
-        let (worktrees, branches, candidates) = tokio::join!(
+        let (worktrees, branches, candidates, remotes, remote_branches) = tokio::join!(
             list_worktrees(&repo.path, &trunk),
             list_branches(&repo.path),
-            list_base_ref_candidates(&repo.path)
+            list_base_ref_candidates(&repo.path),
+            list_remotes(&repo.path),
+            list_remote_branches(&repo.path)
         );
         {
             let mut m = self.inner.repo_seq.lock();
@@ -483,6 +491,8 @@ impl App {
         };
         let branches = branches.unwrap_or_default();
         let candidates = candidates.unwrap_or_default();
+        let remotes = remotes.unwrap_or_default();
+        let remote_branches = remote_branches.unwrap_or_default();
         self.update(|m| {
             // A creation whose branch git now lists has landed.
             m.pending.retain(|p| {
@@ -497,6 +507,8 @@ impl App {
                 node.default_base_ref = trunk;
                 node.branches = branches;
                 node.base_ref_candidates = candidates;
+                node.remotes = remotes;
+                node.remote_branches = remote_branches;
                 node.error = error;
                 node.loaded = true;
             }
@@ -750,6 +762,19 @@ impl App {
     }
 
     // MARK: Background fetch
+
+    fn spawn_fetch_repo(&self, repo_id: String) {
+        let Some(repo) = self.repo_config(&repo_id) else {
+            return;
+        };
+        let app = self.clone();
+        self.inner.rt.spawn(async move {
+            if fetch_all(vec![repo]).await > 0 {
+                app.refresh_repo(repo_id).await;
+                app.rewatch();
+            }
+        });
+    }
 
     async fn fetch_cycle(&self) {
         let repos = self.model().config.repos.clone();
