@@ -225,8 +225,7 @@ all this one. They can install this one because the bundle kept their
 identifier (`uk.org.plinth.worktree-manager`) and is signed by the same team,
 which between them satisfy the designated requirement Squirrel.Mac checks a
 downloaded bundle against. Their first launch of it is a first launch of this
-app: no `SEEN_REWRITE_ANNOUNCEMENT` default, so the note about the rewrite
-comes up, and their `worktree-manager.json` is imported by the config store.
+app, so their `worktree-manager.json` is imported by the config store.
 
 ## Not carried over from the Electron app
 

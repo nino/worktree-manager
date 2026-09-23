@@ -89,9 +89,7 @@ selection, key loop), `cells` (row cell views), `rowview` (the card drawing),
 `outline` (NSOutlineView subclass), `button` (focusable buttons, the branch
 bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 (agent marks), `tooltip`, `dialogs` (sheets), `settings` (its own window),
-`announcement` (the one-off note about the rewrite, shown until the
-`SEEN_REWRITE_ANNOUNCEMENT` user default is set), `badge`, `items`, `menu`,
-`platform`, `util`.
+`badge`, `items`, `menu`, `platform`, `util`.
 
 ## Key behaviors
 
@@ -235,5 +233,4 @@ Settings → Secrets and variables → Actions:
 | `APPLE_API_ISSUER_ID` | the issuer UUID |
 
 Local `scripts/bundle.sh` builds are ad-hoc signed, which is enough for a
-stable identity (the user defaults the announcement is marked seen in) but is
-not a Developer ID signature.
+stable identity but is not a Developer ID signature.

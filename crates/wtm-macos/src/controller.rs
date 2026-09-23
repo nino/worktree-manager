@@ -242,7 +242,6 @@ define_class!(
             self.model_changed();
             self.ivars().app.start();
             crate::updater::start(&self.ivars().app, mtm);
-            crate::announcement::show_if_unseen(mtm);
             self.ivars().last_activation.set(Some(std::time::Instant::now()));
         }
 
