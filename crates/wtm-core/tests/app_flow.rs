@@ -378,7 +378,10 @@ fn check_out_a_branch_only_a_remote_has() {
     let node = &model.repos[0];
     assert_eq!(node.remotes, ["origin"]);
     // The primary tree has it.
-    assert_eq!(node.locate_branch("main"), BranchLocation::CheckedOut);
+    assert_eq!(
+        node.locate_branch("main"),
+        BranchLocation::CheckedOut { missing: false }
+    );
     assert_eq!(
         node.locate_branch("review/x"),
         BranchLocation::Remote("origin".into())
@@ -420,7 +423,7 @@ fn check_out_a_branch_only_a_remote_has() {
     assert!(wt.status.as_ref().expect("status computed").has_upstream);
     assert_eq!(
         model.repos[0].locate_branch("review/x"),
-        BranchLocation::CheckedOut
+        BranchLocation::CheckedOut { missing: false }
     );
 
     // With the remote out of reach, a branch it had at the last fetch is

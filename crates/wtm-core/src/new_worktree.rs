@@ -50,29 +50,32 @@ pub fn check(
     if let Some(reason) = branch_name::problem(name) {
         return refuse(reason);
     }
-    match place {
+    // The reasons lead with the problem and leave names and paths to the end:
+    // the note truncates its tail.
+    match (place, taken) {
         // git would refuse a second worktree on it, and the sheet says so
         // before Create rather than leaving a failed row under the card.
-        BranchLocation::CheckedOut => refuse(format!("Branch \"{name}\" already has a worktree.")),
+        (BranchLocation::CheckedOut { missing: false }, _) => {
+            refuse("Branch already has a worktree.".into())
+        }
+        // git still counts a worktree whose folder was deleted.
+        (BranchLocation::CheckedOut { missing: true }, _) => {
+            refuse("Branch has a worktree whose folder is missing; delete that first.".into())
+        }
         // Two names can share a folder (`feature/x`, `feature-x`), and a
         // folder can outlive its worktree.
-        _ if taken.is_some() => refuse(format!(
-            "Folder {} already exists.",
-            taken.unwrap_or_default()
-        )),
-        BranchLocation::Local if new_branch => refuse(format!(
-            "Branch \"{name}\" already exists. Choose Existing branch to check it out."
-        )),
-        BranchLocation::Nowhere if !new_branch => {
-            refuse(format!("Branch \"{name}\" does not exist."))
+        (_, Some(folder)) => refuse(format!("A folder is already there: {folder}")),
+        (BranchLocation::Local, _) if new_branch => {
+            refuse("Branch already exists; use Existing branch.".into())
         }
+        (BranchLocation::Nowhere, _) if !new_branch => refuse("No branch of that name.".into()),
         // A branch that only a remote has is checked out from there in
         // either mode.
-        BranchLocation::Remote(remote) => accept(
+        (BranchLocation::Remote(remote), _) => accept(
             BranchSource::Remote(remote.clone()),
             Some(format!("Branch will be pulled from {remote}.")),
         ),
-        BranchLocation::Remotes(remotes) => refuse(format!(
+        (BranchLocation::Remotes(remotes), _) => refuse(format!(
             "Branch is on more than one remote: {}.",
             remotes.join(", ")
         )),
@@ -163,11 +166,14 @@ mod tests {
     #[test]
     fn a_branch_that_has_a_worktree_keeps_create_off_in_either_mode() {
         for new_branch in [true, false] {
-            let c = check("fix", new_branch, "", &BranchLocation::CheckedOut, None);
-            assert_eq!(
-                c.create,
-                Err("Branch \"fix\" already has a worktree.".into())
+            let c = check(
+                "fix",
+                new_branch,
+                "",
+                &BranchLocation::CheckedOut { missing: false },
+                None,
             );
+            assert_eq!(c.create, Err("Branch already has a worktree.".into()));
         }
     }
 
@@ -175,11 +181,11 @@ mod tests {
     fn a_new_branch_must_not_exist_and_an_existing_one_must() {
         assert_eq!(
             check("fix", true, "", &BranchLocation::Local, None).create,
-            Err("Branch \"fix\" already exists. Choose Existing branch to check it out.".into())
+            Err("Branch already exists; use Existing branch.".into())
         );
         assert_eq!(
             check("fix", false, "", &NOWHERE, None).create,
-            Err("Branch \"fix\" does not exist.".into())
+            Err("No branch of that name.".into())
         );
     }
 
@@ -195,12 +201,46 @@ mod tests {
             );
             assert_eq!(
                 c.create,
-                Err("Folder ~/wt/r/feature-x already exists.".into())
+                Err("A folder is already there: ~/wt/r/feature-x".into())
             );
         }
         // A branch that has a worktree says so rather than naming its folder.
-        let c = check("x", true, "", &BranchLocation::CheckedOut, Some("~/wt/r/x"));
-        assert_eq!(c.create, Err("Branch \"x\" already has a worktree.".into()));
+        let c = check(
+            "x",
+            true,
+            "",
+            &BranchLocation::CheckedOut { missing: false },
+            Some("~/wt/r/x"),
+        );
+        assert_eq!(c.create, Err("Branch already has a worktree.".into()));
+    }
+
+    #[test]
+    fn a_worktree_whose_folder_is_gone_asks_for_it_to_be_deleted() {
+        let c = check(
+            "x",
+            true,
+            "",
+            &BranchLocation::CheckedOut { missing: true },
+            None,
+        );
+        assert_eq!(
+            c.create,
+            Err("Branch has a worktree whose folder is missing; delete that first.".into())
+        );
+    }
+
+    #[test]
+    fn an_unlisted_repo_leaves_existence_to_create() {
+        let unknown = BranchLocation::Unknown;
+        assert_eq!(
+            check("x", false, "", &unknown, None).create,
+            Ok(BranchSource::Existing)
+        );
+        assert_eq!(
+            check("x", true, "", &unknown, None).create,
+            Ok(BranchSource::New { base_ref: None })
+        );
     }
 
     #[test]

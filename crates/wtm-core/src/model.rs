@@ -98,12 +98,14 @@ impl RepoNode {
     /// asked for `<remote>/<branch>`, as git maps a remote's branches, rather
     /// than each ref being split at a slash: a remote's name can have one.
     pub fn locate_branch(&self, branch: &str) -> BranchLocation {
-        if self
+        if let Some(w) = self
             .worktrees
             .iter()
-            .any(|w| w.branch.as_deref() == Some(branch))
+            .find(|w| w.branch.as_deref() == Some(branch))
         {
-            return BranchLocation::CheckedOut;
+            return BranchLocation::CheckedOut {
+                missing: w.prunable,
+            };
         }
         if self.branches.iter().any(|b| b == branch) {
             return BranchLocation::Local;
@@ -118,6 +120,9 @@ impl RepoNode {
             .cloned()
             .collect();
         match on.len() {
+            // Only a listing that ran and worked can say a branch is absent;
+            // a cached snapshot has no remote branches, a failed one nothing.
+            0 if !self.loaded || self.error.is_some() => BranchLocation::Unknown,
             0 => BranchLocation::Nowhere,
             1 => BranchLocation::Remote(on.remove(0)),
             _ => BranchLocation::Remotes(on),
@@ -128,8 +133,9 @@ impl RepoNode {
 /// Where a branch named in the New Worktree sheet is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchLocation {
-    /// A worktree of the repo already has that branch checked out.
-    CheckedOut,
+    /// A worktree of the repo already has that branch checked out;
+    /// `missing` when git says its folder is gone.
+    CheckedOut { missing: bool },
     /// There is a local branch of that name, not checked out anywhere.
     Local,
     /// Not a local branch, and this remote is the only one that has it.
@@ -137,7 +143,11 @@ pub enum BranchLocation {
     /// Not a local branch, and each of these remotes has one of that name,
     /// so which is meant cannot be told.
     Remotes(Vec<String>),
+    /// No branch of that name in a completed listing.
     Nowhere,
+    /// Not found, but the repo has not been listed yet, or its listing
+    /// failed, so it may still exist.
+    Unknown,
 }
 
 /// Tone of the one-line notice under the toolbar.
@@ -224,6 +234,7 @@ mod tests {
             branches: strings(branches),
             remotes: strings(remotes),
             remote_branches: strings(remote_branches),
+            loaded: true,
             ..RepoNode::placeholder(RepoConfig {
                 id: "r".into(),
                 name: "r".into(),
@@ -257,8 +268,27 @@ mod tests {
             prunable: false,
             status: None,
         });
-        assert_eq!(n.locate_branch("fix"), BranchLocation::CheckedOut);
+        assert_eq!(
+            n.locate_branch("fix"),
+            BranchLocation::CheckedOut { missing: false }
+        );
         assert_eq!(n.locate_branch("main"), BranchLocation::Local);
+        n.worktrees[0].prunable = true;
+        assert_eq!(
+            n.locate_branch("fix"),
+            BranchLocation::CheckedOut { missing: true }
+        );
+    }
+
+    #[test]
+    fn absence_is_unknown_until_a_listing_has_worked() {
+        let mut n = node(&["main"], &[], &[]);
+        n.loaded = false;
+        assert_eq!(n.locate_branch("x"), BranchLocation::Unknown);
+        assert_eq!(n.locate_branch("main"), BranchLocation::Local);
+        n.loaded = true;
+        n.error = Some("git failed".into());
+        assert_eq!(n.locate_branch("x"), BranchLocation::Unknown);
     }
 
     #[test]
