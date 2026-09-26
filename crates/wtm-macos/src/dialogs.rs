@@ -22,7 +22,7 @@ use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use wtm_core::{
-    new_worktree, Action, App, BranchLocation, CreateWorktreeParams, DeleteRefusal,
+    new_worktree, paths, Action, App, BranchLocation, CreateWorktreeParams, DeleteRefusal,
     DeleteWorktreeParams, DeleteWorktreeResult,
 };
 
@@ -328,6 +328,7 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
                 modes.selectedSegment() == 0,
                 &base.stringValue().to_string(),
                 &place,
+                taken(&app, &repo_id, name.trim()).as_deref(),
             );
             *shown.borrow_mut() = (name.trim().to_string(), place);
             let (text, color) = match &check.create {
@@ -407,6 +408,7 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
             modes.selectedSegment() == 0,
             &base.stringValue().to_string(),
             &place,
+            taken(&app, &repo_id, name.trim()).as_deref(),
         );
         // Create is off whenever this is an error.
         let Ok(source) = check.create else {
@@ -426,6 +428,18 @@ fn locate(app: &App, repo_id: &str, name: &str) -> BranchLocation {
         .repo(repo_id)
         .map(|n| n.locate_branch(name))
         .unwrap_or(BranchLocation::Nowhere)
+}
+
+/// The folder a worktree for `name` would get, abbreviated, when something is
+/// already there. Only a stat, so it is fine on every keystroke.
+fn taken(app: &App, repo_id: &str, name: &str) -> Option<String> {
+    let model = app.model();
+    let node = model.repo(repo_id)?;
+    let target = paths::worktree_path_for(&model.config.worktrees_root, &node.repo.name, name);
+    let target = target.to_string_lossy();
+    std::fs::symlink_metadata(&*target)
+        .is_ok()
+        .then(|| app.display_path(&target))
 }
 
 thread_local! {

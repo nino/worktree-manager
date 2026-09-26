@@ -98,6 +98,13 @@ impl RepoNode {
     /// asked for `<remote>/<branch>`, as git maps a remote's branches, rather
     /// than each ref being split at a slash: a remote's name can have one.
     pub fn locate_branch(&self, branch: &str) -> BranchLocation {
+        if self
+            .worktrees
+            .iter()
+            .any(|w| w.branch.as_deref() == Some(branch))
+        {
+            return BranchLocation::CheckedOut;
+        }
         if self.branches.iter().any(|b| b == branch) {
             return BranchLocation::Local;
         }
@@ -121,7 +128,9 @@ impl RepoNode {
 /// Where a branch named in the New Worktree sheet is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchLocation {
-    /// There is a local branch of that name.
+    /// A worktree of the repo already has that branch checked out.
+    CheckedOut,
+    /// There is a local branch of that name, not checked out anywhere.
     Local,
     /// Not a local branch, and this remote is the only one that has it.
     Remote(String),
@@ -234,6 +243,22 @@ mod tests {
             &["origin/main", "origin/fix"],
         );
         assert_eq!(n.locate_branch("fix"), BranchLocation::Local);
+    }
+
+    #[test]
+    fn a_branch_a_worktree_has_is_checked_out() {
+        let mut n = node(&["main", "fix"], &[], &[]);
+        n.worktrees.push(WorktreeInfo {
+            path: "/wt/fix".into(),
+            branch: Some("fix".into()),
+            head: "abc".into(),
+            is_main: false,
+            locked: false,
+            prunable: false,
+            status: None,
+        });
+        assert_eq!(n.locate_branch("fix"), BranchLocation::CheckedOut);
+        assert_eq!(n.locate_branch("main"), BranchLocation::Local);
     }
 
     #[test]

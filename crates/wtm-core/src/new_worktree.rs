@@ -20,8 +20,15 @@ pub struct Check {
 
 /// Check the sheet's fields against where the last listing puts the branch.
 /// `new_branch` is the mode; `base_ref` is only used in that mode, and an
-/// empty one means the repo's trunk.
-pub fn check(name: &str, new_branch: bool, base_ref: &str, place: &BranchLocation) -> Check {
+/// empty one means the repo's trunk. `taken` is the worktree's folder, as
+/// shown, when something is already there.
+pub fn check(
+    name: &str,
+    new_branch: bool,
+    base_ref: &str,
+    place: &BranchLocation,
+    taken: Option<&str>,
+) -> Check {
     let (name, base_ref) = (name.trim(), base_ref.trim());
     let from_remote = matches!(
         place,
@@ -44,6 +51,21 @@ pub fn check(name: &str, new_branch: bool, base_ref: &str, place: &BranchLocatio
         return refuse(reason);
     }
     match place {
+        // git would refuse a second worktree on it, and the sheet says so
+        // before Create rather than leaving a failed row under the card.
+        BranchLocation::CheckedOut => refuse(format!("Branch \"{name}\" already has a worktree.")),
+        // Two names can share a folder (`feature/x`, `feature-x`), and a
+        // folder can outlive its worktree.
+        _ if taken.is_some() => refuse(format!(
+            "Folder {} already exists.",
+            taken.unwrap_or_default()
+        )),
+        BranchLocation::Local if new_branch => refuse(format!(
+            "Branch \"{name}\" already exists. Choose Existing branch to check it out."
+        )),
+        BranchLocation::Nowhere if !new_branch => {
+            refuse(format!("Branch \"{name}\" does not exist."))
+        }
         // A branch that only a remote has is checked out from there in
         // either mode.
         BranchLocation::Remote(remote) => accept(
@@ -77,14 +99,20 @@ mod tests {
 
     #[test]
     fn no_name_is_not_an_error_but_keeps_create_off() {
-        let c = check("  ", true, "", &NOWHERE);
+        let c = check("  ", true, "", &NOWHERE, None);
         assert_eq!(c.create, Err(String::new()));
         assert_eq!(c.note, None);
     }
 
     #[test]
     fn a_bad_name_says_why_before_anything_else() {
-        let c = check("a b", true, "", &BranchLocation::Remote("origin".into()));
+        let c = check(
+            "a b",
+            true,
+            "",
+            &BranchLocation::Remote("origin".into()),
+            None,
+        );
         assert_eq!(c.create, Err("A branch name cannot contain spaces.".into()));
     }
 
@@ -93,7 +121,7 @@ mod tests {
         let origin = BranchLocation::Remote("origin".into());
         for new_branch in [true, false] {
             // Even a base ref git would refuse: it does not apply.
-            let c = check("review/x", new_branch, "a..b", &origin);
+            let c = check("review/x", new_branch, "a..b", &origin, None);
             assert_eq!(c.create, Ok(BranchSource::Remote("origin".into())));
             assert_eq!(
                 c.note.as_deref(),
@@ -106,7 +134,7 @@ mod tests {
     #[test]
     fn a_branch_several_remotes_have_keeps_create_off() {
         let both = BranchLocation::Remotes(vec!["fork".into(), "origin".into()]);
-        let c = check("x", true, "", &both);
+        let c = check("x", true, "", &both, None);
         assert_eq!(
             c.create,
             Err("Branch is on more than one remote: fork, origin.".into())
@@ -117,24 +145,67 @@ mod tests {
     #[test]
     fn a_new_branch_takes_the_base_ref_or_the_trunk() {
         assert_eq!(
-            check("x", true, " origin/dev ", &NOWHERE).create,
+            check("x", true, " origin/dev ", &NOWHERE, None).create,
             Ok(BranchSource::New {
                 base_ref: Some("origin/dev".into())
             })
         );
         assert_eq!(
-            check("x", true, "", &NOWHERE).create,
+            check("x", true, "", &NOWHERE, None).create,
             Ok(BranchSource::New { base_ref: None })
         );
         assert_eq!(
-            check("x", true, "a..b", &NOWHERE).create,
+            check("x", true, "a..b", &NOWHERE, None).create,
             Err("Base ref: A branch name cannot contain “..”.".into())
         );
     }
 
     #[test]
+    fn a_branch_that_has_a_worktree_keeps_create_off_in_either_mode() {
+        for new_branch in [true, false] {
+            let c = check("fix", new_branch, "", &BranchLocation::CheckedOut, None);
+            assert_eq!(
+                c.create,
+                Err("Branch \"fix\" already has a worktree.".into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_branch_must_not_exist_and_an_existing_one_must() {
+        assert_eq!(
+            check("fix", true, "", &BranchLocation::Local, None).create,
+            Err("Branch \"fix\" already exists. Choose Existing branch to check it out.".into())
+        );
+        assert_eq!(
+            check("fix", false, "", &NOWHERE, None).create,
+            Err("Branch \"fix\" does not exist.".into())
+        );
+    }
+
+    #[test]
+    fn a_folder_already_there_keeps_create_off() {
+        for new_branch in [true, false] {
+            let c = check(
+                "feature-x",
+                new_branch,
+                "",
+                &BranchLocation::Local,
+                Some("~/wt/r/feature-x"),
+            );
+            assert_eq!(
+                c.create,
+                Err("Folder ~/wt/r/feature-x already exists.".into())
+            );
+        }
+        // A branch that has a worktree says so rather than naming its folder.
+        let c = check("x", true, "", &BranchLocation::CheckedOut, Some("~/wt/r/x"));
+        assert_eq!(c.create, Err("Branch \"x\" already has a worktree.".into()));
+    }
+
+    #[test]
     fn existing_mode_ignores_the_base_ref() {
-        let c = check("fix", false, "a..b", &BranchLocation::Local);
+        let c = check("fix", false, "a..b", &BranchLocation::Local, None);
         assert_eq!(c.create, Ok(BranchSource::Existing));
         assert!(!c.from_remote);
     }
