@@ -7,9 +7,11 @@
 //! trivial and thread-safe.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths::worktree_path_for;
 use crate::types::{AppConfig, RepoConfig, WorktreeInfo};
 
 /// What an in-flight operation is doing to a worktree, for row spinners and
@@ -98,6 +100,15 @@ impl RepoNode {
     /// asked for `<remote>/<branch>`, as git maps a remote's branches, rather
     /// than each ref being split at a slash: a remote's name can have one.
     pub fn locate_branch(&self, branch: &str) -> BranchLocation {
+        if let Some(w) = self
+            .worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+        {
+            return BranchLocation::CheckedOut {
+                missing: w.prunable,
+            };
+        }
         if self.branches.iter().any(|b| b == branch) {
             return BranchLocation::Local;
         }
@@ -111,6 +122,9 @@ impl RepoNode {
             .cloned()
             .collect();
         match on.len() {
+            // Only a listing that ran and worked can say a branch is absent;
+            // a cached snapshot has no remote branches, a failed one nothing.
+            0 if !self.loaded || self.error.is_some() => BranchLocation::Unknown,
             0 => BranchLocation::Nowhere,
             1 => BranchLocation::Remote(on.remove(0)),
             _ => BranchLocation::Remotes(on),
@@ -121,14 +135,21 @@ impl RepoNode {
 /// Where a branch named in the New Worktree sheet is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchLocation {
-    /// There is a local branch of that name.
+    /// A worktree of the repo already has that branch checked out;
+    /// `missing` when git says its folder is gone.
+    CheckedOut { missing: bool },
+    /// There is a local branch of that name, not checked out anywhere.
     Local,
     /// Not a local branch, and this remote is the only one that has it.
     Remote(String),
     /// Not a local branch, and each of these remotes has one of that name,
     /// so which is meant cannot be told.
     Remotes(Vec<String>),
+    /// No branch of that name in a completed listing.
     Nowhere,
+    /// Not found, but the repo has not been listed yet, or its listing
+    /// failed, so it may still exist.
+    Unknown,
 }
 
 /// Tone of the one-line notice under the toolbar.
@@ -164,6 +185,12 @@ pub struct Model {
 }
 
 impl Model {
+    /// Where a worktree of `repo` for `branch` goes. The New Worktree sheet
+    /// checks this folder and Create makes it, so both ask here.
+    pub fn worktree_path(&self, repo: &RepoConfig, branch: &str) -> PathBuf {
+        worktree_path_for(&self.config.worktrees_root, &repo.name, branch.trim())
+    }
+
     pub fn repo(&self, repo_id: &str) -> Option<&RepoNode> {
         self.repos.iter().find(|r| r.repo.id == repo_id)
     }
@@ -215,6 +242,7 @@ mod tests {
             branches: strings(branches),
             remotes: strings(remotes),
             remote_branches: strings(remote_branches),
+            loaded: true,
             ..RepoNode::placeholder(RepoConfig {
                 id: "r".into(),
                 name: "r".into(),
@@ -234,6 +262,41 @@ mod tests {
             &["origin/main", "origin/fix"],
         );
         assert_eq!(n.locate_branch("fix"), BranchLocation::Local);
+    }
+
+    #[test]
+    fn a_branch_a_worktree_has_is_checked_out() {
+        let mut n = node(&["main", "fix"], &[], &[]);
+        n.worktrees.push(WorktreeInfo {
+            path: "/wt/fix".into(),
+            branch: Some("fix".into()),
+            head: "abc".into(),
+            is_main: false,
+            locked: false,
+            prunable: false,
+            status: None,
+        });
+        assert_eq!(
+            n.locate_branch("fix"),
+            BranchLocation::CheckedOut { missing: false }
+        );
+        assert_eq!(n.locate_branch("main"), BranchLocation::Local);
+        n.worktrees[0].prunable = true;
+        assert_eq!(
+            n.locate_branch("fix"),
+            BranchLocation::CheckedOut { missing: true }
+        );
+    }
+
+    #[test]
+    fn absence_is_unknown_until_a_listing_has_worked() {
+        let mut n = node(&["main"], &[], &[]);
+        n.loaded = false;
+        assert_eq!(n.locate_branch("x"), BranchLocation::Unknown);
+        assert_eq!(n.locate_branch("main"), BranchLocation::Local);
+        n.loaded = true;
+        n.error = Some("git failed".into());
+        assert_eq!(n.locate_branch("x"), BranchLocation::Unknown);
     }
 
     #[test]
