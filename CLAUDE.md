@@ -69,9 +69,9 @@ crates/
   wtm-core         Everything that is not a widget: types, git runner and
                    parsers, create/delete/push/pull/switch, config store,
                    snapshot, window state, background fetch, file watcher,
-                   fuzzy matching, branch-prefix splitting, git's
-                   branch-name rules, the New Worktree sheet's checks, and
-                   the `App` facade. Tested.
+                   fuzzy matching, list splices, branch-prefix splitting,
+                   git's branch-name rules, the New Worktree sheet's
+                   checks, and the `App` facade. Tested.
   wtm-macos        The AppKit UI and the macOS `Platform` implementation.
   wtm-app          The binary; the only place with `cfg(target_os)`.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
@@ -170,6 +170,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   deepest indentation and rows end up wider than the window.
 - **Note height changes off the notification.** Doing it inside an expand or
   collapse delegate callback re-enters the table; dispatch to the next turn.
+- **`reloadData` on the main outline rebuilds every visible row's view.** In
+  this app none came from the reuse queue, about 60 ms with 40 worktrees, so
+  `rebuild` inserts and removes rows (`wtm_core::splice`) instead. A splice
+  must name exactly the rows the outline holds, or AppKit raises an
+  exception, and the outline keeps a row's height until told it changed.
 - **Font weight constants** (`NSFontWeightMedium`, …) are extern statics;
   `util::{REGULAR, MEDIUM, SEMIBOLD}` holds the documented numbers instead.
 - **The system tooltip delay cannot be shortened**, which is why row icons draw

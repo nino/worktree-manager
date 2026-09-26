@@ -11,13 +11,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationDelegate, NSBackingStoreType, NSBezelStyle, NSButton, NSColor,
-    NSControl, NSControlSize, NSControlTextEditingDelegate, NSFont, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
-    NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation, NSOutlineView,
-    NSOutlineViewDataSource, NSOutlineViewDelegate, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
-    NSStackViewDistribution, NSTableColumn, NSTableViewColumnAutoresizingStyle,
+    NSAnimationContext, NSApplication, NSApplicationDelegate, NSBackingStoreType, NSBezelStyle,
+    NSButton, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFont,
+    NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate,
+    NSSearchToolbarItem, NSStackView, NSStackViewDistribution, NSTableColumn,
+    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle,
     NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
     NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
     NSToolbarItem, NSToolbarItemIdentifier, NSUserInterfaceItemIdentification,
@@ -25,10 +26,11 @@ use objc2_app_kit::{
     NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    NSArray, NSIndexSet, NSInteger, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSUserDefaults, NSURL,
+    NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol,
+    NSPoint, NSRect, NSSize, NSUserDefaults, NSURL,
 };
 use wtm_core::model::Tone;
+use wtm_core::splice::{splice, Splice};
 use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
 
 use crate::button::Button;
@@ -397,24 +399,10 @@ define_class!(
         }
 
         #[unsafe(method(outlineView:heightOfRowByItem:))]
-        unsafe fn height_of_row(&self, _o: &NSOutlineView, item: &AnyObject) -> f64 {
-            let Some(item) = item.downcast_ref::<WTMItem>() else {
-                return PENDING_ROW_HEIGHT;
-            };
-            // Heights never change on expand or collapse: the header is one
-            // height open or closed, and a card's first and last rows carry
-            // the well's padding — known when they are inserted.
-            let base = match item.kind() {
-                ItemKind::Repo { .. } => return REPO_ROW_HEIGHT,
-                ItemKind::Worktree { .. } => WORKTREE_ROW_HEIGHT,
-                ItemKind::Pending { .. } => PENDING_ROW_HEIGHT,
-            };
-            match self.row_style(_o, item) {
-                RowStyle::Child { first, last } => {
-                    base + if first { WELL_LEAD } else { 0.0 }
-                        + if last { LAST_ROW_EXTRA } else { 0.0 }
-                }
-                RowStyle::Header { .. } => base,
+        unsafe fn height_of_row(&self, outline: &NSOutlineView, item: &AnyObject) -> f64 {
+            match item.downcast_ref::<WTMItem>() {
+                Some(item) => self.row_height(outline, item),
+                None => PENDING_ROW_HEIGHT,
             }
         }
 
@@ -735,6 +723,23 @@ impl Controller {
         }
     }
 
+    fn row_height(&self, outline: &NSOutlineView, item: &WTMItem) -> f64 {
+        // Heights never change on expand or collapse: the header is one
+        // height open or closed, and a card's first and last rows carry the
+        // well's padding — known when they are inserted.
+        let base = match item.kind() {
+            ItemKind::Repo { .. } => return REPO_ROW_HEIGHT,
+            ItemKind::Worktree { .. } => WORKTREE_ROW_HEIGHT,
+            ItemKind::Pending { .. } => PENDING_ROW_HEIGHT,
+        };
+        match self.row_style(outline, item) {
+            RowStyle::Child { first, last } => {
+                base + if first { WELL_LEAD } else { 0.0 } + if last { LAST_ROW_EXTRA } else { 0.0 }
+            }
+            RowStyle::Header { .. } => base,
+        }
+    }
+
     /// The card slice a row should draw, from the display tree and expansion.
     fn row_style(&self, outline: &NSOutlineView, item: &WTMItem) -> RowStyle {
         self.row_style_excluding(outline, item, None)
@@ -840,6 +845,12 @@ impl Controller {
     /// card slice it now is: a former last child becomes a middle one, a
     /// collapsed header closes its card.
     fn sync_row_styles(&self) {
+        self.sync_row_styles_noting(&[]);
+    }
+
+    /// As `sync_row_styles`, also noting the heights of `resized`: a row off
+    /// screen has no row view to report that its slice changed.
+    fn sync_row_styles_noting(&self, resized: &[Retained<WTMItem>]) {
         let Some(outline) = self.ivars().outline.borrow().clone() else {
             return;
         };
@@ -865,15 +876,26 @@ impl Controller {
         }
         // A row that became (or stopped being) its card's last one changed
         // height; a zero-duration group keeps the relayout instant.
-        if heights_changed {
-            let all = objc2_foundation::NSIndexSet::indexSetWithIndexesInRange(
+        let rows = if heights_changed {
+            objc2_foundation::NSIndexSet::indexSetWithIndexesInRange(
                 objc2_foundation::NSRange::new(0, outline.numberOfRows() as usize),
-            );
-            objc2_app_kit::NSAnimationContext::beginGrouping();
-            objc2_app_kit::NSAnimationContext::currentContext().setDuration(0.0);
-            outline.noteHeightOfRowsWithIndexesChanged(&all);
-            objc2_app_kit::NSAnimationContext::endGrouping();
-        }
+            )
+        } else {
+            let rows: Vec<usize> = resized
+                .iter()
+                .map(|item| unsafe { outline.rowForItem(Some(item)) })
+                .filter(|&row| row >= 0)
+                .map(|row| row as usize)
+                .collect();
+            if rows.is_empty() {
+                return;
+            }
+            index_set(&rows)
+        };
+        NSAnimationContext::beginGrouping();
+        NSAnimationContext::currentContext().setDuration(0.0);
+        outline.noteHeightOfRowsWithIndexesChanged(&rows);
+        NSAnimationContext::endGrouping();
     }
 
     fn make_cell_view(
@@ -1585,6 +1607,22 @@ impl Controller {
         }
     }
 
+    /// Open each of `roots` a search or the user left open, and close the
+    /// rest. The outline keeps an item's expansion across `reloadData`, so a
+    /// card is closed here as well as opened.
+    fn open_or_close(&self, outline: &NSOutlineView, roots: &[Retained<WTMItem>], searching: bool) {
+        // Cloned: expanding and collapsing call back into the delegate, which
+        // borrows `collapsed` again.
+        let collapsed = self.ivars().collapsed.borrow().clone();
+        for root in roots {
+            if searching || !collapsed.contains(root.kind().repo_id()) {
+                unsafe { outline.expandItem(Some(root)) };
+            } else if unsafe { outline.isItemExpanded(Some(root)) } {
+                unsafe { outline.collapseItem(Some(root)) };
+            }
+        }
+    }
+
     /// Build the display tree from the current model and apply the smallest
     /// outline update that covers the difference from what is on screen.
     fn rebuild(&self, query_changed: bool) {
@@ -1651,96 +1689,116 @@ impl Controller {
         };
 
         let previous = iv.shown.borrow().clone();
-        let old_tree = std::mem::take(&mut *iv.tree.borrow_mut());
-        let roots_changed = old_tree.roots.len() != tree.roots.len()
-            || old_tree
-                .roots
-                .iter()
-                .zip(&tree.roots)
-                .any(|(a, b)| Retained::as_ptr(a) != Retained::as_ptr(b));
-
+        // Planned while the old tree is still the data source: the outline
+        // may read from it to answer, and must answer about the old rows.
+        let plan = previous
+            .as_ref()
+            .and_then(|_| plan_splice(&outline, &iv.tree.borrow(), &tree));
         *iv.tree.borrow_mut() = tree;
         *iv.shown.borrow_mut() = Some(model.clone());
 
-        let full = previous.is_none() || query_changed || roots_changed;
-        if full {
-            // A search opens every card; clearing it closes again the ones
-            // that were closed before it.
-            {
-                let mut before = iv.collapsed_before_search.borrow_mut();
-                if searching {
-                    before.get_or_insert_with(|| iv.collapsed.borrow().clone());
-                } else if let Some(saved) = before.take() {
-                    *iv.collapsed.borrow_mut() = saved;
-                }
+        // A search opens every card; clearing it closes again the ones that
+        // were closed before it.
+        let was_searching = {
+            let mut before = iv.collapsed_before_search.borrow_mut();
+            let was = before.is_some();
+            if searching {
+                before.get_or_insert_with(|| iv.collapsed.borrow().clone());
+            } else if let Some(saved) = before.take() {
+                *iv.collapsed.borrow_mut() = saved;
             }
+            was
+        };
+
+        let roots = iv.tree.borrow().roots.clone();
+        let (Some(previous), Some((root_splice, cards))) = (previous, plan) else {
+            // The first tree, reordered rows, or an outline that no longer
+            // shows the tree it was last told about: start over.
             outline.reloadData();
-            // Clone what the loop needs: expanding and collapsing call back
-            // into the delegate, which borrows these cells again. The outline
-            // keeps an item's expansion across `reloadData`, so a card is
-            // closed here as well as opened.
-            let roots = iv.tree.borrow().roots.clone();
-            let collapsed = iv.collapsed.borrow().clone();
-            for root in &roots {
-                let id = root.kind().repo_id().to_string();
-                if searching || !collapsed.contains(&id) {
-                    unsafe { outline.expandItem(Some(root)) };
-                } else if unsafe { outline.isItemExpanded(Some(root)) } {
-                    unsafe { outline.collapseItem(Some(root)) };
+            self.open_or_close(&outline, &roots, searching);
+            self.sync_row_styles();
+            #[cfg(debug_assertions)]
+            self.check_outline(&outline);
+            return;
+        };
+
+        // Rows that stay keep their views: rebuilding every visible row costs
+        // tens of milliseconds, more than a key repeat allows while a short
+        // query matches most of the list.
+        let mut resized = Vec::new();
+        NSAnimationContext::beginGrouping();
+        NSAnimationContext::currentContext().setDuration(0.0);
+        outline.beginUpdates();
+        apply_splice(&outline, None, &root_splice);
+        for card in &cards {
+            let CardRows::Spliced(s) = &card.rows else {
+                continue;
+            };
+            apply_splice(&outline, Some(&card.root), s);
+            // A card's first and last rows are taller (the well's padding),
+            // and the outline keeps the height of a row that stays.
+            let new_ids = identities(&card.new);
+            for end in [
+                card.old.first(),
+                card.old.last(),
+                card.new.first(),
+                card.new.last(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if new_ids.contains(&Retained::as_ptr(end)) {
+                    resized.push(end.clone());
                 }
             }
-            self.sync_row_styles();
-            return;
+        }
+        outline.endUpdates();
+        NSAnimationContext::endGrouping();
+
+        for card in &cards {
+            if matches!(card.rows, CardRows::Reloaded) {
+                unsafe { outline.reloadItem_reloadChildren(Some(&card.root), true) };
+                if !iv.collapsed.borrow().contains(card.root.kind().repo_id()) {
+                    unsafe { outline.expandItem(Some(&card.root)) };
+                }
+            }
+        }
+        // A search opens every card, and a repo coming or going puts each
+        // one back as the search or the user left it.
+        if query_changed || !root_splice.is_empty() {
+            self.open_or_close(&outline, &roots, searching);
         }
 
-        // Same repos in the same order: reload only what differs.
-        let previous = previous.expect("checked above");
-        let roots = iv.tree.borrow().roots.clone();
-        for root in &roots {
-            let key = root.kind().key();
-            let repo_id = root.kind().repo_id().to_string();
-            let new_children = iv
-                .tree
-                .borrow()
-                .children
-                .get(&key)
-                .cloned()
-                .unwrap_or_default();
-            let new_children = &new_children;
-            let old_children = old_tree.children.get(&key);
-            let children_changed = old_children
-                .map(|old| {
-                    old.len() != new_children.len()
-                        || old
-                            .iter()
-                            .zip(new_children)
-                            .any(|(a, b)| Retained::as_ptr(a) != Retained::as_ptr(b))
-                })
-                .unwrap_or(true);
-            let (old_node, new_node) = (previous.repo(&repo_id), model.repo(&repo_id));
-            if children_changed {
-                unsafe { outline.reloadItem_reloadChildren(Some(root), true) };
-                let is_collapsed = iv.collapsed.borrow().contains(&repo_id);
-                if !is_collapsed {
-                    unsafe { outline.expandItem(Some(root)) };
-                }
+        // What stayed: reload the rows whose data differs.
+        for card in &cards {
+            if matches!(card.rows, CardRows::Reloaded) {
                 continue;
             }
-            let header_changed = match (old_node, new_node) {
-                (Some(a), Some(b)) => {
-                    a.repo != b.repo
-                        || a.worktrees.len() != b.worktrees.len()
-                        || a.error != b.error
-                        || a.loaded != b.loaded
-                }
-                _ => true,
-            };
+            let repo_id = card.root.kind().repo_id().to_string();
+            let (old_node, new_node) = (previous.repo(&repo_id), model.repo(&repo_id));
+            // The header counts the rows a search shows.
+            let header_changed = searching != was_searching
+                || (searching && matches!(card.rows, CardRows::Spliced(_)))
+                || match (old_node, new_node) {
+                    (Some(a), Some(b)) => {
+                        a.repo != b.repo
+                            || a.worktrees.len() != b.worktrees.len()
+                            || a.error != b.error
+                            || a.loaded != b.loaded
+                    }
+                    _ => true,
+                };
             if header_changed {
-                unsafe { outline.reloadItem(Some(root)) };
+                unsafe { outline.reloadItem(Some(&card.root)) };
             }
             let branches_changed =
                 matches!((old_node, new_node), (Some(a), Some(b)) if a.branches != b.branches);
-            for child in new_children {
+            let old_ids = identities(&card.old);
+            for child in &card.new {
+                // A row just inserted was configured from this model.
+                if !old_ids.contains(&Retained::as_ptr(child)) {
+                    continue;
+                }
                 let changed = match child.kind() {
                     ItemKind::Worktree { path, .. } => {
                         branches_changed
@@ -1759,8 +1817,145 @@ impl Controller {
                 }
             }
         }
-        self.sync_row_styles();
+        self.sync_row_styles_noting(&resized);
+        #[cfg(debug_assertions)]
+        self.check_outline(&outline);
     }
+
+    /// Debug builds check after every rebuild that the outline shows exactly
+    /// the tree, at the heights the delegate gives: a wrong splice would
+    /// otherwise surface as an AppKit exception much later, or as rows drawn
+    /// at the wrong height.
+    #[cfg(debug_assertions)]
+    fn check_outline(&self, outline: &NSOutlineView) {
+        let expected = tree_rows(outline, &self.ivars().tree.borrow());
+        assert_eq!(shown_rows(outline), identities(&expected), "outline rows");
+        for (row, item) in (0..).zip(&expected) {
+            let (height, want) = (
+                outline.rectOfRow(row).size.height,
+                self.row_height(outline, item),
+            );
+            assert!(
+                (height - want).abs() < 0.01,
+                "row {row} ({}) is {height} high, not {want}",
+                item.kind().key()
+            );
+        }
+    }
+}
+
+/// How to take the outline from `old` to `new` with insertions and removals
+/// alone: the repos that come and go, and each repo that stays with how its
+/// rows change. `None` when that cannot be done safely — rows reordered, or
+/// the outline not showing `old` — since a splice naming rows the outline
+/// does not have raises an AppKit exception.
+fn plan_splice(outline: &NSOutlineView, old: &Tree, new: &Tree) -> Option<(Splice, Vec<Card>)> {
+    if shown_rows(outline) != identities(&tree_rows(outline, old)) {
+        return None;
+    }
+    let root_splice = splice(&identities(&old.roots), &identities(&new.roots))?;
+    let mut cards = Vec::new();
+    for (i, root) in new.roots.iter().enumerate() {
+        if root_splice.inserted.contains(&i) {
+            continue;
+        }
+        let key = root.kind().key();
+        let old = old.children.get(&key).cloned().unwrap_or_default();
+        let new = new.children.get(&key).cloned().unwrap_or_default();
+        let (old_ids, new_ids) = (identities(&old), identities(&new));
+        let rows = if old_ids == new_ids {
+            CardRows::Same
+        } else if unsafe { outline.isItemExpanded(Some(root)) } {
+            CardRows::Spliced(splice(&old_ids, &new_ids)?)
+        } else {
+            CardRows::Reloaded
+        };
+        cards.push(Card {
+            root: root.clone(),
+            old,
+            new,
+            rows,
+        });
+    }
+    Some((root_splice, cards))
+}
+
+/// The rows `tree` makes with the cards open or closed as the outline has
+/// them now.
+fn tree_rows(outline: &NSOutlineView, tree: &Tree) -> Vec<Retained<WTMItem>> {
+    let mut rows = Vec::new();
+    for root in &tree.roots {
+        rows.push(root.clone());
+        if unsafe { outline.isItemExpanded(Some(root)) } {
+            rows.extend(
+                tree.children
+                    .get(&root.kind().key())
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+        }
+    }
+    rows
+}
+
+/// The items of the outline's rows, as it holds them.
+fn shown_rows(outline: &NSOutlineView) -> Vec<*const WTMItem> {
+    (0..outline.numberOfRows())
+        .map(|row| {
+            outline
+                .itemAtRow(row)
+                .map_or(std::ptr::null(), |i| Retained::as_ptr(&i).cast())
+        })
+        .collect()
+}
+
+/// A repo shown before and after an update.
+struct Card {
+    root: Retained<WTMItem>,
+    /// Its rows as the outline last showed them.
+    old: Vec<Retained<WTMItem>>,
+    new: Vec<Retained<WTMItem>>,
+    rows: CardRows,
+}
+
+/// How a card's rows change in an update.
+enum CardRows {
+    Same,
+    /// Rows inserted and removed around the ones that stay.
+    Spliced(Splice),
+    /// Read again from the tree: the card is closed, so none are on screen.
+    Reloaded,
+}
+
+/// Tell the outline which of `parent`'s children (the repos, for `None`)
+/// went and which arrived.
+fn apply_splice(outline: &NSOutlineView, parent: Option<&AnyObject>, s: &Splice) {
+    unsafe {
+        outline.removeItemsAtIndexes_inParent_withAnimation(
+            &index_set(&s.removed),
+            parent,
+            NSTableViewAnimationOptions::EffectNone,
+        );
+        outline.insertItemsAtIndexes_inParent_withAnimation(
+            &index_set(&s.inserted),
+            parent,
+            NSTableViewAnimationOptions::EffectNone,
+        );
+    }
+}
+
+/// Items by identity, which is how the outline tells rows apart.
+fn identities(items: &[Retained<WTMItem>]) -> Vec<*const WTMItem> {
+    items.iter().map(Retained::as_ptr).collect()
+}
+
+fn index_set(indices: &[usize]) -> Retained<NSIndexSet> {
+    let set = NSMutableIndexSet::new();
+    for &i in indices {
+        set.addIndex(i);
+    }
+    Retained::into_super(set)
 }
 
 /// Every screen's visible frame (the area outside the menu bar and the Dock),
@@ -1833,16 +2028,13 @@ fn notice_summary(text: &str) -> String {
     )
 }
 
-/// Case-insensitive substring match on branch or path, like the web UI.
+/// Case-insensitive substring match on the branch or the path as the row
+/// shows it (`~` for the home folder). Not the full path: every worktree's
+/// starts with the home folder, so a query like `users` would match them all.
 fn matches(query: &str, w: &wtm_core::WorktreeInfo, home: &str) -> bool {
-    if w.branch
+    w.branch
         .as_deref()
-        .map(|b| b.to_lowercase().contains(query))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    w.path.to_lowercase().contains(query)
+        .is_some_and(|b| b.to_lowercase().contains(query))
         || wtm_core::paths::tildify(&w.path, home)
             .to_lowercase()
             .contains(query)
@@ -1850,8 +2042,37 @@ fn matches(query: &str, w: &wtm_core::WorktreeInfo, home: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{notice_summary, parse_autosaved_frame};
-    use wtm_core::WindowFrame;
+    use super::{matches, notice_summary, parse_autosaved_frame};
+    use wtm_core::{WindowFrame, WorktreeInfo};
+
+    fn worktree(path: &str, branch: Option<&str>) -> WorktreeInfo {
+        WorktreeInfo {
+            path: path.into(),
+            branch: branch.map(Into::into),
+            head: String::new(),
+            is_main: false,
+            locked: false,
+            prunable: false,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn search_matches_the_branch_and_the_path_as_shown() {
+        let home = "/Users/ada";
+        let w = worktree("/Users/ada/code/wt/app/fix-login", Some("Fix/Login"));
+        assert!(matches("fix/login", &w, home));
+        assert!(matches("~/code/wt", &w, home));
+        assert!(matches("app/fix", &w, home));
+        // The home folder is `~` on the row, so its name finds nothing.
+        assert!(!matches("ada", &w, home));
+        assert!(!matches("users", &w, home));
+        assert!(matches(
+            "volumes",
+            &worktree("/Volumes/src/app", None),
+            home
+        ));
+    }
 
     #[test]
     fn an_autosaved_frame_is_read_up_to_the_screen() {
