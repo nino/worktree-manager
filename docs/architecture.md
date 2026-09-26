@@ -50,10 +50,20 @@ coalesces bursts with an atomic flag and hops to the main queue once.
 **Targeted reloads.** The controller keeps one long-lived `WTMItem` object per
 repo, worktree and pending creation, so `NSOutlineView` identity (and thus
 expansion state) survives updates. On each snapshot it diffs against the one
-it last rendered and calls `reloadItem:` only for rows whose data differs;
-structure changes reload one repo's children; only a query change or a repo
-added/removed triggers `reloadData`. Cell views are recycled through
-`makeViewWithIdentifier:` and re-configured in place (badge views are reused).
+it last rendered and calls `reloadItem:` only for rows whose data differs.
+Rows that a search query or a snapshot adds or drops are inserted and removed
+in place (`wtm_core::splice` works out which), so every row that stays keeps
+its view, and a closed card whose rows changed reloads its children. A splice
+that names a row the outline does not have raises an AppKit exception, so
+before one the controller compares the outline's rows, one by one, with the
+tree it was last given, and falls back to `reloadData` when they differ, when
+rows were reordered, and for the first tree. Debug builds then
+check that the outline's rows and heights match the tree after every update.
+This is what keeps the search field responsive: in this outline, every
+`reloadData` built all the visible rows' views anew, about 60 ms with 40
+worktrees, while a held key repeats every 30 to 90 ms. Scrolling and
+inserted rows take their views from `makeViewWithIdentifier:`'s reuse queue
+and re-configure them in place (badge views are reused).
 
 **Branch picker.** The branch name in each plate is a small bezelled button
 (`(detached)` for a detached HEAD) that opens a popover (`picker.rs`): a filter

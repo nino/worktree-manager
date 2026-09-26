@@ -26,6 +26,7 @@ pub mod model;
 pub mod new_worktree;
 pub mod paths;
 pub mod repos;
+pub mod splice;
 pub mod types;
 pub mod ui_state;
 pub mod update;

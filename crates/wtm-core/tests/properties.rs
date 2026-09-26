@@ -27,6 +27,7 @@ use wtm_core::git::{
 };
 use wtm_core::paths::{sanitize_repo_name, slugify_branch, tildify, worktree_path_for};
 use wtm_core::repos::describe_add_failure;
+use wtm_core::splice::{splice, Splice};
 use wtm_core::ui_state::UiStateStore;
 use wtm_core::update::{is_newer, Manifest};
 use wtm_core::WindowFrame;
@@ -374,6 +375,66 @@ proptest! {
         if query.trim().is_empty() {
             prop_assert_eq!(order, (0..candidates.len()).collect::<Vec<_>>());
         }
+    }
+}
+
+// MARK: List splices
+
+/// Two lists of distinct elements in any order.
+fn distinct_lists() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+    let list = || {
+        // A `BTreeSet`, not a `HashSet`: its order is the same in every run,
+        // so a failing seed replays.
+        prop::collection::btree_set(0u8..12, 0..10)
+            .prop_map(|s| s.into_iter().collect::<Vec<_>>())
+            .prop_shuffle()
+    };
+    (list(), list())
+}
+
+/// Two filters of one list, the way a search narrows and widens the rows.
+fn two_filters() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+    prop::collection::vec(any::<(bool, bool)>(), 0..16).prop_map(|picks| {
+        let pick = |which: fn(&(bool, bool)) -> bool| {
+            (0u8..)
+                .zip(&picks)
+                .filter(|(_, p)| which(p))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        (pick(|p| p.0), pick(|p| p.1))
+    })
+}
+
+/// What a list view shows once `s` is applied to its `old` rows: the removals
+/// by old index, then each insertion at its new index.
+fn apply_splice(old: &[u8], new: &[u8], s: &Splice) -> Vec<u8> {
+    let mut out: Vec<u8> = (0..)
+        .zip(old)
+        .filter(|(i, _)| !s.removed.contains(i))
+        .map(|(_, x)| *x)
+        .collect();
+    for &i in &s.inserted {
+        out.insert(i, new[i]);
+    }
+    out
+}
+
+proptest! {
+    #[test]
+    fn a_splice_turns_the_old_list_into_the_new(
+        (old, new) in prop_oneof![distinct_lists(), two_filters()],
+    ) {
+        if let Some(s) = splice(&old, &new) {
+            prop_assert!(s.removed.windows(2).all(|w| w[0] < w[1]), "{:?}", s.removed);
+            prop_assert!(s.inserted.windows(2).all(|w| w[0] < w[1]), "{:?}", s.inserted);
+            prop_assert_eq!(apply_splice(&old, &new, &s), new);
+        }
+    }
+
+    #[test]
+    fn two_filters_of_one_list_always_splice((old, new) in two_filters()) {
+        prop_assert!(splice(&old, &new).is_some());
     }
 }
 
