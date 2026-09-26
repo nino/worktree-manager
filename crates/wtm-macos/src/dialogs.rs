@@ -379,6 +379,17 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     f.addArrangedSubview(&row("", &note, mtm));
     f.addArrangedSubview(&row("", &modes, mtm));
     f.addArrangedSubview(&base_row);
+    // The form is sized with the base ref row showing, and an alert keeps
+    // that height once it is up. With the row hidden, a Fill stack hands the
+    // spare height to its least hugging view, which was the note's row, and
+    // opened a gap under the name. This takes it instead, at the bottom.
+    let spacer = NSView::new(mtm);
+    spacer.setContentHuggingPriority_forOrientation(
+        1.0,
+        objc2_app_kit::NSLayoutConstraintOrientation::Vertical,
+    );
+    f.addArrangedSubview(&spacer);
+    f.setCustomSpacing_afterView(0.0, &base_row);
     finish(&f);
     a.setAccessoryView(Some(&f));
     a.window().setInitialFirstResponder(Some(&branch));
