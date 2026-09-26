@@ -664,8 +664,9 @@ impl App {
         self.update(|m| m.pending.push(pending));
         let app = self.clone();
         self.inner.rt.spawn(async move {
-            let root = app.model().config.worktrees_root.clone();
-            let target = crate::paths::worktree_path_for(&root, &repo.name, params.branch.trim());
+            let model = app.model();
+            let root = model.config.worktrees_root.clone();
+            let target = model.worktree_path(&repo, &params.branch);
             let lock = app.lock_for(&target.to_string_lossy());
             let outcome = {
                 let _g = lock.lock().await;

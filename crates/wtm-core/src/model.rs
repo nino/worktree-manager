@@ -7,9 +7,11 @@
 //! trivial and thread-safe.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths::worktree_path_for;
 use crate::types::{AppConfig, RepoConfig, WorktreeInfo};
 
 /// What an in-flight operation is doing to a worktree, for row spinners and
@@ -183,6 +185,12 @@ pub struct Model {
 }
 
 impl Model {
+    /// Where a worktree of `repo` for `branch` goes. The New Worktree sheet
+    /// checks this folder and Create makes it, so both ask here.
+    pub fn worktree_path(&self, repo: &RepoConfig, branch: &str) -> PathBuf {
+        worktree_path_for(&self.config.worktrees_root, &repo.name, branch.trim())
+    }
+
     pub fn repo(&self, repo_id: &str) -> Option<&RepoNode> {
         self.repos.iter().find(|r| r.repo.id == repo_id)
     }

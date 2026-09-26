@@ -4,10 +4,12 @@
 //! an [`Action`] and the model update repaints the tree.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use block2::RcBlock;
+use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
@@ -22,7 +24,7 @@ use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use wtm_core::{
-    new_worktree, paths, Action, App, BranchLocation, CreateWorktreeParams, DeleteRefusal,
+    new_worktree, Action, App, BranchLocation, CreateWorktreeParams, DeleteRefusal,
     DeleteWorktreeParams, DeleteWorktreeResult,
 };
 
@@ -393,6 +395,12 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
     sheet(&a, window, move |resp| {
         let _ = &_keep;
         OPEN_SHEET_CHECKS.with(|c| c.borrow_mut().retain(|f| !Rc::ptr_eq(f, &validate)));
+        // Read before the folders are forgotten below.
+        let folder = taken(&app, &repo_id, branch.stringValue().to_string().trim());
+        // Every prefix typed left an entry; the next sheet looks afresh.
+        if OPEN_SHEET_CHECKS.with(|c| c.borrow().is_empty()) {
+            FOLDERS.with(|f| f.borrow_mut().clear());
+        }
         if resp != NSAlertFirstButtonReturn {
             return;
         }
@@ -408,7 +416,7 @@ pub fn create_worktree(app: &App, window: &NSWindow, repo_id: &str) {
             modes.selectedSegment() == 0,
             &base.stringValue().to_string(),
             &place,
-            taken(&app, &repo_id, name.trim()).as_deref(),
+            folder.as_deref(),
         );
         // Create is off whenever this is an error.
         let Ok(source) = check.create else {
@@ -431,18 +439,43 @@ fn locate(app: &App, repo_id: &str, name: &str) -> BranchLocation {
 }
 
 /// The folder a worktree for `name` would get, abbreviated, when something is
-/// already there. Only a stat, so it is fine on every keystroke.
+/// already there as of the last look. That look happens off the main thread
+/// (a worktrees root on a network volume can take seconds to answer), and an
+/// answer that changes what was known checks every open sheet again.
 fn taken(app: &App, repo_id: &str, name: &str) -> Option<String> {
     let model = app.model();
     let node = model.repo(repo_id)?;
-    let target = paths::worktree_path_for(&model.config.worktrees_root, &node.repo.name, name);
-    let target = target.to_string_lossy();
-    std::fs::symlink_metadata(&*target)
-        .is_ok()
-        .then(|| app.display_path(&target))
+    let target = model.worktree_path(&node.repo, name);
+    let key = target.to_string_lossy().into_owned();
+    let shown = FOLDERS
+        .with(|f| f.borrow().get(&key).copied())
+        .unwrap_or(false)
+        .then(|| app.display_path(&key));
+    let asked = LOOKING.with(|l| l.borrow_mut().insert(key.clone()));
+    if asked {
+        DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(
+            DispatchQoS::UserInitiated,
+        ))
+        .exec_async(move || {
+            let there = std::fs::symlink_metadata(&target).is_ok();
+            DispatchQueue::main().exec_async(move || {
+                LOOKING.with(|l| l.borrow_mut().remove(&key));
+                let before = FOLDERS.with(|f| f.borrow_mut().insert(key, there));
+                if before != Some(there) {
+                    model_changed();
+                }
+            });
+        });
+    }
+    shown
 }
 
 thread_local! {
+    /// Whether something was at each worktree folder a sheet asked about,
+    /// when last looked.
+    static FOLDERS: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
+    /// Folders being looked at now, so a hung volume does not pile up looks.
+    static LOOKING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     /// Each open New Worktree sheet's check of its fields, run again on every
     /// model change while the sheet is up. There can be more than one: ⌘N
     /// while a sheet is up queues another.
@@ -516,7 +549,7 @@ pub fn repo_settings(app: &App, window: &NSWindow, repo_id: &str) {
             let app = app.clone();
             let repo = repo.clone();
             // The first sheet must finish dismissing before another can open.
-            dispatch2::DispatchQueue::main().exec_async(move || {
+            DispatchQueue::main().exec_async(move || {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 let Some(window) = crate::controller::main_window(mtm) else {
                     return;
@@ -588,7 +621,7 @@ fn request_delete(app: &App, repo_id: String, path: String, branch: Option<Strin
         params,
         Box::new(move |result| {
             let app = app2.clone();
-            dispatch2::DispatchQueue::main()
+            DispatchQueue::main()
                 .exec_async(move || delete_finished(&app, repo_id, path, branch, result));
         }),
     ));
