@@ -378,16 +378,22 @@ impl App {
 
     /// Mutate a copy of the model, publish it, notify listeners.
     fn update(&self, f: impl FnOnce(&mut Model)) {
-        {
-            let mut guard = self.inner.model.write();
-            let mut next = (**guard).clone();
-            f(&mut next);
-            if next == **guard {
-                return;
-            }
-            *guard = Arc::new(next);
+        if self.publish(f) {
+            self.emit(Event::ModelChanged);
         }
-        self.emit(Event::ModelChanged);
+    }
+
+    /// Mutate a copy of the model and publish it, without telling anyone.
+    /// Returns whether it changed.
+    fn publish(&self, f: impl FnOnce(&mut Model)) -> bool {
+        let mut guard = self.inner.model.write();
+        let mut next = (**guard).clone();
+        f(&mut next);
+        if next == **guard {
+            return false;
+        }
+        *guard = Arc::new(next);
+        true
     }
 
     fn emit(&self, event: Event) {
@@ -402,11 +408,20 @@ impl App {
     }
 
     fn apply_config(&self) {
-        let config = self.inner.store.lock().config().clone();
-        self.update(|m| {
-            m.config = config;
-            m.sync_repos_with_config();
-        });
+        // Copied and published under the store's lock: an added repo lands
+        // on a tokio thread while a drag reorders the list on the main one,
+        // and the older copy published last would undo the newer one on
+        // screen, though not in the file.
+        let changed = {
+            let store = self.inner.store.lock();
+            self.publish(|m| {
+                m.config = store.config().clone();
+                m.sync_repos_with_config();
+            })
+        };
+        if changed {
+            self.emit(Event::ModelChanged);
+        }
     }
 
     fn repo_config(&self, repo_id: &str) -> Option<RepoConfig> {

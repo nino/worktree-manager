@@ -105,9 +105,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   identity, never by index. A frame less than half on any screen is ignored
   and the window centres instead.
 - **Repo order** is the order of `repos` in the config: new repos go last,
-  and dragging a repo's header moves it (`Action::MoveRepo`, named by the repo
-  it lands before, so a drop made during a search lands in the right place).
-  Worktrees keep their sorted order (primary first) and cannot be dragged.
+  and dragging a repo's header, or ⌥⌘↑/⌥⌘↓ on the selected card, moves it
+  (`Action::MoveRepo`). The move names the repo it lands before rather than
+  an index, and `wtm_core::repos::drop_target` works that out from the repos
+  a search shows, so a hidden repo never moves with it. Worktrees keep their
+  sorted order (primary first) and cannot be dragged.
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.

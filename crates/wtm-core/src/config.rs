@@ -10,6 +10,7 @@ use serde::Serialize;
 use wtm_platform::AppDirs;
 
 use crate::paths::sanitize_repo_name;
+use crate::repos::move_before;
 use crate::types::{AppConfig, AppSettings, RepoConfig};
 use crate::update::UpdateChannel;
 
@@ -100,25 +101,10 @@ impl ConfigStore {
     }
 
     /// Put a repo just before another in the list, or last for `None`: the
-    /// order the window shows them in. Naming repos rather than positions
-    /// keeps a drop right when the list it was made on showed only some of
-    /// them (a search) or has changed since. Returns false, and writes
-    /// nothing, if either repo is unknown or the order is unchanged.
+    /// order the window shows them in. Returns false, and writes nothing, if
+    /// either repo is unknown or the order is unchanged.
     pub fn move_repo(&mut self, repo_id: &str, before: Option<&str>) -> bool {
-        let repos = &mut self.config.repos;
-        let Some(from) = repos.iter().position(|r| r.id == repo_id) else {
-            return false;
-        };
-        if before.is_some_and(|b| b == repo_id || !repos.iter().any(|r| r.id == b)) {
-            return false;
-        }
-        let repo = repos.remove(from);
-        let to = match before {
-            Some(b) => repos.iter().position(|r| r.id == b).unwrap_or(repos.len()),
-            None => repos.len(),
-        };
-        repos.insert(to, repo);
-        if to == from {
+        if !move_before(&mut self.config.repos, |r| &r.id, repo_id, before) {
             return false;
         }
         self.save();
@@ -215,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repo_moves_before_another_or_to_the_end() {
+    fn a_moved_repo_stays_moved() {
         let dir = std::env::temp_dir().join(format!("wtm-config-move-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let dirs = AppDirs {
@@ -227,16 +213,6 @@ mod tests {
         for path in ["/a", "/b", "/c"] {
             store.add_repo(path.into(), "main".into());
         }
-        let id = |store: &ConfigStore, name: &str| {
-            store
-                .config()
-                .repos
-                .iter()
-                .find(|r| r.name == name)
-                .unwrap()
-                .id
-                .clone()
-        };
         let names = |store: &ConfigStore| -> Vec<String> {
             store
                 .config()
@@ -245,25 +221,11 @@ mod tests {
                 .map(|r| r.name.clone())
                 .collect()
         };
-        let (a, c) = (id(&store, "a"), id(&store, "c"));
-
-        assert!(store.move_repo(&c, Some(&a)));
-        assert_eq!(names(&store), ["c", "a", "b"]);
-        assert!(store.move_repo(&c, None));
-        assert_eq!(names(&store), ["a", "b", "c"]);
-        assert!(store.move_repo(&a, Some(&c)));
-        assert_eq!(names(&store), ["b", "a", "c"]);
-
-        // Where it already is, before itself, or next to a repo that is gone.
-        assert!(!store.move_repo(&a, Some(&c)));
-        assert!(!store.move_repo(&c, None));
-        assert!(!store.move_repo(&a, Some(&a)));
-        assert!(!store.move_repo(&a, Some("gone")));
-        assert!(!store.move_repo("gone", None));
-        assert_eq!(names(&store), ["b", "a", "c"]);
-
-        // The order is what the file keeps.
-        assert_eq!(names(&ConfigStore::load(&dirs)), ["b", "a", "c"]);
+        let a = store.config().repos[0].id.clone();
+        assert!(store.move_repo(&a, None));
+        assert!(!store.move_repo(&a, None));
+        assert_eq!(names(&store), ["b", "c", "a"]);
+        assert_eq!(names(&ConfigStore::load(&dirs)), ["b", "c", "a"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

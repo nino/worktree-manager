@@ -60,8 +60,11 @@ tree it was last given, and falls back to `reloadData` when they differ, when
 worktree rows were reordered, and for the first tree. A repo dragged to a new
 place (`Action::MoveRepo`, which reorders the config) comes back as the same
 roots in a new order, and `wtm_core::splice::moves` turns that into
-`moveItemAtIndex:` calls, so the selection and every row's view stay with
-their repo. Debug builds then
+`moveItemAtIndex:` calls — one for one repo moved — so the selection and
+every row's view stay with their repo. The repo header's cell draws its own
+drag image, its row rendered as a closed card: `NSTableCellView` builds one
+from outlets this cell does not set, and the card is the row view's drawing,
+not the cell's. Debug builds then
 check that the outline's rows and heights match the tree after every update.
 This is what keeps the search field responsive: in this outline, every
 `reloadData` built all the visible rows' views anew, about 60 ms with 40

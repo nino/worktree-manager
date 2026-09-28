@@ -27,10 +27,10 @@ use crate::badge::{badges_for, Badge};
 use crate::branchlabel::branch_label;
 use crate::button::{Button, IconButton, PillButton};
 use crate::dialogs;
-use crate::util::{label, mono_label, ns, secondary_label, symbol, symbol_raised};
+use crate::util::{label, mono_label, ns, render, secondary_label, symbol, symbol_raised};
 
 use crate::outline::CONTENT_START;
-use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
+use crate::rowview::{RowStyle, RowView, CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
 
 /// Row heights include the card geometry drawn by `RowView`: the gap above a
 /// card for headers, the plate gaps for children. A card's first and last
@@ -247,20 +247,29 @@ impl RepoCell {
         unsafe { msg_send![super(self), hitTest: point] }
     }
 
-    /// The header as it looks on screen, card and all. `NSTableCellView`
-    /// builds its image from the `textField` and `imageView` outlets, which
-    /// this cell does not set, and the card is drawn by the row view beneath
-    /// the cell, so the default image would be empty.
+    /// The header as it looks on screen, drawn as a closed card: the whole
+    /// card is what moves, and an open one's header ends in a flat edge.
+    /// `NSTableCellView` builds its image from the `textField` and
+    /// `imageView` outlets, which this cell does not set, and the card is
+    /// drawn by the row view beneath the cell, so the default image would be
+    /// empty.
     fn drag_image(&self) -> Retained<NSArray<NSDraggingImageComponent>> {
-        let Some(row) = (unsafe { self.superview() }) else {
+        let row = unsafe { self.superview() };
+        let rep = row.as_deref().and_then(|row| {
+            let Some(card) = row.downcast_ref::<RowView>() else {
+                return render(row);
+            };
+            let style = card.style();
+            card.set_style(RowStyle::Header { closed: true });
+            let rep = render(row);
+            card.set_style(style);
+            rep
+        });
+        let (Some(row), Some(rep)) = (row, rep) else {
             return unsafe { msg_send![super(self), draggingImageComponents] };
         };
-        let bounds = row.bounds();
-        let Some(rep) = row.bitmapImageRepForCachingDisplayInRect(bounds) else {
-            return unsafe { msg_send![super(self), draggingImageComponents] };
-        };
-        row.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
         let mtm = MainThreadMarker::from(self);
+        let bounds = row.bounds();
         let image = NSImage::initWithSize(mtm.alloc(), bounds.size);
         image.addRepresentation(&rep);
         let component = NSDraggingImageComponent::initWithKey(mtm.alloc(), unsafe {

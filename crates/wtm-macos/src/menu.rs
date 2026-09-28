@@ -123,6 +123,18 @@ pub fn install(app: &NSApplication, controller: &AnyObject, mtm: MainThreadMarke
         mtm,
     ));
     file.addItem(&NSMenuItem::separatorItem(mtm));
+    // ⌥⌘↑ and ⌥⌘↓: the keyboard's way to do what dragging a card does.
+    for (title, action, key) in [
+        ("Move Repository Up", sel!(moveRepoUp:), "\u{F700}"),
+        ("Move Repository Down", sel!(moveRepoDown:), "\u{F701}"),
+    ] {
+        let i = item(title, Some(action), key, Some(controller), mtm);
+        i.setKeyEquivalentModifierMask(
+            NSEventModifierFlags::Command | NSEventModifierFlags::Option,
+        );
+        file.addItem(&i);
+    }
+    file.addItem(&NSMenuItem::separatorItem(mtm));
     file.addItem(&item(
         "Refresh",
         Some(sel!(refresh:)),
