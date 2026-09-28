@@ -26,8 +26,8 @@ use wtm_core::git::{
     parse_worktree_porcelain, GitError, ParsedWorktree,
 };
 use wtm_core::paths::{sanitize_repo_name, slugify_branch, tildify, worktree_path_for};
-use wtm_core::repos::describe_add_failure;
-use wtm_core::splice::{splice, Splice};
+use wtm_core::repos::{describe_add_failure, drop_target, move_before};
+use wtm_core::splice::{moves, splice, Splice};
 use wtm_core::ui_state::UiStateStore;
 use wtm_core::update::{is_newer, Manifest};
 use wtm_core::WindowFrame;
@@ -435,6 +435,103 @@ proptest! {
     #[test]
     fn two_filters_of_one_list_always_splice((old, new) in two_filters()) {
         prop_assert!(splice(&old, &new).is_some());
+    }
+
+    #[test]
+    fn moves_turn_a_list_into_any_reordering_of_it(
+        (old, new) in prop::collection::btree_set(0u8..12, 0..10)
+            .prop_map(|s| s.into_iter().collect::<Vec<_>>())
+            .prop_flat_map(|old| (Just(old.clone()), Just(old).prop_shuffle())),
+    ) {
+        let steps = moves(&old, &new).expect("a reordering is moves");
+        let mut shown = old.clone();
+        for &(from, to) in &steps {
+            prop_assert!(from < shown.len() && to < shown.len(), "{:?}", steps);
+            let x = shown.remove(from);
+            shown.insert(to, x);
+        }
+        prop_assert_eq!(&shown, &new);
+        prop_assert!(steps.len() < old.len().max(1));
+    }
+
+    #[test]
+    fn one_element_taken_elsewhere_is_one_move(
+        (old, from, to) in prop::collection::btree_set(0u8..12, 1..10)
+            .prop_map(|s| s.into_iter().collect::<Vec<_>>())
+            .prop_flat_map(|old| {
+                let n = old.len();
+                (Just(old), 0..n, 0..n)
+            }),
+    ) {
+        let mut new = old.clone();
+        let x = new.remove(from);
+        new.insert(to, x);
+        let steps = moves(&old, &new).unwrap();
+        prop_assert!(steps.len() <= 1, "{:?}", steps);
+    }
+
+    #[test]
+    fn lists_that_differ_have_no_moves((old, new) in distinct_lists()) {
+        let mut sorted = (old.clone(), new.clone());
+        sorted.0.sort();
+        sorted.1.sort();
+        prop_assert_eq!(moves(&old, &new).is_some(), sorted.0 == sorted.1);
+    }
+}
+
+// MARK: Reordering repos
+
+/// Distinct repo ids, which of them a search shows (at least the dragged
+/// one), the dragged one, and a gap among those shown.
+fn a_drop() -> impl Strategy<Value = (Vec<String>, Vec<String>, String, usize)> {
+    prop::collection::vec(any::<bool>(), 1..9)
+        .prop_flat_map(|shows| {
+            let n = shows.len();
+            (Just(shows), 0..n)
+        })
+        .prop_flat_map(|(mut shows, dragged)| {
+            shows[dragged] = true;
+            let all: Vec<String> = (0..shows.len()).map(|i| format!("r{i}")).collect();
+            let shown: Vec<String> = all
+                .iter()
+                .zip(&shows)
+                .filter(|(_, s)| **s)
+                .map(|(a, _)| a.clone())
+                .collect();
+            let gaps = shown.len() + 1;
+            (
+                Just(all.clone()),
+                Just(shown),
+                Just(all[dragged].clone()),
+                0..gaps,
+            )
+        })
+}
+
+proptest! {
+    /// Whatever a search hides, a drop puts the dragged repo in that gap
+    /// among the repos shown, and moves no other repo.
+    #[test]
+    fn a_drop_lands_in_the_gap_it_was_made_in((all, shown, dragged, gap) in a_drop()) {
+        let all_refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        let shown_refs: Vec<&str> = shown.iter().map(String::as_str).collect();
+        let from = shown.iter().position(|s| *s == dragged).unwrap();
+        let mut expected = shown.clone();
+        let x = expected.remove(from);
+        expected.insert(if gap > from { gap - 1 } else { gap }, x);
+
+        let mut after = all.clone();
+        match drop_target(&all_refs, &shown_refs, &dragged, gap) {
+            None => prop_assert_eq!(&expected, &shown),
+            Some(before) => {
+                prop_assert!(move_before(&mut after, |s| s.as_str(), &dragged, before));
+            }
+        }
+        let now_shown: Vec<String> =
+            after.iter().filter(|a| shown.contains(a)).cloned().collect();
+        prop_assert_eq!(now_shown, expected);
+        let others = |v: &[String]| v.iter().filter(|a| **a != dragged).cloned().collect::<Vec<_>>();
+        prop_assert_eq!(others(&after), others(&all));
     }
 }
 

@@ -10,6 +10,7 @@ use serde::Serialize;
 use wtm_platform::AppDirs;
 
 use crate::paths::sanitize_repo_name;
+use crate::repos::move_before;
 use crate::types::{AppConfig, AppSettings, RepoConfig};
 use crate::update::UpdateChannel;
 
@@ -99,6 +100,17 @@ impl ConfigStore {
         }
     }
 
+    /// Put a repo just before another in the list, or last for `None`: the
+    /// order the window shows them in. Returns false, and writes nothing, if
+    /// either repo is unknown or the order is unchanged.
+    pub fn move_repo(&mut self, repo_id: &str, before: Option<&str>) -> bool {
+        if !move_before(&mut self.config.repos, |r| &r.id, repo_id, before) {
+            return false;
+        }
+        self.save();
+        true
+    }
+
     pub fn remove_repo(&mut self, repo_id: &str) {
         self.config.repos.retain(|r| r.id != repo_id);
         self.save();
@@ -185,6 +197,35 @@ mod tests {
             .map(|r| r.name.as_str())
             .collect();
         assert_eq!(names, ["repo", "-", "x---y"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_moved_repo_stays_moved() {
+        let dir = std::env::temp_dir().join(format!("wtm-config-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dirs = AppDirs {
+            config_dir: dir.join("config"),
+            home: dir.clone(),
+            legacy_config_files: Vec::new(),
+        };
+        let mut store = ConfigStore::load(&dirs);
+        for path in ["/a", "/b", "/c"] {
+            store.add_repo(path.into(), "main".into());
+        }
+        let names = |store: &ConfigStore| -> Vec<String> {
+            store
+                .config()
+                .repos
+                .iter()
+                .map(|r| r.name.clone())
+                .collect()
+        };
+        let a = store.config().repos[0].id.clone();
+        assert!(store.move_repo(&a, None));
+        assert!(!store.move_repo(&a, None));
+        assert_eq!(names(&store), ["b", "c", "a"]);
+        assert_eq!(names(&ConfigStore::load(&dirs)), ["b", "c", "a"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

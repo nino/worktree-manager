@@ -5,8 +5,8 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSColor, NSFont, NSImage,
-    NSImageSymbolConfiguration, NSTextField,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSBitmapImageRep, NSColor,
+    NSFont, NSImage, NSImageSymbolConfiguration, NSTextField, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
 
@@ -15,6 +15,14 @@ use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString};
 pub const REGULAR: f64 = 0.0;
 pub const MEDIUM: f64 = 0.23;
 pub const SEMIBOLD: f64 = 0.3;
+
+/// `view` and its subviews drawn into a bitmap, as they look now.
+pub fn render(view: &NSView) -> Option<Retained<NSBitmapImageRep>> {
+    let bounds = view.bounds();
+    let rep = view.bitmapImageRepForCachingDisplayInRect(bounds)?;
+    view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+    Some(rep)
+}
 
 /// Dark Aqua, from the appearance currently being drawn into. Lit edges,
 /// grain and glows that read as bevels in light read as extra borders here.

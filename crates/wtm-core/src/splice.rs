@@ -2,7 +2,7 @@
 //! a list view in place instead of reloading it: rows present in both keep
 //! their views.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 /// Indices in the old list to remove, then indices in the new list to insert,
@@ -43,6 +43,70 @@ pub fn splice<T: Eq + Hash>(old: &[T], new: &[T]) -> Option<Splice> {
     })
 }
 
+/// The moves that put `old` in `new`'s order, when the two hold the same
+/// elements: `(from, to)` pairs to apply one after another, each taking the
+/// element at `from` out and putting it back at `to`, both indices into the
+/// list as the moves before it left it — the way
+/// `moveItemAtIndex:inParent:toIndex:inParent:` takes them. The elements in
+/// the longest run that is already in order stay put, so one element taken
+/// somewhere else is one move. `None` when the lists do not hold the same
+/// elements. Elements are expected to be unique within each list.
+pub fn moves<T: Eq + Hash>(old: &[T], new: &[T]) -> Option<Vec<(usize, usize)>> {
+    if old.len() != new.len() {
+        return None;
+    }
+    let at: HashMap<&T, usize> = old.iter().enumerate().map(|(i, x)| (x, i)).collect();
+    // Where each element of `new` was in `old`.
+    let was: Vec<usize> = new
+        .iter()
+        .map(|x| at.get(x).copied())
+        .collect::<Option<_>>()?;
+    if was.iter().collect::<HashSet<_>>().len() != was.len() {
+        return None;
+    }
+    let stays = longest_increasing(&was);
+    let mut current: Vec<usize> = (0..old.len()).collect();
+    let mut out = Vec::new();
+    for (i, &x) in was.iter().enumerate() {
+        if stays[i] {
+            continue;
+        }
+        let from = current.iter().position(|&y| y == x)?;
+        current.remove(from);
+        // Right after the element before it in `new`, which is either one
+        // that stays or one already put in place.
+        let to = match i {
+            0 => 0,
+            _ => current.iter().position(|&y| y == was[i - 1])? + 1,
+        };
+        current.insert(to, x);
+        out.push((from, to));
+    }
+    Some(out)
+}
+
+/// Which elements of `xs` make up a longest strictly increasing subsequence.
+fn longest_increasing(xs: &[usize]) -> Vec<bool> {
+    // `len[i]`: the longest run ending at `i`; `prev[i]`: the one before it.
+    let mut len = vec![1usize; xs.len()];
+    let mut prev = vec![None; xs.len()];
+    for i in 0..xs.len() {
+        for j in 0..i {
+            if xs[j] < xs[i] && len[j] + 1 > len[i] {
+                len[i] = len[j] + 1;
+                prev[i] = Some(j);
+            }
+        }
+    }
+    let mut on = vec![false; xs.len()];
+    let mut i = (0..xs.len()).max_by_key(|&i| len[i]);
+    while let Some(k) = i {
+        on[k] = true;
+        i = prev[k];
+    }
+    on
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +144,28 @@ mod tests {
     fn a_reorder_has_no_splice() {
         assert_eq!(splice(&["a", "b", "c"], &["c", "b"]), None);
         assert_eq!(splice(&["a", "b"], &["b", "x", "a"]), None);
+    }
+
+    #[test]
+    fn a_reorder_is_moves() {
+        assert_eq!(moves(&["a", "b", "c"], &["a", "b", "c"]), Some(vec![]));
+        assert_eq!(
+            moves(&["a", "b", "c"], &["c", "a", "b"]),
+            Some(vec![(2, 0)])
+        );
+        assert_eq!(
+            moves(&["a", "b", "c"], &["b", "c", "a"]),
+            Some(vec![(0, 2)])
+        );
+        let one_swap = moves(&["a", "b", "c", "d"], &["a", "c", "b", "d"]);
+        assert_eq!(one_swap.unwrap().len(), 1);
+        assert_eq!(moves(&["a", "b", "c"], &["c", "b", "a"]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn different_elements_are_not_moves() {
+        assert_eq!(moves(&["a", "b"], &["a", "c"]), None);
+        assert_eq!(moves(&["a", "b"], &["a"]), None);
+        assert_eq!(moves(&["a", "b"], &["a", "a"]), None);
     }
 }

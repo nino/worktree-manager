@@ -13,10 +13,11 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSAppearanceCustomization, NSBezelStyle, NSButton, NSCellImagePosition,
-    NSColor, NSControlSize, NSFont, NSImageSymbolConfiguration, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
-    NSLayoutPriorityRequired, NSPasteboard, NSPasteboardTypeString, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
+    NSColor, NSControlSize, NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSFont,
+    NSImage, NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
+    NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
     NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
@@ -26,10 +27,10 @@ use crate::badge::{badges_for, Badge};
 use crate::branchlabel::branch_label;
 use crate::button::{Button, IconButton, PillButton};
 use crate::dialogs;
-use crate::util::{label, mono_label, ns, secondary_label, symbol, symbol_raised};
+use crate::util::{label, mono_label, ns, render, secondary_label, symbol, symbol_raised};
 
 use crate::outline::CONTENT_START;
-use crate::rowview::{CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
+use crate::rowview::{RowStyle, RowView, CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
 
 /// Row heights include the card geometry drawn by `RowView`: the gap above a
 /// card for headers, the plate gaps for children. A card's first and last
@@ -226,6 +227,12 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             self.hit_test_past_chevron(point)
         }
+
+        /// What a repo dragged to a new place in the list looks like.
+        #[unsafe(method_id(draggingImageComponents))]
+        fn dragging_image_components(&self) -> Retained<NSArray<NSDraggingImageComponent>> {
+            self.drag_image()
+        }
     }
 );
 
@@ -238,6 +245,39 @@ impl RepoCell {
             return None;
         }
         unsafe { msg_send![super(self), hitTest: point] }
+    }
+
+    /// The header as it looks on screen, drawn as a closed card: the whole
+    /// card is what moves, and an open one's header ends in a flat edge.
+    /// `NSTableCellView` builds its image from the `textField` and
+    /// `imageView` outlets, which this cell does not set, and the card is
+    /// drawn by the row view beneath the cell, so the default image would be
+    /// empty.
+    fn drag_image(&self) -> Retained<NSArray<NSDraggingImageComponent>> {
+        let row = unsafe { self.superview() };
+        let rep = row.as_deref().and_then(|row| {
+            let Some(card) = row.downcast_ref::<RowView>() else {
+                return render(row);
+            };
+            let style = card.style();
+            card.set_style(RowStyle::Header { closed: true });
+            let rep = render(row);
+            card.set_style(style);
+            rep
+        });
+        let (Some(row), Some(rep)) = (row, rep) else {
+            return unsafe { msg_send![super(self), draggingImageComponents] };
+        };
+        let mtm = MainThreadMarker::from(self);
+        let bounds = row.bounds();
+        let image = NSImage::initWithSize(mtm.alloc(), bounds.size);
+        image.addRepresentation(&rep);
+        let component = NSDraggingImageComponent::initWithKey(mtm.alloc(), unsafe {
+            NSDraggingImageComponentIconKey
+        });
+        unsafe { component.setContents(Some(&image)) };
+        component.setFrame(self.convertRect_fromView(bounds, Some(&row)));
+        NSArray::from_retained_slice(&[component])
     }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {

@@ -104,6 +104,12 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   the config, so `WTM_USER_DATA` sandboxes them too. Rows are remembered by
   identity, never by index. A frame less than half on any screen is ignored
   and the window centres instead.
+- **Repo order** is the order of `repos` in the config: new repos go last,
+  and dragging a repo's header, or ⌥⌘↑/⌥⌘↓ on the selected card, moves it
+  (`Action::MoveRepo`). The move names the repo it lands before rather than
+  an index, and `wtm_core::repos::drop_target` works that out from the repos
+  a search shows, so a hidden repo never moves with it. Worktrees keep their
+  sorted order (primary first) and cannot be dragged.
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.
@@ -175,6 +181,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   `rebuild` inserts and removes rows (`wtm_core::splice`) instead. A splice
   must name exactly the rows the outline holds, or AppKit raises an
   exception, and the outline keeps a row's height until told it changed.
+- **A drag that rests on a collapsed item expands it**, and a drop leaves it
+  expanded (only a cancelled drag closes it again). The expansion goes
+  through the usual will-expand notification, so it reads as the user opening
+  the card. `outlineView:shouldExpandItem:` refuses it for closed cards while
+  a repo is being dragged.
 - **Font weight constants** (`NSFontWeightMedium`, …) are extern statics;
   `util::{REGULAR, MEDIUM, SEMIBOLD}` holds the documented numbers instead.
 - **The system tooltip delay cannot be shortened**, which is why row icons draw
