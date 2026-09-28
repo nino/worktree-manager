@@ -181,6 +181,11 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   `rebuild` inserts and removes rows (`wtm_core::splice`) instead. A splice
   must name exactly the rows the outline holds, or AppKit raises an
   exception, and the outline keeps a row's height until told it changed.
+- **A drag that rests on a collapsed item expands it**, and a drop leaves it
+  expanded (only a cancelled drag closes it again). The expansion goes
+  through the usual will-expand notification, so it reads as the user opening
+  the card. `outlineView:shouldExpandItem:` refuses it for closed cards while
+  a repo is being dragged.
 - **Font weight constants** (`NSFontWeightMedium`, …) are extern statics;
   `util::{REGULAR, MEDIUM, SEMIBOLD}` holds the documented numbers instead.
 - **The system tooltip delay cannot be shortened**, which is why row icons draw

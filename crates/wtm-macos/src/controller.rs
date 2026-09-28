@@ -474,6 +474,13 @@ define_class!(
             true
         }
 
+        /// A drag that rests on a closed card makes the outline open it, and
+        /// a drop leaves it open; neither is anything the user asked for.
+        #[unsafe(method(outlineView:shouldExpandItem:))]
+        unsafe fn should_expand(&self, _o: &NSOutlineView, item: &AnyObject) -> bool {
+            !self.closed_card_under_drag(item)
+        }
+
         #[unsafe(method_id(outlineView:rowViewForItem:))]
         unsafe fn row_view_for_item(&self, outline: &NSOutlineView, item: &AnyObject) -> Option<Retained<objc2_app_kit::NSTableRowView>> {
             self.make_row_view(outline, item)
@@ -1164,6 +1171,19 @@ impl Controller {
             .collect();
         let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
         drop_target(&all, &shown, repo_id, gap).map(|before| before.map(str::to_string))
+    }
+
+    /// `item` is a card the user closed and a repo is being dragged, which
+    /// is when the outline opens cards on its own (see `should_expand`).
+    /// Cards meant to be open still open, so a refresh landing mid-drag
+    /// puts back what it rebuilds.
+    fn closed_card_under_drag(&self, item: &AnyObject) -> bool {
+        let iv = self.ivars();
+        iv.dragged_repo.borrow().is_some()
+            && item.downcast_ref::<WTMItem>().is_some_and(|i| {
+                matches!(i.kind(), ItemKind::Repo { .. })
+                    && iv.collapsed.borrow().contains(i.kind().repo_id())
+            })
     }
 
     /// The selected card moved one place up or down the list, as the repo
