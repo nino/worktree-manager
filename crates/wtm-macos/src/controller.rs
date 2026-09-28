@@ -12,25 +12,25 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAnimationContext, NSApplication, NSApplicationDelegate, NSBackingStoreType, NSBezelStyle,
-    NSButton, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSFont,
-    NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSButton, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSDragOperation,
+    NSDraggingInfo, NSFont, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
     NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation,
-    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate,
-    NSSearchToolbarItem, NSStackView, NSStackViewDistribution, NSTableColumn,
-    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle,
-    NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarItemIdentifier, NSUserInterfaceItemIdentification,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboardItem,
+    NSPasteboardWriting, NSProgressIndicator, NSProgressIndicatorStyle, NSScreen, NSScrollView,
+    NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
+    NSStackViewDistribution, NSTableColumn, NSTableViewAnimationOptions,
+    NSTableViewColumnAutoresizingStyle, NSTableViewSelectionHighlightStyle, NSTableViewStyle,
+    NSTextField, NSTextFieldDelegate, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
+    NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRect, NSSize, NSUserDefaults, NSURL,
 };
 use wtm_core::model::Tone;
-use wtm_core::splice::{splice, Splice};
+use wtm_core::splice::{moves, splice, Splice};
 use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
 
 use crate::button::Button;
@@ -64,6 +64,10 @@ const COLLAPSE_SETTLE_NS: i64 = 400_000_000;
 /// Where AppKit kept the window's frame for versions before `ui-state.json`,
 /// which set the frame autosave name `WTMMainWindow`.
 const LEGACY_FRAME_KEY: &str = "NSWindow Frame WTMMainWindow";
+
+/// The pasteboard type of a repo dragged to a new place in the list: its id.
+/// Private to this app, so nothing else takes the drop.
+const REPO_DRAG_TYPE: &str = "uk.org.plinth.worktree-manager.repo";
 
 const TOOLBAR_ADD: &str = "wtm.add";
 const TOOLBAR_REFRESH: &str = "wtm.refresh";
@@ -387,6 +391,23 @@ define_class!(
         #[unsafe(method(outlineView:isItemExpandable:))]
         unsafe fn is_expandable(&self, _o: &NSOutlineView, item: &AnyObject) -> bool {
             matches!(item.downcast_ref::<WTMItem>().map(|i| i.kind()), Some(ItemKind::Repo { .. }))
+        }
+
+        /// Repos can be dragged to a new place in the list; worktrees keep
+        /// their sorted order.
+        #[unsafe(method_id(outlineView:pasteboardWriterForItem:))]
+        unsafe fn pasteboard_writer(&self, _o: &NSOutlineView, item: &AnyObject) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
+            repo_drag_writer(item)
+        }
+
+        #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
+        unsafe fn validate_drop(&self, outline: &NSOutlineView, info: &ProtocolObject<dyn NSDraggingInfo>, _item: Option<&AnyObject>, _index: NSInteger) -> NSDragOperation {
+            self.validate_repo_drop(outline, info)
+        }
+
+        #[unsafe(method(outlineView:acceptDrop:item:childIndex:))]
+        unsafe fn accept_drop(&self, outline: &NSOutlineView, info: &ProtocolObject<dyn NSDraggingInfo>, item: Option<&AnyObject>, index: NSInteger) -> bool {
+            self.accept_repo_drop(outline, info, item, index)
         }
     }
 
@@ -1095,6 +1116,103 @@ impl Controller {
             .then_some(repo_id)
     }
 
+    // MARK: Reordering repos
+
+    /// A drag of one of this list's repos, whose id it is.
+    fn dragged_repo_id(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+    ) -> Option<String> {
+        let source = info.draggingSource()?;
+        if !std::ptr::eq(Retained::as_ptr(&source).cast::<NSOutlineView>(), outline) {
+            return None;
+        }
+        let id = info
+            .draggingPasteboard()
+            .stringForType(&ns(REPO_DRAG_TYPE))?
+            .to_string();
+        self.ivars().app.model().repo(&id).map(|_| id)
+    }
+
+    /// Where among the repos the list shows a drag at `info`'s location
+    /// would put one. The drop is always between cards, never into one: the
+    /// upper half of a card, header and open rows together, puts it before
+    /// that card, the lower half after.
+    fn repo_drop_index(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+    ) -> usize {
+        let y = outline
+            .convertPoint_fromView(info.draggingLocation(), None)
+            .y;
+        let tree = self.ivars().tree.borrow();
+        for (i, root) in tree.roots.iter().enumerate() {
+            let row = unsafe { outline.rowForItem(Some(root)) };
+            if row < 0 {
+                continue;
+            }
+            let open = if unsafe { outline.isItemExpanded(Some(root)) } {
+                tree.children.get(&root.kind().key()).map_or(0, Vec::len)
+            } else {
+                0
+            };
+            // The outline is flipped: y grows downwards.
+            let (top, bottom) = (outline.rectOfRow(row).origin.y, {
+                let last = outline.rectOfRow(row + open as NSInteger);
+                last.origin.y + last.size.height
+            });
+            if y < (top + bottom) / 2.0 {
+                return i;
+            }
+        }
+        tree.roots.len()
+    }
+
+    fn validate_repo_drop(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+    ) -> NSDragOperation {
+        if self.dragged_repo_id(outline, info).is_none() {
+            return NSDragOperation::None;
+        }
+        let index = self.repo_drop_index(outline, info);
+        // AppKit proposes drops onto rows and between worktrees too; every
+        // drop is retargeted to the gap between two cards.
+        unsafe { outline.setDropItem_dropChildIndex(None, index as NSInteger) };
+        NSDragOperation::Move
+    }
+
+    fn accept_repo_drop(
+        &self,
+        outline: &NSOutlineView,
+        info: &ProtocolObject<dyn NSDraggingInfo>,
+        item: Option<&AnyObject>,
+        index: NSInteger,
+    ) -> bool {
+        let Some(repo_id) = self.dragged_repo_id(outline, info) else {
+            return false;
+        };
+        if item.is_some() || index < 0 {
+            return false;
+        }
+        // Named by the repo it lands before, not by its index: during a
+        // search the list shows only some of the repos.
+        let before = self
+            .ivars()
+            .tree
+            .borrow()
+            .roots
+            .get(index as usize)
+            .map(|r| r.kind().repo_id().to_string());
+        self.ivars()
+            .app
+            .dispatch(Action::MoveRepo { repo_id, before });
+        true
+    }
+
     // MARK: Window state
 
     /// Record where the window is, how far the list is scrolled, which row
@@ -1274,6 +1392,11 @@ impl Controller {
             outline.setDataSource(Some(ProtocolObject::from_ref(self)));
             outline.setDelegate(Some(ProtocolObject::from_ref(self)));
         }
+        // Repos are reordered by dragging them within the list, and only
+        // there: a repo dragged out of the window is not anything.
+        outline.registerForDraggedTypes(&NSArray::from_retained_slice(&[ns(REPO_DRAG_TYPE)]));
+        outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::Move, true);
+        outline.setDraggingSourceOperationMask_forLocal(NSDragOperation::None, false);
         let scroll = NSScrollView::initWithFrame(
             mtm.alloc(),
             NSRect::new(NSPoint::ZERO, NSSize::new(1000.0, 600.0)),
@@ -1711,9 +1834,18 @@ impl Controller {
         };
 
         let roots = iv.tree.borrow().roots.clone();
-        let (Some(previous), Some((root_splice, cards))) = (previous, plan) else {
-            // The first tree, reordered rows, or an outline that no longer
-            // shows the tree it was last told about: start over.
+        let (
+            Some(previous),
+            Some(Plan {
+                root_moves,
+                root_splice,
+                cards,
+            }),
+        ) = (previous, plan)
+        else {
+            // The first tree, reordered worktree rows, repos reordered as
+            // others came or went, or an outline that no longer shows the
+            // tree it was last told about: start over.
             outline.reloadData();
             self.open_or_close(&outline, &roots, searching);
             self.sync_row_styles();
@@ -1728,6 +1860,20 @@ impl Controller {
         let mut resized = Vec::new();
         NSAnimationContext::beginGrouping();
         NSAnimationContext::currentContext().setDuration(0.0);
+        // A repo dragged to a new place. Each move is applied on its own, as
+        // `moves` lists them, rather than inside the update group below,
+        // whose indices count from before the group for removals and after it
+        // for insertions. An open card's rows go with its header.
+        for &(from, to) in &root_moves {
+            unsafe {
+                outline.moveItemAtIndex_inParent_toIndex_inParent(
+                    from as NSInteger,
+                    None,
+                    to as NSInteger,
+                    None,
+                )
+            };
+        }
         outline.beginUpdates();
         apply_splice(&outline, None, &root_splice);
         for card in &cards {
@@ -1763,9 +1909,9 @@ impl Controller {
                 }
             }
         }
-        // A search opens every card, and a repo coming or going puts each
-        // one back as the search or the user left it.
-        if query_changed || !root_splice.is_empty() {
+        // A search opens every card, and a repo coming, going or moving puts
+        // each one back as the search or the user left it.
+        if query_changed || !root_splice.is_empty() || !root_moves.is_empty() {
             self.open_or_close(&outline, &roots, searching);
         }
 
@@ -1844,16 +1990,31 @@ impl Controller {
     }
 }
 
-/// How to take the outline from `old` to `new` with insertions and removals
-/// alone: the repos that come and go, and each repo that stays with how its
-/// rows change. `None` when that cannot be done safely — rows reordered, or
-/// the outline not showing `old` — since a splice naming rows the outline
-/// does not have raises an AppKit exception.
-fn plan_splice(outline: &NSOutlineView, old: &Tree, new: &Tree) -> Option<(Splice, Vec<Card>)> {
+/// How to take the outline from `old` to `new` in place.
+struct Plan {
+    /// Repos reordered, and nothing else about the list of repos changed.
+    root_moves: Vec<(usize, usize)>,
+    /// The repos that come and go.
+    root_splice: Splice,
+    /// Each repo that stays, with how its rows change.
+    cards: Vec<Card>,
+}
+
+/// How to take the outline from `old` to `new` with moves, insertions and
+/// removals. Repos are either moved or inserted and removed, never both at
+/// once, and worktrees never move. `None` when that cannot be done safely —
+/// worktree rows reordered, repos reordered as others come or go, or the
+/// outline not showing `old` — since a splice naming rows the outline does
+/// not have raises an AppKit exception.
+fn plan_splice(outline: &NSOutlineView, old: &Tree, new: &Tree) -> Option<Plan> {
     if shown_rows(outline) != identities(&tree_rows(outline, old)) {
         return None;
     }
-    let root_splice = splice(&identities(&old.roots), &identities(&new.roots))?;
+    let (old_roots, new_roots) = (identities(&old.roots), identities(&new.roots));
+    let (root_moves, root_splice) = match splice(&old_roots, &new_roots) {
+        Some(s) => (Vec::new(), s),
+        None => (moves(&old_roots, &new_roots)?, Splice::default()),
+    };
     let mut cards = Vec::new();
     for (i, root) in new.roots.iter().enumerate() {
         if root_splice.inserted.contains(&i) {
@@ -1877,7 +2038,11 @@ fn plan_splice(outline: &NSOutlineView, old: &Tree, new: &Tree) -> Option<(Splic
             rows,
         });
     }
-    Some((root_splice, cards))
+    Some(Plan {
+        root_moves,
+        root_splice,
+        cards,
+    })
 }
 
 /// The rows `tree` makes with the cards open or closed as the outline has
@@ -1943,6 +2108,17 @@ fn apply_splice(outline: &NSOutlineView, parent: Option<&AnyObject>, s: &Splice)
             NSTableViewAnimationOptions::EffectNone,
         );
     }
+}
+
+/// What a drag of `item` carries: a repo's id, or nothing for any other row,
+/// which cannot be dragged.
+fn repo_drag_writer(item: &AnyObject) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
+    let ItemKind::Repo { repo_id } = item.downcast_ref::<WTMItem>()?.kind() else {
+        return None;
+    };
+    let writer = NSPasteboardItem::new();
+    writer.setString_forType(&ns(&repo_id), &ns(REPO_DRAG_TYPE));
+    Some(ProtocolObject::from_retained(writer))
 }
 
 /// Items by identity, which is how the outline tells rows apart.

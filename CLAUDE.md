@@ -104,6 +104,10 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   the config, so `WTM_USER_DATA` sandboxes them too. Rows are remembered by
   identity, never by index. A frame less than half on any screen is ignored
   and the window centres instead.
+- **Repo order** is the order of `repos` in the config: new repos go last,
+  and dragging a repo's header moves it (`Action::MoveRepo`, named by the repo
+  it lands before, so a drop made during a search lands in the right place).
+  Worktrees keep their sorted order (primary first) and cannot be dragged.
 - **Worktree paths**: `<worktrees root>/<repo name>/<branch-slug>`.
 - **New-branch base ref** defaults to `origin/<trunk>` when that remote-tracking
   ref exists, else the local trunk; new branches are created `--no-track`.

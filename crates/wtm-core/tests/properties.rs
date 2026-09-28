@@ -27,7 +27,7 @@ use wtm_core::git::{
 };
 use wtm_core::paths::{sanitize_repo_name, slugify_branch, tildify, worktree_path_for};
 use wtm_core::repos::describe_add_failure;
-use wtm_core::splice::{splice, Splice};
+use wtm_core::splice::{moves, splice, Splice};
 use wtm_core::ui_state::UiStateStore;
 use wtm_core::update::{is_newer, Manifest};
 use wtm_core::WindowFrame;
@@ -435,6 +435,30 @@ proptest! {
     #[test]
     fn two_filters_of_one_list_always_splice((old, new) in two_filters()) {
         prop_assert!(splice(&old, &new).is_some());
+    }
+
+    #[test]
+    fn moves_turn_a_list_into_any_reordering_of_it(
+        (old, new) in prop::collection::btree_set(0u8..12, 0..10)
+            .prop_map(|s| s.into_iter().collect::<Vec<_>>())
+            .prop_flat_map(|old| (Just(old.clone()), Just(old).prop_shuffle())),
+    ) {
+        let steps = moves(&old, &new).expect("a reordering is moves");
+        let mut shown = old.clone();
+        for &(from, to) in &steps {
+            prop_assert!(to < from, "{:?}", steps);
+            let x = shown.remove(from);
+            shown.insert(to, x);
+        }
+        prop_assert_eq!(shown, new);
+    }
+
+    #[test]
+    fn lists_that_differ_have_no_moves((old, new) in distinct_lists()) {
+        let mut sorted = (old.clone(), new.clone());
+        sorted.0.sort();
+        sorted.1.sort();
+        prop_assert_eq!(moves(&old, &new).is_some(), sorted.0 == sorted.1);
     }
 }
 

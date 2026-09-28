@@ -104,3 +104,5 @@ Adding a repository resolves the picked folder to its primary working tree (even
 if you pick a linked worktree) and lists all existing worktrees immediately. The
 picker takes several folders at once, and you can also drag repository folders
 straight onto the app's Dock icon — including when the app isn't running.
+Repositories are listed in the order they were added; drag one by its header to
+put it somewhere else in the list.

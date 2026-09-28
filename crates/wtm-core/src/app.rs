@@ -61,6 +61,11 @@ pub enum Action {
     AddRepos(Vec<PathBuf>),
     UpdateRepo(RepoConfig),
     RemoveRepo(String),
+    /// Put a repo just before `before` in the list, or last for `None`.
+    MoveRepo {
+        repo_id: String,
+        before: Option<String>,
+    },
     SetSettings(AppSettings),
     /// Start a creation; a placeholder row appears until git lists the result.
     CreateWorktree(CreateWorktreeParams),
@@ -298,6 +303,16 @@ impl App {
                 self.inner.store.lock().remove_repo(&id);
                 self.apply_config();
                 self.rewatch();
+            }
+            Action::MoveRepo { repo_id, before } => {
+                if self
+                    .inner
+                    .store
+                    .lock()
+                    .move_repo(&repo_id, before.as_deref())
+                {
+                    self.apply_config();
+                }
             }
             Action::SetSettings(s) => {
                 self.inner.store.lock().set_settings(s);

@@ -477,3 +477,57 @@ fn check_out_a_branch_only_a_remote_has() {
     );
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn moving_a_repo_reorders_the_list_and_keeps_its_listing() {
+    isolate_git_config();
+    let base = temp_dir("move");
+    let mut paths = Vec::new();
+    for name in ["first", "second"] {
+        let repo = base.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        commit(&repo, "init");
+        paths.push(std::fs::canonicalize(&repo).unwrap());
+    }
+
+    let (app, rx) = app_in(&base);
+    app.dispatch(Action::AddRepos(paths));
+    wait_for(&app, &rx, "both repos listed", |m| {
+        m.repos.len() == 2 && m.repos.iter().all(|r| r.loaded)
+    });
+    let names = |m: &wtm_core::Model| -> Vec<String> {
+        m.repos.iter().map(|r| r.repo.name.clone()).collect()
+    };
+    assert_eq!(names(&app.model()), ["first", "second"]);
+    let first = app.model().repos[0].repo.id.clone();
+    let second = app.model().repos[1].repo.id.clone();
+
+    // Applied before `dispatch` returns: the outline that asked reads it next.
+    app.dispatch(Action::MoveRepo {
+        repo_id: second.clone(),
+        before: Some(first.clone()),
+    });
+    let model = app.model();
+    assert_eq!(names(&model), ["second", "first"]);
+    assert!(model
+        .repos
+        .iter()
+        .all(|r| r.loaded && r.worktrees.len() == 1));
+
+    app.dispatch(Action::MoveRepo {
+        repo_id: second,
+        before: None,
+    });
+    assert_eq!(names(&app.model()), ["first", "second"]);
+
+    // The order is the config's, so the next launch has it too.
+    app.dispatch(Action::MoveRepo {
+        repo_id: first,
+        before: None,
+    });
+    drop(app);
+    let (again, _rx) = app_in(&base);
+    assert_eq!(names(&again.model()), ["second", "first"]);
+    let _ = std::fs::remove_dir_all(&base);
+}

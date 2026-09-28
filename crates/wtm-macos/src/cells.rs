@@ -13,10 +13,11 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSAppearanceCustomization, NSBezelStyle, NSButton, NSCellImagePosition,
-    NSColor, NSControlSize, NSFont, NSImageSymbolConfiguration, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
-    NSLayoutPriorityRequired, NSPasteboard, NSPasteboardTypeString, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
+    NSColor, NSControlSize, NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSFont,
+    NSImage, NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
+    NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
     NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
@@ -226,6 +227,12 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             self.hit_test_past_chevron(point)
         }
+
+        /// What a repo dragged to a new place in the list looks like.
+        #[unsafe(method_id(draggingImageComponents))]
+        fn dragging_image_components(&self) -> Retained<NSArray<NSDraggingImageComponent>> {
+            self.drag_image()
+        }
     }
 );
 
@@ -238,6 +245,30 @@ impl RepoCell {
             return None;
         }
         unsafe { msg_send![super(self), hitTest: point] }
+    }
+
+    /// The header as it looks on screen, card and all. `NSTableCellView`
+    /// builds its image from the `textField` and `imageView` outlets, which
+    /// this cell does not set, and the card is drawn by the row view beneath
+    /// the cell, so the default image would be empty.
+    fn drag_image(&self) -> Retained<NSArray<NSDraggingImageComponent>> {
+        let Some(row) = (unsafe { self.superview() }) else {
+            return unsafe { msg_send![super(self), draggingImageComponents] };
+        };
+        let bounds = row.bounds();
+        let Some(rep) = row.bitmapImageRepForCachingDisplayInRect(bounds) else {
+            return unsafe { msg_send![super(self), draggingImageComponents] };
+        };
+        row.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+        let mtm = MainThreadMarker::from(self);
+        let image = NSImage::initWithSize(mtm.alloc(), bounds.size);
+        image.addRepresentation(&rep);
+        let component = NSDraggingImageComponent::initWithKey(mtm.alloc(), unsafe {
+            NSDraggingImageComponentIconKey
+        });
+        unsafe { component.setContents(Some(&image)) };
+        component.setFrame(self.convertRect_fromView(bounds, Some(&row)));
+        NSArray::from_retained_slice(&[component])
     }
 
     pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {

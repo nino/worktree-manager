@@ -43,6 +43,30 @@ pub fn splice<T: Eq + Hash>(old: &[T], new: &[T]) -> Option<Splice> {
     })
 }
 
+/// The moves that put `old` in `new`'s order, when the two hold the same
+/// elements: `(from, to)` pairs to apply one after another, each index into
+/// the list as the moves before it left it, the way
+/// `moveItemAtIndex:inParent:toIndex:inParent:` takes them. Every move is
+/// upwards (`to < from`), so it reads the same whether `to` counts the moved
+/// element or not. `None` when the lists do not hold the same elements.
+/// Elements are expected to be unique within each list.
+pub fn moves<T: Eq + Hash>(old: &[T], new: &[T]) -> Option<Vec<(usize, usize)>> {
+    if old.len() != new.len() || old.iter().collect::<HashSet<_>>() != new.iter().collect() {
+        return None;
+    }
+    let mut current: Vec<&T> = old.iter().collect();
+    let mut out = Vec::new();
+    for (to, x) in new.iter().enumerate() {
+        let from = current.iter().position(|y| *y == x)?;
+        if from != to {
+            let moved = current.remove(from);
+            current.insert(to, moved);
+            out.push((from, to));
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +104,25 @@ mod tests {
     fn a_reorder_has_no_splice() {
         assert_eq!(splice(&["a", "b", "c"], &["c", "b"]), None);
         assert_eq!(splice(&["a", "b"], &["b", "x", "a"]), None);
+    }
+
+    #[test]
+    fn a_reorder_is_moves() {
+        assert_eq!(moves(&["a", "b", "c"], &["a", "b", "c"]), Some(vec![]));
+        assert_eq!(
+            moves(&["a", "b", "c"], &["c", "a", "b"]),
+            Some(vec![(2, 0)])
+        );
+        // Moving one down is every element after it moving up.
+        assert_eq!(
+            moves(&["a", "b", "c"], &["b", "c", "a"]),
+            Some(vec![(1, 0), (2, 1)])
+        );
+    }
+
+    #[test]
+    fn different_elements_are_not_moves() {
+        assert_eq!(moves(&["a", "b"], &["a", "c"]), None);
+        assert_eq!(moves(&["a", "b"], &["a"]), None);
     }
 }
