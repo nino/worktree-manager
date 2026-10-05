@@ -1,7 +1,10 @@
 # Worktree Manager
 
-A compact macOS app for managing [git worktrees](https://git-scm.com/docs/git-worktree)
-across multiple repositories, written in Rust against AppKit.
+A compact app for managing [git worktrees](https://git-scm.com/docs/git-worktree)
+across multiple repositories, written in Rust. It uses each platform's own
+widgets: AppKit on macOS, GTK 4 on Linux, Win32 on Windows. macOS is the
+released and most-tested build; the Linux and Windows builds are run from
+source for now.
 
 The main window is a tree: repositories at the top level, their worktrees nested
 underneath — each with branch, path, live git status, and one-click actions.
@@ -29,18 +32,19 @@ underneath — each with branch, path, live git status, and one-click actions.
   `git worktree remove` runs _without_ `--force` first: deleting a dirty worktree
   requires an explicit second "Force delete — discard changes" confirmation.
   The primary working tree can never be deleted.
-- **Follows what you do elsewhere** — each worktree is watched with FSEvents, so a
+- **Follows what you do elsewhere** — each worktree is watched for changes, so a
   `git switch` or a commit in your terminal updates that row within a moment.
-- **Open in editor / terminal / Finder** — the editor command is configurable and
+- **Open in editor / terminal / file manager** — the editor command is configurable and
   takes a `{path}` placeholder (e.g. `code {path}`); the terminal is whichever one
   you have set as the system default.
 - **Keyboard throughout** — arrow keys move a selection through the tree, ⌘N
   creates a worktree in the selected repo, space or ⌘T opens the branch switcher,
-  ⌘F searches, and Tab reaches every button in every row.
+  ⌘F searches, and Tab reaches every button in every row (Ctrl in place of ⌘
+  on Linux and Windows).
 - **Agent branches read cleanly** — a `claude/` or `cursor/` prefix is drawn as
   that agent's mark, so the part of the name that identifies the work is what you
   see.
-- **Updates itself** — an installed copy checks the latest release shortly after
+- **Updates itself** (macOS) — an installed copy checks the latest release shortly after
   launch and every six hours, and installs a newer signed build in the
   background; the notice bar then offers a restart. It only ever installs a
   notarised build signed by the same team as the running copy, so a tampered
@@ -51,12 +55,12 @@ underneath — each with branch, path, live git status, and one-click actions.
   prereleases published ahead of a stable one.
 - **Persistent config** — worktrees root, editor command, and the repo list (with
   per-repo primary branch and init command) survive relaunches.
-- **Native, and quick about it** — real AppKit views, an immutable model snapshot,
-  and targeted row reloads: the UI never waits on git.
+- **Native, and quick about it** — real platform widgets, an immutable model
+  snapshot, and targeted row updates: the UI never waits on git.
 
 ## Install
 
-Download the DMG from the [latest release](../../releases/latest) and drag the
+On macOS, download the DMG from the [latest release](../../releases/latest) and drag the
 app to Applications. Builds are signed and notarised, so it opens with a
 double-click.
 
@@ -66,18 +70,21 @@ Dragging the DMG across works too, and keeps your configuration either way.
 
 ## Build from source
 
-Requires a [Rust toolchain](https://rustup.rs) and git ≥ 2.36.
+Requires a [Rust toolchain](https://rustup.rs) and git ≥ 2.36. On Linux,
+also GTK 4.14 or later with its headers (`libgtk-4-dev` on Debian and Ubuntu).
 
 ```sh
 cargo run                      # run a dev build
-scripts/bundle.sh              # release build → target/bundle/Worktree Manager.app
+scripts/bundle.sh              # macOS release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install    # …and copy it to /Applications
+cargo build --release          # Linux and Windows: target/release/worktree-manager
 ```
 
 ## Development
 
 ```sh
 cargo test                     # unit tests + an end-to-end core test on a temp repo
+xvfb-run -a cargo test         # on Linux, where the GTK tests need a display
 cargo fmt                      # format
 WTM_USER_DATA=/tmp/wtm cargo run    # sandboxed config, leaves the real one alone
 WTM_APPEARANCE=dark cargo run       # force an appearance
@@ -86,7 +93,9 @@ RUST_LOG=info cargo run             # timings for refreshes and git runs
 
 [docs/architecture.md](docs/architecture.md) explains how the crates fit
 together and why the fiddly parts are the way they are;
-[CLAUDE.md](CLAUDE.md) carries the conventions and the AppKit lessons.
+[CLAUDE.md](CLAUDE.md) carries the conventions and the AppKit lessons. The UI
+is written once, in `crates/wtm-ui`, so most changes are made and tested
+there on any platform.
 
 ## Configuration
 
@@ -98,11 +107,13 @@ together and why the fiddly parts are the way they are;
 | Init command   | per repo | _(empty)_                                              |
 
 Settings apply as you type them — there is no Save button. Config lives in
-`~/Library/Application Support/Worktree Manager/config.json`.
+`config.json` under `~/Library/Application Support/Worktree Manager/` on
+macOS, `~/.config/worktree-manager/` on Linux and `%APPDATA%\Worktree Manager\`
+on Windows.
 
 Adding a repository resolves the picked folder to its primary working tree (even
 if you pick a linked worktree) and lists all existing worktrees immediately. The
 picker takes several folders at once, and you can also drag repository folders
-straight onto the app's Dock icon — including when the app isn't running.
+straight onto the app's Dock icon on macOS — including when the app isn't running.
 Repositories are listed in the order they were added. Drag one by its header to
 put it somewhere else in the list, or move the selected one with ⌥⌘↑ and ⌥⌘↓.

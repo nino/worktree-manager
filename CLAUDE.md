@@ -1,8 +1,14 @@
 # Worktree Manager
 
-A native macOS app for managing git worktrees across multiple repositories.
-The main window is a tree view: repositories at the top level, their worktrees
-nested underneath, each with git status and quick actions.
+A native app for managing git worktrees across multiple repositories, on
+macOS, Linux and Windows. The main window is a tree view: repositories at the
+top level, their worktrees nested underneath, each with git status and quick
+actions.
+
+The UI is written once (`wtm-ui`) against a thin wrapper (`wtm-toolkit`), and
+each OS shows it with its own widgets: AppKit on macOS, GTK 4 on Linux, Win32
+on Windows. A change to what the UI shows or does goes in `wtm-ui` and can be
+run and tested on Linux, including in the cloud container.
 
 It began as an Electron app; that version was replaced by this Rust one and
 deleted. Anything the old app did that this one does not is in git history
@@ -10,10 +16,14 @@ deleted. Anything the old app did that this one does not is in git history
 
 ## Stack
 
-- **Rust** (2021 edition), a Cargo workspace of four crates
-- **AppKit through [objc2](https://docs.rs/objc2)** — real `NSOutlineView`,
-  `NSToolbar`, `NSAlert` sheets, `NSPopover`, SF Symbols. No web view, no
-  cross-platform toolkit
+- **Rust** (2021 edition), a Cargo workspace of eight crates
+- **An Elm-shaped UI layer of our own** (`wtm-toolkit`): the program returns
+  the whole UI as plain values, a backend patches native widgets to match
+- **AppKit through [objc2](https://docs.rs/objc2)** on macOS — real
+  `NSOutlineView`, `NSToolbar`, `NSAlert` sheets, `NSPopover`, SF Symbols
+- **GTK 4 through [gtk4-rs](https://gtk-rs.org)** on Linux
+- **Win32 through the [windows](https://docs.rs/windows) crate** on Windows
+- No web view, no cross-platform widget toolkit
 - **tokio** for the git work, **notify** for FSEvents, **serde** for the config
 - **rustfmt** defaults for formatting; no clippy config
 
@@ -22,6 +32,7 @@ deleted. Anything the old app did that this one does not is in git history
 ```sh
 cargo run                      # dev build (menu bar + window)
 cargo test                     # unit tests, property tests + an end-to-end core test on a temp repo
+xvfb-run -a cargo test         # on Linux: the GTK tests need a display
 cargo fmt                      # format
 scripts/bundle.sh              # release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install    # …and copy it to /Applications
@@ -35,7 +46,15 @@ pure core random input. For a longer hunt than `cargo test`'s 256 cases:
 `PROPTEST_CASES=100000 cargo test --release -p wtm-core --test properties`.
 Whatever one finds becomes a unit test next to the code it broke.
 
-`scripts/monkey.sh` is for what only a debug build shows: objc2 checks each
+On Linux, building needs `libgtk-4-dev` (GTK 4.14 or later) and the tests
+need `xvfb`; `scripts/cloud-setup.sh` installs both, and runs on its own at the
+start of a Claude Code on the web session (`.claude/settings.json`). To see the
+UI there, the GTK build can photograph itself: see the `screenshot` skill
+(`WTM_SCREENSHOT`, `WTM_SCREENSHOT_STEPS`). Windows builds can be checked from
+Linux with `cargo check --target x86_64-pc-windows-gnu`, and macOS with
+`--target aarch64-apple-darwin` (type-checking only; nothing links).
+
+`scripts/monkey.sh` (macOS only) is for what only a debug build shows: objc2 checks each
 `msg_send!`'s types only with debug assertions on, so a wrong signature panics
 under `cargo run` and passes silently in a release build. It runs the app in a
 throwaway sandbox, drives it through `scripts/monkey.js` (JXA: keys with
@@ -53,10 +72,13 @@ Environment switches, all dev-only:
 | `WTM_APPEARANCE=dark\|light` | force an appearance without changing the system setting |
 | `WTM_NO_LAUNCH=1` | Open in Terminal, Reveal and Open in Editor (and a repo's init command) log instead of opening anything |
 | `RUST_LOG=info` | timings for refreshes and git runs |
+| `WTM_SCREENSHOT=<png>` | Linux: write the window to a PNG once the first listing settles (`WTM_SCREENSHOT_STEPS`, `WTM_SCREENSHOT_QUIT`; see the `screenshot` skill) |
 
 **Never test against the real config.** Use `WTM_USER_DATA` pointed at a
 throwaway directory and demo repos created for the purpose. The real profile is
-`~/Library/Application Support/Worktree Manager/`. With `WTM_USER_DATA` set,
+`~/Library/Application Support/Worktree Manager/` on macOS,
+`~/.config/worktree-manager/` on Linux and `%APPDATA%\Worktree Manager\` on
+Windows; when testing on Linux, also point `HOME` at a throwaway directory. With `WTM_USER_DATA` set,
 the Electron file to import is looked for inside that directory too
 (`worktree-manager.json`), never in the real one.
 
@@ -72,8 +94,18 @@ crates/
                    fuzzy matching, list splices, branch-prefix splitting,
                    git's branch-name rules, the New Worktree sheet's
                    checks, and the `App` facade. Tested.
-  wtm-macos        The AppKit UI and the macOS `Platform` implementation.
-  wtm-app          The binary; the only place with `cfg(target_os)`.
+  wtm-toolkit      The wrapper every backend implements: the `View`
+                   vocabulary (window, sectioned tree list, stacks, forms,
+                   dialogs, popover, panels, menus, effects), the `Program`
+                   and `Backend` traits, the loop between them, and a
+                   headless backend for tests. No app or OS knowledge.
+  wtm-ui           The UI, written once: `Ui` is the `Program`. Model in,
+                   `View` out; messages in, core `Action`s out. Tested
+                   headlessly.
+  wtm-macos        The AppKit backend, the macOS `Platform` and the updater.
+  wtm-gtk          The GTK 4 backend and the Linux `Platform`.
+  wtm-windows      The Win32 backend and the Windows `Platform`.
+  wtm-app          The binary: picks the backend for the OS.
 bundle/Info.plist  Bundle metadata (id uk.org.plinth.worktree-manager —
                    the Electron app's; see "Releases")
 build/             Icon sources (icon.icns, Assets.car) copied into the bundle
@@ -82,10 +114,23 @@ scripts/monkey.*   The random UI driver (see "Commands")
 docs/architecture.md  How it fits together, and why the fiddly parts are so
 ```
 
-Dependency direction is strictly `wtm-app → wtm-macos → wtm-core →
-wtm-platform`. The core never names AppKit, a thread of the UI, or an OS.
+Dependency direction is strictly `wtm-app → wtm-<os> → wtm-ui →
+wtm-toolkit`, with `wtm-ui → wtm-core → wtm-platform`. Neither the core nor
+the UI names a toolkit, a thread of the UI, or an OS. `cfg(target_os)` appears
+only in `wtm-app` and as the crate-wide gate on each backend
+(`#![cfg(target_os = "linux")]`), which leaves a backend empty on the other
+OSes so the workspace builds and tests everywhere.
 
-`wtm-macos` modules: `controller` (window, outline data source/delegate,
+**Where a change goes.** What the window shows, what a key or button does,
+what a dialog asks: `wtm-ui`, tested with `wtm_toolkit::headless`. A new kind
+of element or behaviour the vocabulary lacks: `wtm-toolkit`, then all three
+backends. How one OS draws or handles something: that backend only. The
+backend contract (report only what the user did, patch widgets in place by
+key, one dialog at a time, never re-show a closed one) is in
+`docs/architecture.md`, and `crates/wtm-gtk/tests/conformance.rs` checks it.
+
+`wtm-macos` modules: `elements` (generic `Element` → AppKit views, patched in
+place), `controller` (window, outline data source/delegate,
 selection, key loop), `cells` (row cell views), `rowview` (the card drawing),
 `outline` (NSOutlineView subclass), `button` (focusable buttons, the branch
 bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
@@ -129,8 +174,10 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   repo's trunk (against `origin/<trunk>` when it exists), unpushed commits.
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
-  and falls back to Terminal.app. The editor command is configurable and takes
-  a `{path}` placeholder.
+  and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then
+  `x-terminal-emulator`, then a list of known terminals, each with its own
+  working-directory flag. The editor command is configurable and takes a
+  `{path}` placeholder.
 - **Branch labels**: a `claude/` or `cursor/` prefix is drawn as that agent's
   mark. The full name is what gets matched, dispatched, and read out by
   assistive technology (`setAccessibilityLabel`).
