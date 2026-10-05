@@ -348,6 +348,10 @@ impl Ui {
         }
         // Applied by the backend once the rows are laid out, clamped to the
         // list's height: it may be shorter than it was.
+        // Taken as the list's offset from here on: a backend applies it
+        // without reporting a scroll, and a list nobody scrolls afterwards
+        // must not be remembered at the top.
+        self.scroll = offset;
         if offset > 0.0 {
             cx.effect(Effect::ScrollTo(offset));
         }
