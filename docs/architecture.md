@@ -288,7 +288,11 @@ the whole recipe.
 through the manifest): the list is an owner-drawn window that paints the
 cards, dialogs are modal windows owned by the main one, the picker is a
 borderless popup, and the menus are a menu bar with accelerators on Ctrl.
-It builds from Linux for `x86_64-pc-windows-gnu`.
+Because the cards are painted, the list answers `WM_GETOBJECT` with an MSAA
+outline of its rows (`access.rs`) and raises focus events as the selection
+moves. The About box and the folder picker run modal loops of their own, in
+which the program keeps running; `app::nested` puts modality right after
+each. It builds from Linux for `x86_64-pc-windows-gnu`.
 
 ## Adding a platform
 

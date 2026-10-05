@@ -6,6 +6,9 @@
 //! implements itself with no Windows counterpart (Services, Hide, Bring All
 //! to Front) are left out.
 
+use std::cell::Cell;
+use std::collections::HashMap;
+
 use windows::core::HSTRING;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Controls::EM_SETSEL;
@@ -13,10 +16,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use wtm_toolkit::{Handler, KeyName, Menu, MenuItem, MenuRole, Shortcut, Standard};
 
-use crate::app::{later, main_window, with_state};
+use crate::app::{later, main_window, nested, with_state};
 use crate::util::*;
 
-/// Command ids: actions from here up, in the order they are listed.
+/// Command ids: actions from here up, one per label for the life of the
+/// process (see `Menus::ids`).
 const FIRST_ACTION: u32 = 1000;
 /// Standard items: this plus their index in `STANDARD`.
 const FIRST_STANDARD: u32 = 900;
@@ -63,12 +67,40 @@ pub struct Menus {
     bar: Option<HMENU>,
     accel: Option<HACCEL>,
     /// Each action's handler and whether it is enabled, by command id.
-    actions: Vec<(Handler, bool)>,
+    actions: HashMap<u32, (Handler, bool)>,
+    /// The command id of each action, by its menu and label. An id never
+    /// changes, so a command from a bar that has since been rebuilt (it
+    /// is posted after the menu closes) still finds its action.
+    ids: HashMap<String, u32>,
+    /// The bar no longer matches the view, but the menu was open: it is
+    /// rebuilt when the menu closes.
+    stale: bool,
+}
+
+thread_local! {
+    /// The user is in the menu bar. Destroying the menu being tracked
+    /// leaves Windows tracking freed handles, so a rebuild waits.
+    static TRACKING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The menu loop started (`true`) or ended.
+pub fn set_tracking(on: bool) {
+    TRACKING.with(|t| t.set(on));
 }
 
 impl Menus {
     pub fn accel(&self) -> Option<HACCEL> {
         self.accel
+    }
+
+    /// A rebuild was put off while the menu was open.
+    pub fn stale(&self) -> bool {
+        self.stale
+    }
+
+    fn id_of(&mut self, menu: &str, label: &str) -> u32 {
+        let next = FIRST_ACTION + self.ids.len() as u32;
+        *self.ids.entry(format!("{menu}\t{label}")).or_insert(next)
     }
 
     pub fn render(&mut self, main: HWND, menus: &[Menu]) {
@@ -85,25 +117,35 @@ impl Menus {
                 }))
             })
             .collect();
-        let actions: Vec<(Handler, bool)> = folded
-            .iter()
-            .flat_map(|m| m.entries.iter())
-            .filter_map(|e| match e {
-                Entry::Action {
-                    handler, enabled, ..
-                } => Some((handler.clone(), *enabled)),
-                _ => None,
-            })
-            .collect();
+        let mut actions = HashMap::new();
+        for m in &folded {
+            for e in &m.entries {
+                if let Entry::Action {
+                    label,
+                    handler,
+                    enabled,
+                    ..
+                } = e
+                {
+                    let id = self.id_of(m.title, label);
+                    actions.insert(id, (handler.clone(), *enabled));
+                }
+            }
+        }
         if shape != self.shape {
-            self.rebuild(main, &folded);
-            self.shape = shape;
+            if TRACKING.with(|t| t.get()) {
+                self.stale = true;
+            } else {
+                self.rebuild(main, &folded);
+                self.shape = shape;
+                self.stale = false;
+            }
         } else if let Some(bar) = self.bar {
-            for (i, ((_, now), (_, before))) in actions.iter().zip(&self.actions).enumerate() {
-                if now != before {
+            for (id, (_, now)) in &actions {
+                if self.actions.get(id).map(|a| a.1) != Some(*now) {
                     let flag = if *now { MF_ENABLED } else { MF_GRAYED };
                     unsafe {
-                        let _ = EnableMenuItem(bar, FIRST_ACTION + i as u32, MF_BYCOMMAND | flag);
+                        let _ = EnableMenuItem(bar, *id, MF_BYCOMMAND | flag);
                     }
                 }
             }
@@ -113,7 +155,6 @@ impl Menus {
 
     fn rebuild(&mut self, main: HWND, folded: &[Folded]) {
         let mut accels = Vec::new();
-        let mut next = FIRST_ACTION;
         unsafe {
             let Ok(bar) = CreateMenu() else { return };
             for m in folded {
@@ -131,6 +172,7 @@ impl Menus {
                             enabled,
                             ..
                         } => {
+                            let next = self.id_of(m.title, label);
                             let mut text = label.replace('&', "&&");
                             if let Some(s) = shortcut {
                                 text.push('\t');
@@ -141,7 +183,6 @@ impl Menus {
                             }
                             let flags = MF_STRING | if *enabled { MF_ENABLED } else { MF_GRAYED };
                             let _ = AppendMenuW(popup, flags, next as usize, &HSTRING::from(text));
-                            next += 1;
                         }
                         Entry::Standard(s) => {
                             let Some(text) = standard_label(*s) else {
@@ -347,7 +388,7 @@ pub fn command(id: u32) {
 
 impl Menus {
     fn action(&self, id: u32) -> Option<Handler> {
-        let (h, enabled) = self.actions.get((id - FIRST_ACTION) as usize)?;
+        let (h, enabled) = self.actions.get(&id)?;
         enabled.then(|| h.clone())
     }
 }
@@ -357,17 +398,19 @@ fn standard(s: Standard) {
     let main = main_window();
     match s {
         Standard::Quit => crate::app::quit(),
-        Standard::About => later(move || unsafe {
+        Standard::About => later(move || {
             let text = format!(
                 "Worktree Manager {}\n\nGit worktrees across your repositories.",
                 env!("CARGO_PKG_VERSION")
             );
-            MessageBoxW(
-                Some(main),
-                &HSTRING::from(text),
-                &HSTRING::from("About Worktree Manager"),
-                MB_OK | MB_ICONINFORMATION,
-            );
+            nested(main, || unsafe {
+                MessageBoxW(
+                    Some(main),
+                    &HSTRING::from(text),
+                    &HSTRING::from("About Worktree Manager"),
+                    MB_OK | MB_ICONINFORMATION,
+                )
+            });
         }),
         Standard::Undo => {
             send(focus, WM_UNDO, 0, 0);

@@ -416,6 +416,23 @@ impl Pane {
             };
             nodes.push(node);
         });
+        // Arrow keys move within a group, which runs from a `WS_GROUP`
+        // control up to the next one. Every control but a segmented
+        // control's later segments starts its own, so the arrows stay
+        // among the segments and never wander into the control after them.
+        for h in nodes
+            .iter()
+            .filter_map(|n| match n {
+                Node::One(h, _) => Some(*h),
+                _ => None,
+            })
+            .chain(captions.iter().flatten().copied())
+        {
+            unsafe {
+                let style = GetWindowLongW(h, GWL_STYLE) as u32;
+                SetWindowLongW(h, GWL_STYLE, (style | WS_GROUP.0) as i32);
+            }
+        }
         self.nodes = nodes;
         self.captions = captions;
     }
@@ -496,7 +513,7 @@ impl Pane {
             }
             (Node::One(h, _), Element::Field(f)) => {
                 let h = *h;
-                set_text_if(h, &f.value);
+                set_field_text(h, &f.value);
                 if self.cues.get(&key(h)) != Some(&f.placeholder) {
                     let cue = wide(&f.placeholder);
                     send(h, EM_SETCUEBANNER, 1, cue.as_ptr() as isize);
@@ -508,18 +525,23 @@ impl Pane {
             (Node::One(h, _), Element::Combo(c)) => {
                 let h = *h;
                 if self.options.get(&key(h)) != Some(&c.options) {
-                    // Resetting the list empties the edit too; the text is
-                    // put back below.
+                    // Resetting the list empties the edit too. What was in
+                    // it is put back, caret and selection included, since
+                    // the suggestions change as the user types.
                     let text = text_of(h);
+                    let sel = send(h, CB_GETEDITSEL, 0, 0);
                     send(h, CB_RESETCONTENT, 0, 0);
                     for o in &c.options {
                         let wo = wide(o);
                         send(h, CB_ADDSTRING, 0, wo.as_ptr() as isize);
                     }
                     set_text(h, &text);
+                    // `CB_GETEDITSEL` packs start and end in one word, as
+                    // `CB_SETEDITSEL` takes them.
+                    send(h, CB_SETEDITSEL, 0, sel & 0xFFFF_FFFF);
                     self.options.insert(key(h), c.options.clone());
                 }
-                set_text_if(h, &c.value);
+                set_field_text(h, &c.value);
                 if self.cues.get(&key(h)) != Some(&c.placeholder) {
                     let cue = wide(&c.placeholder);
                     send(h, CB_SETCUEBANNER, 0, cue.as_ptr() as isize);

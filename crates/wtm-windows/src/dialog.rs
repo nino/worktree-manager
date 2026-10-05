@@ -316,10 +316,13 @@ impl Dialog {
     /// Close without running anything: the view dropped it, or a button's
     /// handler is about to run.
     pub fn close(self, owner: HWND, reg: &mut Reg) {
-        unsafe {
-            // The owner is enabled first, so activation goes back to it
-            // rather than to whatever window is behind.
-            let _ = EnableWindow(owner, true);
+        // The owner is enabled first, so activation goes back to it rather
+        // than to whatever window is behind; unless a modal loop of its
+        // own (the About box) is still running on it.
+        if !crate::app::owns_nested(owner) {
+            unsafe {
+                let _ = EnableWindow(owner, true);
+            }
         }
         reg.destroy(self.hwnd);
     }
@@ -358,6 +361,7 @@ pub fn press(i: usize) {
         let d = s.dialog.take()?;
         s.closed_dialogs.insert(id);
         d.close(s.main, &mut s.reg);
+        s.sync_modal();
         Some(button.on_press)
     })
     .flatten();

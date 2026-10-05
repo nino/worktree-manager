@@ -56,6 +56,17 @@ pub const PBS_MARQUEE_: u32 = 8;
 pub const WM_APP_RUN: u32 = WM_APP + 1;
 /// A private message: run the UI-thread-only work queued by `later`.
 pub const WM_APP_LATER: u32 = WM_APP + 2;
+/// A private message: the menu closed; rebuild it if a render had to wait.
+pub const WM_APP_MENU: u32 = WM_APP + 3;
+/// A private message: hand the keyboard to the main window's controls if
+/// activation came back to it while the state was borrowed.
+pub const WM_APP_FOCUS: u32 = WM_APP + 4;
+/// A private message: the list scrolled; the picker follows its anchor.
+pub const WM_APP_FOLLOW: u32 = WM_APP + 5;
+/// A private message: compare the main window's DPI with the one the
+/// fonts were made for, after a DPI change arrived while the state was
+/// borrowed.
+pub const WM_APP_DPI: u32 = WM_APP + 6;
 
 pub fn instance() -> HINSTANCE {
     unsafe { GetModuleHandleW(None).map(Into::into).unwrap_or_default() }
@@ -138,6 +149,15 @@ pub fn enable_field(h: HWND, on: bool) {
 pub fn set_text_if(h: HWND, s: &str) {
     if text_of(h) != s {
         set_text(h, s);
+    }
+}
+
+/// A field's text from the view, unless the user is typing in it: the view
+/// can lag a keystroke behind, and rewriting the text would move the caret
+/// and drop what was just typed.
+pub fn set_field_text(h: HWND, s: &str) {
+    if !has_focus(h) {
+        set_text_if(h, s);
     }
 }
 
