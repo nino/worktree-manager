@@ -749,6 +749,25 @@ mod linux {
         );
     }
 
+    fn rows_are_items_of_a_tree() {
+        let p = Probe::default();
+        let mut v = plain();
+        v.window.list.selected = Some("w:/a".into());
+        p.render(&v);
+        let header = p.row("r:1").expect("header");
+        let row = p.row("w:/a").expect("row");
+        assert_eq!(header.accessible_role(), gtk::AccessibleRole::TreeItem);
+        assert_eq!(row.accessible_role(), gtk::AccessibleRole::TreeItem);
+        let mut up = row.parent();
+        while let Some(w) = up.clone() {
+            if w.accessible_role() == gtk::AccessibleRole::Tree {
+                break;
+            }
+            up = w.parent();
+        }
+        assert!(up.is_some(), "no tree around the rows");
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -756,7 +775,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 13] = [
+        let cases: [(&str, fn()); 14] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -806,6 +825,7 @@ mod linux {
                 "the picker on a row out of view waits for it",
                 the_picker_on_a_row_out_of_view_waits_for_it,
             ),
+            ("rows are items of a tree", rows_are_items_of_a_tree),
         ];
         let mut failed = 0;
         for (name, case) in cases {

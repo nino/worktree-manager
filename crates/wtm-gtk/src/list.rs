@@ -82,7 +82,12 @@ impl RowW {
 impl ListW {
     pub fn new() -> Rc<ListW> {
         Rc::new_cyclic(|me: &Weak<ListW>| {
-            let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            // A tree to assistive technology: cards' headers are its items
+            // at the first level, their rows at the second (see `rows`).
+            let content = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .accessible_role(gtk::AccessibleRole::Tree)
+                .build();
             content.add_css_class("wtm-list");
             // With nothing selected the list itself holds the keyboard, so
             // the arrow keys work straight away.

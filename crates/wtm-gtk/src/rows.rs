@@ -26,6 +26,19 @@ fn vbox(spacing: i32) -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, spacing)
 }
 
+/// A row's root: an item of the list's tree, where its selected and
+/// expanded states mean something to assistive technology. The role can
+/// only be given when the widget is made.
+fn tree_item(orientation: gtk::Orientation, spacing: i32, level: i32) -> gtk::Box {
+    let b = gtk::Box::builder()
+        .orientation(orientation)
+        .spacing(spacing)
+        .accessible_role(gtk::AccessibleRole::TreeItem)
+        .build();
+    b.update_property(&[gtk::accessible::Property::Level(level)]);
+    b
+}
+
 fn spacer() -> gtk::Box {
     let s = hbox(0);
     s.set_hexpand(true);
@@ -64,7 +77,7 @@ pub struct HeaderW {
 
 impl HeaderW {
     pub fn new(h: &RepoHeader) -> HeaderW {
-        let root = hbox(8);
+        let root = tree_item(gtk::Orientation::Horizontal, 8, 1);
         root.add_css_class("wtm-header");
         root.set_focusable(true);
         let disclosure = gtk::Button::from_icon_name("pan-down-symbolic");
@@ -226,7 +239,7 @@ pub struct WorktreeW {
 
 impl WorktreeW {
     pub fn new(w: &WorktreeRow) -> WorktreeW {
-        let root = vbox(3);
+        let root = tree_item(gtk::Orientation::Vertical, 3, 2);
         root.add_css_class("wtm-plate");
         root.set_focusable(true);
 
@@ -469,7 +482,7 @@ pub struct PendingW {
 
 impl PendingW {
     pub fn new(p: &PendingRow) -> PendingW {
-        let root = hbox(8);
+        let root = tree_item(gtk::Orientation::Horizontal, 8, 2);
         root.add_css_class("wtm-plate");
         root.set_focusable(true);
         let branch = label("", &["t-branch-strong"]);
