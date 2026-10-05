@@ -11,6 +11,10 @@ license = "MIT"
 wtm-core = { path = "crates/wtm-core" }
 wtm-platform = { path = "crates/wtm-platform" }
 wtm-macos = { path = "crates/wtm-macos" }
+wtm-toolkit = { path = "crates/wtm-toolkit" }
+wtm-ui = { path = "crates/wtm-ui" }
+wtm-gtk = { path = "crates/wtm-gtk" }
+wtm-windows = { path = "crates/wtm-windows" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "process", "fs", "sync", "time", "macros"] }

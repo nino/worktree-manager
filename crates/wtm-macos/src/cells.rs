@@ -1,33 +1,37 @@
 //! Row views for the outline: a repo header, a worktree row, and a "Creating…"
 //! placeholder. Each is an `NSTableCellView` subclass that owns its subviews,
 //! is recycled by the outline view via its identifier, and is re-configured in
-//! place from the model — so a status change costs a few property sets, never
-//! a view rebuild.
+//! place from the view's typed rows — so a status change costs a few property
+//! sets, never a view rebuild.
+//!
+//! A cell keeps only its row's key. Its buttons look the row up in the list
+//! the controller last rendered when they are pressed, so they always run
+//! that render's handlers, never the ones the cell was configured with.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use block2::RcBlock;
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSAppearanceCustomization, NSBezelStyle, NSButton, NSCellImagePosition,
     NSColor, NSControlSize, NSDraggingImageComponent, NSDraggingImageComponentIconKey, NSFont,
-    NSImage, NSImageSymbolConfiguration, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
-    NSPasteboard, NSPasteboardTypeString, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
+    NSImage, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSStackView, NSStackViewDistribution, NSTableCellView, NSTextField,
     NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
-use wtm_core::{Action, App, Busy, Model, PendingCreation, RepoConfig, RepoNode, WorktreeInfo};
+use wtm_toolkit::{Icon, PendingRow, RepoHeader, Rich, Tint, WorktreeRow};
 
-use crate::badge::{badges_for, Badge};
-use crate::branchlabel::branch_label;
+use crate::badge::{Badge, BadgeTone};
+use crate::branchlabel::rich_label;
 use crate::button::{Button, IconButton, PillButton};
-use crate::dialogs;
-use crate::util::{label, mono_label, ns, render, secondary_label, symbol, symbol_raised};
+use crate::controller;
+use crate::elements::{icon_button, Callback};
+use crate::util::{label, mono_label, ns, render, secondary_label, symbol_raised};
 
 use crate::outline::CONTENT_START;
 use crate::rowview::{RowStyle, RowView, CARD_GAP, CARD_MARGIN, PLATE_GAP, PLATE_INSET};
@@ -130,41 +134,27 @@ pub trait PlateCell {
     fn set_lead(&self, lead: f64);
 }
 
-/// A borderless SF Symbol button.
-fn icon_button(sym: &str, tooltip: &str, mtm: MainThreadMarker) -> Retained<IconButton> {
-    let image = symbol(sym, tooltip).unwrap_or_default();
-    let b = IconButton::new(&image, tooltip, mtm);
-    b.setBezelStyle(NSBezelStyle::AccessoryBarAction);
-    b.setBordered(false);
-    b.setImagePosition(NSCellImagePosition::ImageOnly);
-    b.setControlSize(NSControlSize::Small);
-    b.setSymbolConfiguration(Some(
-        &NSImageSymbolConfiguration::configurationWithPointSize_weight(12.0, crate::util::MEDIUM),
-    ));
-    b.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
-    b.setContentHuggingPriority_forOrientation(
-        NSLayoutPriorityRequired,
-        NSLayoutConstraintOrientation::Horizontal,
-    );
-    b.setContentCompressionResistancePriority_forOrientation(
-        NSLayoutPriorityRequired,
-        NSLayoutConstraintOrientation::Horizontal,
-    );
-    b
-}
+/// A cell's row key, shared with its buttons' callbacks: a recycled cell
+/// shows another row, and its buttons must act on that one.
+type RowKey = Rc<RefCell<String>>;
 
-/// Point a control at `target` / `action`.
-fn wire(control: &NSButton, target: &AnyObject, action: objc2::runtime::Sel) {
-    unsafe {
-        control.setTarget(Some(target));
-        control.setAction(Some(action));
-    }
-}
-
-fn copy_to_pasteboard(text: &str) {
-    let pb = NSPasteboard::generalPasteboard();
-    pb.clearContents();
-    unsafe { pb.setString_forType(&ns(text), NSPasteboardTypeString) };
+/// Point `button` at a callback that runs `f` with the cell's current key.
+/// The callback is returned for the cell to keep: a button holds its target
+/// weakly.
+fn on_press(
+    button: &NSButton,
+    key: &RowKey,
+    f: impl Fn(&str) + 'static,
+    mtm: MainThreadMarker,
+) -> Retained<Callback> {
+    let target = Callback::new(mtm);
+    let key = key.clone();
+    target.set(move || {
+        let key = key.borrow().clone();
+        f(&key)
+    });
+    target.attach(button);
+    target
 }
 
 fn small_spinner(mtm: MainThreadMarker) -> Retained<NSProgressIndicator> {
@@ -180,15 +170,15 @@ fn small_spinner(mtm: MainThreadMarker) -> Retained<NSProgressIndicator> {
 // MARK: Repo header row
 
 pub struct RepoCellIvars {
-    app: App,
-    repo_id: RefCell<String>,
-    path: RefCell<String>,
+    key: RowKey,
     name: Retained<NSTextField>,
     meta: Retained<NSTextField>,
     path_label: Retained<NSTextField>,
     error: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
-    new_worktree: RefCell<Option<Retained<Button>>>,
+    new_worktree: Retained<Button>,
+    /// Its buttons' targets; a button holds its target weakly.
+    _targets: Vec<Retained<Callback>>,
 }
 
 define_class!(
@@ -199,25 +189,6 @@ define_class!(
     pub struct RepoCell;
 
     impl RepoCell {
-        #[unsafe(method(newWorktree:))]
-        fn new_worktree(&self, _sender: Option<&AnyObject>) {
-            if let Some(window) = self.window() {
-                dialogs::create_worktree(&self.ivars().app, &window, &self.ivars().repo_id.borrow());
-            }
-        }
-
-        #[unsafe(method(repoSettings:))]
-        fn repo_settings(&self, _sender: Option<&AnyObject>) {
-            if let Some(window) = self.window() {
-                dialogs::repo_settings(&self.ivars().app, &window, &self.ivars().repo_id.borrow());
-            }
-        }
-
-        #[unsafe(method(copyPath:))]
-        fn copy_path(&self, _sender: Option<&AnyObject>) {
-            copy_to_pasteboard(&self.ivars().path.borrow());
-        }
-
         /// `OutlineView` moves the disclosure chevron inside the card, which
         /// puts it under this cell: the cell spans the whole row and AppKit
         /// adds it above the chevron's button, so every click on the chevron
@@ -280,7 +251,7 @@ impl RepoCell {
         NSArray::from_retained_slice(&[component])
     }
 
-    pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let name = label("", mtm);
         name.setFont(Some(&NSFont::systemFontOfSize_weight(
             14.0,
@@ -296,33 +267,48 @@ impl RepoCell {
         error.setTextColor(Some(&NSColor::systemRedColor()));
         error.setHidden(true);
         let spinner = small_spinner(mtm);
+        let new_wt = Button::with_title(&ns("New Worktree"), None, sel!(performClick:), mtm);
+        new_wt.setControlSize(NSControlSize::Small);
+        new_wt.setBezelStyle(NSBezelStyle::Push);
+        new_wt.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+        let copy = icon_button(Icon::Copy, "Copy path", mtm);
+        let settings = icon_button(Icon::Settings, "Repo settings", mtm);
 
+        let key: RowKey = Rc::default();
+        let targets = vec![
+            on_press(
+                &copy,
+                &key,
+                |k| controller::with_header(k, |h| h.on_copy_path.call(())),
+                mtm,
+            ),
+            on_press(
+                &new_wt,
+                &key,
+                |k| controller::with_header(k, |h| h.on_new_worktree.call(())),
+                mtm,
+            ),
+            on_press(
+                &settings,
+                &key,
+                |k| controller::with_header(k, |h| h.on_settings.call(())),
+                mtm,
+            ),
+        ];
         let this = mtm.alloc::<Self>().set_ivars(RepoCellIvars {
-            app,
-            repo_id: RefCell::new(String::new()),
-            path: RefCell::new(String::new()),
+            key,
             name: name.clone(),
             meta: meta.clone(),
             path_label: path_label.clone(),
             error: error.clone(),
             spinner: spinner.clone(),
-            new_worktree: RefCell::new(None),
+            new_worktree: new_wt.clone(),
+            _targets: targets,
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, REPO_ROW_HEIGHT))]
         };
         this.setIdentifier(Some(&ns(Self::IDENTIFIER)));
-        let target: &AnyObject = this.as_ref();
-
-        let copy = icon_button("doc.on.doc", "Copy path", mtm);
-        wire(&copy, target, sel!(copyPath:));
-        let new_wt = Button::with_title(&ns("New Worktree"), Some(target), sel!(newWorktree:), mtm);
-        new_wt.setControlSize(NSControlSize::Small);
-        new_wt.setBezelStyle(NSBezelStyle::Push);
-        new_wt.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        *this.ivars().new_worktree.borrow_mut() = Some(new_wt.clone());
-        let settings = icon_button("gearshape", "Repo settings", mtm);
-        wire(&settings, target, sel!(repoSettings:));
 
         let line1 = hstack(8.0, mtm);
         line1.addArrangedSubview(&name);
@@ -349,37 +335,22 @@ impl RepoCell {
         this
     }
 
-    pub fn configure(&self, node: &RepoNode, model: &Model, visible: usize, searching: bool) {
+    pub fn configure(&self, key: &str, h: &RepoHeader) {
         let iv = self.ivars();
-        *iv.repo_id.borrow_mut() = node.repo.id.clone();
-        *iv.path.borrow_mut() = node.repo.path.clone();
-        iv.name.setStringValue(&ns(&node.repo.name));
-        let total = node.worktrees.len();
-        let plural = if total == 1 { "" } else { "s" };
-        let count = if searching {
-            format!("{visible} of {total} worktree{plural}")
-        } else {
-            format!("{total} worktree{plural}")
-        };
-        iv.meta
-            .setStringValue(&ns(&format!("{} · {count}", node.repo.main_branch)));
-        let shown = wtm_core::paths::tildify(&node.repo.path, &model.home);
-        iv.path_label.setStringValue(&ns(&shown));
-        iv.path_label.setToolTip(Some(&ns(&node.repo.path)));
-        match &node.error {
+        *iv.key.borrow_mut() = key.to_string();
+        iv.name.setStringValue(&ns(&h.name));
+        iv.meta.setStringValue(&ns(&h.meta));
+        iv.path_label.setStringValue(&ns(&h.path));
+        iv.path_label.setToolTip(Some(&ns(&h.path_full)));
+        match &h.error {
             Some(e) => {
                 iv.error.setStringValue(&ns(e));
                 iv.error.setHidden(false);
             }
             None => iv.error.setHidden(true),
         }
-        // Nothing can be created where nothing could be listed: git failed
-        // in this repo (most often, its folder is gone), and the error beside
-        // the path says why.
-        if let Some(button) = iv.new_worktree.borrow().as_ref() {
-            button.setEnabled(node.error.is_none());
-        }
-        if !node.loaded {
+        iv.new_worktree.setEnabled(h.can_create);
+        if h.loading {
             unsafe { iv.spinner.startAnimation(None) };
         } else {
             unsafe { iv.spinner.stopAnimation(None) };
@@ -390,11 +361,8 @@ impl RepoCell {
 // MARK: Worktree row
 
 pub struct WorktreeCellIvars {
-    app: App,
-    repo_id: RefCell<String>,
-    path: RefCell<String>,
-    branch: RefCell<Option<String>>,
-    branches: RefCell<Vec<String>>,
+    key: RowKey,
+    branch: RefCell<Rich>,
     /// The branch button: its title is the branch (or "(detached)"), a click
     /// opens the fuzzy picker.
     picker: Retained<PillButton>,
@@ -404,14 +372,13 @@ pub struct WorktreeCellIvars {
     spinner: Retained<NSProgressIndicator>,
     busy: Retained<NSTextField>,
     path_label: Retained<NSTextField>,
-    push: Retained<IconButton>,
-    pull: Retained<IconButton>,
-    merge: Retained<IconButton>,
-    editor: Retained<IconButton>,
-    terminal: Retained<IconButton>,
-    reveal: Retained<IconButton>,
-    delete: Retained<IconButton>,
+    /// The row's action buttons, by the id of the action each shows.
+    actions: Vec<(&'static str, Retained<IconButton>)>,
+    /// The delete button is tinted by appearance (see `paint_delete_tint`).
+    danger: RefCell<bool>,
     top: RefCell<Option<Retained<NSLayoutConstraint>>>,
+    /// Its buttons' targets; a button holds its target weakly.
+    _targets: Vec<Retained<Callback>>,
 }
 
 define_class!(
@@ -422,64 +389,6 @@ define_class!(
     pub struct WorktreeCell;
 
     impl WorktreeCell {
-        #[unsafe(method(push:))]
-        fn push(&self, _s: Option<&AnyObject>) {
-            let (repo_id, path) = self.ids();
-            self.ivars().app.dispatch(Action::Push { repo_id, path });
-        }
-
-        #[unsafe(method(pull:))]
-        fn pull(&self, _s: Option<&AnyObject>) {
-            let (repo_id, path) = self.ids();
-            self.ivars().app.dispatch(Action::Pull { repo_id, path });
-        }
-
-        #[unsafe(method(pullMain:))]
-        fn pull_main(&self, _s: Option<&AnyObject>) {
-            let (repo_id, path) = self.ids();
-            self.ivars().app.dispatch(Action::PullMain { repo_id, path });
-        }
-
-        #[unsafe(method(openEditor:))]
-        fn open_editor(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::OpenInEditor(self.ids().1));
-        }
-
-        #[unsafe(method(openTerminal:))]
-        fn open_terminal(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::OpenInTerminal(self.ids().1));
-        }
-
-        #[unsafe(method(reveal:))]
-        fn reveal(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::Reveal(self.ids().1));
-        }
-
-        #[unsafe(method(copyPath:))]
-        fn copy_path(&self, _s: Option<&AnyObject>) {
-            copy_to_pasteboard(&self.ids().1);
-        }
-
-        #[unsafe(method(copyBranch:))]
-        fn copy_branch(&self, _s: Option<&AnyObject>) {
-            if let Some(b) = self.ivars().branch.borrow().as_deref() {
-                copy_to_pasteboard(b);
-            }
-        }
-
-        #[unsafe(method(deleteWorktree:))]
-        fn delete_worktree(&self, _s: Option<&AnyObject>) {
-            let (repo_id, path) = self.ids();
-            if let Some(window) = self.window() {
-                dialogs::confirm_delete(&self.ivars().app, &window, &repo_id, &path);
-            }
-        }
-
-        #[unsafe(method(pickBranch:))]
-        fn pick_branch(&self, _s: Option<&AnyObject>) {
-            self.open_picker();
-        }
-
         #[unsafe(method(viewDidChangeEffectiveAppearance))]
         fn view_did_change_effective_appearance(&self) {
             self.paint_branch_title();
@@ -488,6 +397,18 @@ define_class!(
     }
 );
 
+/// The actions a worktree row lays out, in order, with the wider gap after
+/// the third and the sixth. `wtm_ui::list` names them.
+const ACTIONS: [(&str, Icon); 7] = [
+    ("push", Icon::Push),
+    ("pull", Icon::Pull),
+    ("merge", Icon::Merge),
+    ("editor", Icon::Editor),
+    ("terminal", Icon::Terminal),
+    ("reveal", Icon::Folder),
+    ("delete", Icon::Delete),
+];
+
 impl WorktreeCell {
     /// `primary_ink` snapshots when dark, so the title is rebuilt under this
     /// view's appearance.
@@ -495,11 +416,7 @@ impl WorktreeCell {
         let iv = self.ivars();
         let enabled = iv.picker.isEnabled();
         let picker = iv.picker.clone();
-        let shown = iv
-            .branch
-            .borrow()
-            .clone()
-            .unwrap_or_else(|| "(detached)".to_owned());
+        let shown = iv.branch.borrow().clone();
         self.effectiveAppearance()
             .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
                 let ink = if enabled {
@@ -507,7 +424,7 @@ impl WorktreeCell {
                 } else {
                     NSColor::disabledControlTextColor()
                 };
-                picker.setAttributedTitle(&branch_label(
+                picker.setAttributedTitle(&rich_label(
                     &shown,
                     &crate::util::branch_font(),
                     &ink,
@@ -521,50 +438,43 @@ impl WorktreeCell {
     /// already confirms. Chosen under this view's appearance, so it is redone
     /// when that changes.
     fn paint_delete_tint(&self) {
-        let delete = self.ivars().delete.clone();
+        let iv = self.ivars();
+        let danger = *iv.danger.borrow();
+        let Some(delete) = self.action_button("delete") else {
+            return;
+        };
         self.effectiveAppearance()
             .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
-                let tint = if crate::util::drawing_dark() {
-                    NSColor::secondaryLabelColor()
-                } else {
+                let tint = if danger && !crate::util::drawing_dark() {
                     NSColor::systemRedColor()
+                } else {
+                    NSColor::secondaryLabelColor()
                 };
                 delete.setContentTintColor(Some(&tint));
             }));
     }
 
-    /// Open the branch picker under this row's branch button.
-    pub fn open_picker(&self) {
-        let iv = self.ivars();
-        let (repo_id, path) = self.ids();
-        let app = iv.app.clone();
-        crate::picker::show(
-            &iv.picker,
-            &iv.branches.borrow(),
-            iv.branch.borrow().as_deref(),
-            move |branch| {
-                app.dispatch(Action::Switch {
-                    repo_id: repo_id.clone(),
-                    path: path.clone(),
-                    branch,
-                });
-            },
-        );
+    fn action_button(&self, id: &str) -> Option<Retained<IconButton>> {
+        self.ivars()
+            .actions
+            .iter()
+            .find(|(a, _)| *a == id)
+            .map(|(_, b)| b.clone())
+    }
+
+    /// The branch button, which the picker hangs from.
+    pub fn branch_button(&self) -> Retained<NSView> {
+        Retained::into_super(Retained::into_super(Retained::into_super(
+            Retained::into_super(self.ivars().picker.clone()),
+        )))
     }
 }
 
 impl WorktreeCell {
     pub const IDENTIFIER: &'static str = "wtm.worktree";
 
-    fn ids(&self) -> (String, String) {
-        (
-            self.ivars().repo_id.borrow().clone(),
-            self.ivars().path.borrow().clone(),
-        )
-    }
-
-    pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
-        let picker = PillButton::with_title(&ns(""), None, sel!(pickBranch:), mtm);
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let picker = PillButton::with_title(&ns(""), None, sel!(performClick:), mtm);
         picker.setBordered(false);
         picker.setControlSize(NSControlSize::Small);
         picker.setFont(Some(&crate::util::branch_font()));
@@ -600,30 +510,59 @@ impl WorktreeCell {
             NSLayoutConstraintOrientation::Horizontal,
         );
 
-        let copy_branch = icon_button("doc.on.doc", "Copy branch name", mtm);
-        let copy_path = icon_button("doc.on.doc", "Copy path", mtm);
-        let push = icon_button("arrow.up.to.line", "Push", mtm);
-        let pull = icon_button("arrow.down.to.line", "Pull (fast-forward only)", mtm);
-        let merge = icon_button(
-            "arrow.triangle.merge",
-            "Pull the primary branch into this branch",
-            mtm,
-        );
-        let editor = icon_button(
-            "chevron.left.forwardslash.chevron.right",
-            "Open in editor",
-            mtm,
-        );
-        let terminal = icon_button("terminal", "Open in terminal", mtm);
-        let reveal = icon_button("folder", "Reveal in Finder", mtm);
-        let delete = icon_button("trash", "Delete worktree", mtm);
+        let copy_branch = icon_button(Icon::Copy, "Copy branch name", mtm);
+        let copy_path = icon_button(Icon::Copy, "Copy path", mtm);
+        let actions: Vec<_> = ACTIONS
+            .iter()
+            .map(|&(id, icon)| (id, icon_button(icon, "", mtm)))
+            .collect();
+
+        let key: RowKey = Rc::default();
+        let mut targets = vec![
+            on_press(
+                &picker,
+                &key,
+                |k| controller::with_worktree(k, |w| w.on_switch.call(())),
+                mtm,
+            ),
+            on_press(
+                &copy_branch,
+                &key,
+                |k| {
+                    controller::with_worktree(k, |w| {
+                        if let Some(h) = &w.on_copy_branch {
+                            h.call(())
+                        }
+                    })
+                },
+                mtm,
+            ),
+            on_press(
+                &copy_path,
+                &key,
+                |k| controller::with_worktree(k, |w| w.on_copy_path.call(())),
+                mtm,
+            ),
+        ];
+        for (id, button) in &actions {
+            let id = *id;
+            targets.push(on_press(
+                button,
+                &key,
+                move |k| {
+                    controller::with_worktree(k, |w| {
+                        if let Some(a) = w.action(id) {
+                            a.on_press.call(())
+                        }
+                    })
+                },
+                mtm,
+            ));
+        }
 
         let this = mtm.alloc::<Self>().set_ivars(WorktreeCellIvars {
-            app,
-            repo_id: RefCell::new(String::new()),
-            path: RefCell::new(String::new()),
-            branch: RefCell::new(None),
-            branches: RefCell::new(Vec::new()),
+            key,
+            branch: RefCell::new(Rich::default()),
             picker: picker.clone(),
             copy_branch: copy_branch.clone(),
             badges: badges.clone(),
@@ -631,34 +570,15 @@ impl WorktreeCell {
             spinner: spinner.clone(),
             busy: busy.clone(),
             path_label: path_label.clone(),
-            push: push.clone(),
-            pull: pull.clone(),
-            merge: merge.clone(),
-            editor: editor.clone(),
-            terminal: terminal.clone(),
-            reveal: reveal.clone(),
-            delete: delete.clone(),
+            actions: actions.clone(),
+            danger: RefCell::new(false),
             top: RefCell::new(None),
+            _targets: targets,
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, WORKTREE_ROW_HEIGHT))]
         };
         this.setIdentifier(Some(&ns(Self::IDENTIFIER)));
-        let target: &AnyObject = this.as_ref();
-        unsafe { picker.setTarget(Some(target)) };
-        for (b, action) in [
-            (&copy_branch, sel!(copyBranch:)),
-            (&copy_path, sel!(copyPath:)),
-            (&push, sel!(push:)),
-            (&pull, sel!(pull:)),
-            (&merge, sel!(pullMain:)),
-            (&editor, sel!(openEditor:)),
-            (&terminal, sel!(openTerminal:)),
-            (&reveal, sel!(reveal:)),
-            (&delete, sel!(deleteWorktree:)),
-        ] {
-            wire(b, target, action);
-        }
 
         let line1 = hstack(6.0, mtm);
         line1.addArrangedSubview(&picker);
@@ -671,10 +591,7 @@ impl WorktreeCell {
         line2.addArrangedSubview(&path_label);
         line2.addArrangedSubview(&copy_path);
         line2.addArrangedSubview(&spacer(mtm));
-        for (i, b) in [&push, &pull, &merge, &editor, &terminal, &reveal, &delete]
-            .into_iter()
-            .enumerate()
-        {
+        for (i, (_, b)) in actions.iter().enumerate() {
             line2.addArrangedSubview(b);
             if i == 2 || i == 5 {
                 line2.setCustomSpacing_afterView(10.0, b);
@@ -696,54 +613,42 @@ impl WorktreeCell {
         this
     }
 
-    pub fn configure(
-        &self,
-        repo: &RepoConfig,
-        w: &WorktreeInfo,
-        branches: &[String],
-        busy: Option<Busy>,
-        home: &str,
-    ) {
+    pub fn configure(&self, key: &str, w: &WorktreeRow) {
         let iv = self.ivars();
-        *iv.repo_id.borrow_mut() = repo.id.clone();
-        *iv.path.borrow_mut() = w.path.clone();
+        *iv.key.borrow_mut() = key.to_string();
         *iv.branch.borrow_mut() = w.branch.clone();
-
-        // Branch button.
-        iv.picker
-            .setTitle(&ns(w.branch.as_deref().unwrap_or("(detached)")));
-        *iv.branches.borrow_mut() = branches.to_vec();
-        iv.copy_branch.setHidden(w.branch.is_none());
+        iv.copy_branch.setHidden(w.on_copy_branch.is_none());
 
         // Badges: reuse existing views, add or drop the difference.
-        let wanted = badges_for(w, &repo.main_branch);
         let mut views = iv.badge_views.borrow_mut();
         let mtm = MainThreadMarker::from(self);
-        while views.len() > wanted.len() {
+        while views.len() > w.badges.len() {
             let v = views.pop().unwrap();
             iv.badges.removeArrangedSubview(&v);
             v.removeFromSuperview();
         }
-        for (i, (text, tone, tip)) in wanted.iter().enumerate() {
+        for (i, b) in w.badges.iter().enumerate() {
+            let tone = BadgeTone {
+                hue: b.hue,
+                emphasis: b.emphasis,
+            };
             if i < views.len() {
-                views[i].set(text, *tone, tip);
+                views[i].set(&b.text, tone, &b.tooltip);
             } else {
-                let b = Badge::new(text, *tone, tip, mtm);
-                iv.badges.addArrangedSubview(&b);
-                views.push(b);
+                let v = Badge::new(&b.text, tone, &b.tooltip, mtm);
+                iv.badges.addArrangedSubview(&v);
+                views.push(v);
             }
         }
+        drop(views);
 
-        // Path.
-        iv.path_label
-            .setStringValue(&ns(&wtm_core::paths::tildify(&w.path, home)));
-        iv.path_label.setToolTip(Some(&ns(&w.path)));
+        iv.path_label.setStringValue(&ns(&w.path));
+        iv.path_label.setToolTip(Some(&ns(&w.path_full)));
 
-        // Busy state.
-        match busy {
+        match &w.busy {
             Some(b) => {
                 unsafe { iv.spinner.startAnimation(None) };
-                iv.busy.setStringValue(&ns(b.label()));
+                iv.busy.setStringValue(&ns(b));
                 iv.busy.setHidden(false);
             }
             None => {
@@ -751,29 +656,29 @@ impl WorktreeCell {
                 iv.busy.setHidden(true);
             }
         }
-        let missing = w.prunable;
-        let is_busy = busy.is_some();
-        // Attributed title carries its own colour, so the disabled look has
-        // to be chosen here rather than left to AppKit.
-        let enabled = !is_busy && !missing;
-        let shown = w.branch.as_deref().unwrap_or("(detached)");
-        iv.picker.setEnabled(enabled);
+        // The attributed title carries its own colour, so the disabled look
+        // has to be chosen here rather than left to AppKit.
+        iv.picker.setEnabled(w.can_switch);
         self.paint_branch_title();
-        iv.picker
-            .setToolTip(Some(&ns(&format!("Switch branch (current: {shown})"))));
+        iv.picker.setToolTip(Some(&ns(&w.switch_hint)));
         // The title may draw an agent prefix as a mark, which would otherwise
         // drop those words from the name assistive technology reads out.
-        iv.picker.setAccessibilityLabel(Some(&ns(shown)));
-        for b in [&iv.push, &iv.pull, &iv.merge] {
-            b.setEnabled(enabled);
+        iv.picker.setAccessibilityLabel(Some(&ns(&w.branch_name)));
+
+        for (id, button) in &iv.actions {
+            match w.action(id) {
+                Some(a) => {
+                    button.setEnabled(a.enabled);
+                    button.setHidden(a.hidden);
+                    button.set_hint(&a.hint);
+                    if *id == "delete" {
+                        *iv.danger.borrow_mut() = a.tint == Tint::Danger;
+                    }
+                }
+                None => button.setHidden(true),
+            }
         }
-        for b in [&iv.editor, &iv.terminal, &iv.reveal] {
-            b.setEnabled(!missing);
-        }
-        iv.delete.setEnabled(!is_busy);
-        iv.delete.setHidden(w.is_main);
-        iv.merge
-            .set_hint(&format!("Pull {} into this branch", repo.main_branch));
+        self.paint_delete_tint();
     }
 }
 
@@ -788,13 +693,14 @@ impl PlateCell for WorktreeCell {
 // MARK: Pending creation row
 
 pub struct PendingCellIvars {
-    app: App,
-    id: Cell<u64>,
+    key: RowKey,
     top: RefCell<Option<Retained<NSLayoutConstraint>>>,
     branch: Retained<NSTextField>,
     spinner: Retained<NSProgressIndicator>,
     status: Retained<NSTextField>,
     dismiss: Retained<IconButton>,
+    /// Its buttons' targets; a button holds its target weakly.
+    _targets: Vec<Retained<Callback>>,
 }
 
 define_class!(
@@ -803,19 +709,12 @@ define_class!(
     #[name = "WTMPendingCell"]
     #[ivars = PendingCellIvars]
     pub struct PendingCell;
-
-    impl PendingCell {
-        #[unsafe(method(dismiss:))]
-        fn dismiss(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::DismissCreation(self.ivars().id.get()));
-        }
-    }
 );
 
 impl PendingCell {
     pub const IDENTIFIER: &'static str = "wtm.pending";
 
-    pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let branch = label("", mtm);
         branch.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
             12.0,
@@ -823,22 +722,27 @@ impl PendingCell {
         )));
         let spinner = small_spinner(mtm);
         let status = secondary_label("Creating…", 11.0, mtm);
-        let dismiss = icon_button("xmark", "Dismiss", mtm);
+        let dismiss = icon_button(Icon::Close, "Dismiss", mtm);
+        let key: RowKey = Rc::default();
+        let targets = vec![on_press(
+            &dismiss,
+            &key,
+            |k| controller::with_pending(k, |p| p.on_dismiss.call(())),
+            mtm,
+        )];
         let this = mtm.alloc::<Self>().set_ivars(PendingCellIvars {
-            app,
-            id: Cell::new(0),
+            key,
             top: RefCell::new(None),
             branch: branch.clone(),
             spinner: spinner.clone(),
             status: status.clone(),
             dismiss: dismiss.clone(),
+            _targets: targets,
         });
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(NSPoint::ZERO, NSSize::new(400.0, PENDING_ROW_HEIGHT))]
         };
         this.setIdentifier(Some(&ns(Self::IDENTIFIER)));
-        let target: &AnyObject = this.as_ref();
-        wire(&dismiss, target, sel!(dismiss:));
         let line = hstack(8.0, mtm);
         line.addArrangedSubview(&branch);
         line.addArrangedSubview(&spinner);
@@ -849,9 +753,9 @@ impl PendingCell {
         this
     }
 
-    pub fn configure(&self, p: &PendingCreation) {
+    pub fn configure(&self, key: &str, p: &PendingRow) {
         let iv = self.ivars();
-        iv.id.set(p.id);
+        *iv.key.borrow_mut() = key.to_string();
         iv.branch.setStringValue(&ns(&p.branch));
         match &p.error {
             Some(e) => {

@@ -1,0 +1,40 @@
+[package]
+name = "wtm-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windows backend: Win32 + Common Controls 6 UI and platform services"
+build = "build.rs"
+
+[dependencies]
+wtm-platform = { workspace = true }
+wtm-toolkit = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# For `#[implement]`, whose expansion names this crate directly.
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+wtm-core = { workspace = true }
+wtm-ui = { workspace = true }
+env_logger = { workspace = true }

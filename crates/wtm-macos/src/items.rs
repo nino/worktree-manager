@@ -1,69 +1,27 @@
 //! Outline-view item objects. `NSOutlineView` identifies rows by object
-//! identity, so each repo, worktree and pending creation gets one long-lived
-//! `WTMItem` that survives model updates — that is what preserves expansion
-//! state and lets `reloadItem:` refresh a single row in place.
+//! identity, so each section and row of the view's `TreeList` gets one
+//! long-lived `WTMItem`, found again by its key, that survives every render:
+//! that is what preserves expansion state and lets `reloadItem:` refresh a
+//! single row in place.
 
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::NSObject;
-use wtm_core::Focus;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
-    Repo { repo_id: String },
-    Worktree { repo_id: String, path: String },
-    Pending { repo_id: String, id: u64 },
-}
-
-impl ItemKind {
-    /// Stable cache key.
-    pub fn key(&self) -> String {
-        match self {
-            ItemKind::Repo { repo_id } => format!("r:{repo_id}"),
-            ItemKind::Worktree { path, .. } => format!("w:{path}"),
-            ItemKind::Pending { id, .. } => format!("p:{id}"),
-        }
-    }
-
-    pub fn repo_id(&self) -> &str {
-        match self {
-            ItemKind::Repo { repo_id }
-            | ItemKind::Worktree { repo_id, .. }
-            | ItemKind::Pending { repo_id, .. } => repo_id,
-        }
-    }
-
-    /// The row as the window state remembers it. A pending creation is not
-    /// remembered: it is gone by the next launch.
-    pub fn focus(self) -> Option<Focus> {
-        match self {
-            ItemKind::Repo { repo_id } => Some(Focus {
-                repo_id,
-                worktree_path: None,
-            }),
-            ItemKind::Worktree { repo_id, path } => Some(Focus {
-                repo_id,
-                worktree_path: Some(path),
-            }),
-            ItemKind::Pending { .. } => None,
-        }
-    }
-}
-
-impl From<Focus> for ItemKind {
-    fn from(f: Focus) -> Self {
-        match f.worktree_path {
-            Some(path) => ItemKind::Worktree {
-                repo_id: f.repo_id,
-                path,
-            },
-            None => ItemKind::Repo { repo_id: f.repo_id },
-        }
-    }
+    /// A repo card's header: a section of the list.
+    Header,
+    Worktree,
+    Pending,
 }
 
 pub struct ItemIvars {
     pub kind: ItemKind,
+    /// The section or row key.
+    pub key: String,
+    /// The key of the section the row belongs to (its own, for a header).
+    pub section: String,
 }
 
 define_class!(
@@ -75,12 +33,24 @@ define_class!(
 );
 
 impl WTMItem {
-    pub fn new(kind: ItemKind, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(ItemIvars { kind });
+    pub fn new(kind: ItemKind, key: &str, section: &str, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(ItemIvars {
+            kind,
+            key: key.to_string(),
+            section: section.to_string(),
+        });
         unsafe { msg_send![super(this), init] }
     }
 
     pub fn kind(&self) -> ItemKind {
-        self.ivars().kind.clone()
+        self.ivars().kind
+    }
+
+    pub fn key(&self) -> &str {
+        &self.ivars().key
+    }
+
+    pub fn section(&self) -> &str {
+        &self.ivars().section
     }
 }

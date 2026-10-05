@@ -1,7 +1,8 @@
 //! A small rounded status badge ("staged", "↑3 origin/main"), drawn natively:
 //! a tinted capsule behind a system-font label. In the light appearance each
 //! state has its own hue; in the dark one colour is reserved for uncommitted
-//! work and a missing folder, and everything else is luminance.
+//! work and a missing folder (`Emphasis::Attention`/`Alarm`), and everything
+//! else is luminance. Which badges a row has is `wtm_ui::list::badges_for`.
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -13,55 +14,42 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
 use std::cell::RefCell;
 
+use wtm_toolkit::{Emphasis, Hue};
+
 use crate::util::{drawing_dark, ns};
 
-/// What a badge is reporting. Loudness when dark is [`BadgeRank`].
+/// A badge's colour family and how loud it is: `wtm_ui` decides both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BadgeTone {
-    Clean,
-    Staged,
-    Unstaged,
-    Untracked,
-    Ahead,
-    Behind,
-    Unpushed,
-    Missing,
-    Muted,
-    Primary,
+pub struct BadgeTone {
+    pub hue: Hue,
+    pub emphasis: Emphasis,
 }
 
 /// How loud a badge is drawn when dark. Only Attention and Alarm spend colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BadgeRank {
-    Quiet,
-    Notable,
-    Attention,
-    Alarm,
-}
+type BadgeRank = Emphasis;
 
 impl BadgeTone {
     /// The light appearance's colour: one system hue per state. Against
     /// near-black a stack of rows turns these into a repeating high-chroma
     /// pattern, which is why dark draws by [`BadgeRank`] instead.
     fn hue(self) -> Retained<NSColor> {
-        match self {
-            BadgeTone::Clean => NSColor::systemGreenColor(),
-            BadgeTone::Staged => NSColor::systemBlueColor(),
-            BadgeTone::Unstaged => NSColor::systemOrangeColor(),
-            BadgeTone::Untracked => NSColor::systemPurpleColor(),
-            BadgeTone::Ahead => NSColor::systemTealColor(),
-            BadgeTone::Behind => NSColor::systemRedColor(),
-            BadgeTone::Unpushed => NSColor::systemYellowColor(),
-            BadgeTone::Missing => NSColor::systemRedColor(),
-            BadgeTone::Muted => NSColor::systemGrayColor(),
-            BadgeTone::Primary => NSColor::controlAccentColor(),
+        match self.hue {
+            Hue::Green => NSColor::systemGreenColor(),
+            Hue::Blue => NSColor::systemBlueColor(),
+            Hue::Orange => NSColor::systemOrangeColor(),
+            Hue::Purple => NSColor::systemPurpleColor(),
+            Hue::Teal => NSColor::systemTealColor(),
+            Hue::Red => NSColor::systemRedColor(),
+            Hue::Yellow => NSColor::systemYellowColor(),
+            Hue::Gray => NSColor::systemGrayColor(),
+            Hue::Accent => NSColor::controlAccentColor(),
         }
     }
 
     /// Label colour under the current drawing appearance.
     fn ink(self) -> Retained<NSColor> {
         if drawing_dark() {
-            self.rank().ink()
+            rank_ink(self.emphasis)
         } else {
             self.hue()
         }
@@ -70,42 +58,27 @@ impl BadgeTone {
     /// Capsule colour under the current drawing appearance.
     fn fill(self) -> Retained<NSColor> {
         if drawing_dark() {
-            self.rank().fill()
+            rank_fill(self.emphasis)
         } else {
             self.hue().colorWithAlphaComponent(0.16)
         }
     }
+}
 
-    pub fn rank(self) -> BadgeRank {
-        match self {
-            BadgeTone::Staged | BadgeTone::Unstaged | BadgeTone::Untracked => BadgeRank::Attention,
-            BadgeTone::Missing => BadgeRank::Alarm,
-            BadgeTone::Unpushed => BadgeRank::Notable,
-            BadgeTone::Clean
-            | BadgeTone::Ahead
-            | BadgeTone::Behind
-            | BadgeTone::Muted
-            | BadgeTone::Primary => BadgeRank::Quiet,
-        }
+fn rank_ink(rank: BadgeRank) -> Retained<NSColor> {
+    match rank {
+        BadgeRank::Quiet => NSColor::secondaryLabelColor(),
+        BadgeRank::Notable => NSColor::labelColor(),
+        BadgeRank::Attention => muted(&NSColor::systemOrangeColor()),
+        BadgeRank::Alarm => muted(&NSColor::systemRedColor()),
     }
 }
 
-impl BadgeRank {
-    fn ink(self) -> Retained<NSColor> {
-        match self {
-            BadgeRank::Quiet => NSColor::secondaryLabelColor(),
-            BadgeRank::Notable => NSColor::labelColor(),
-            BadgeRank::Attention => muted(&NSColor::systemOrangeColor()),
-            BadgeRank::Alarm => muted(&NSColor::systemRedColor()),
-        }
-    }
-
-    fn fill(self) -> Retained<NSColor> {
-        match self {
-            BadgeRank::Quiet => NSColor::labelColor().colorWithAlphaComponent(0.06),
-            BadgeRank::Notable => NSColor::labelColor().colorWithAlphaComponent(0.10),
-            BadgeRank::Attention | BadgeRank::Alarm => self.ink().colorWithAlphaComponent(0.14),
-        }
+fn rank_fill(rank: BadgeRank) -> Retained<NSColor> {
+    match rank {
+        BadgeRank::Quiet => NSColor::labelColor().colorWithAlphaComponent(0.06),
+        BadgeRank::Notable => NSColor::labelColor().colorWithAlphaComponent(0.10),
+        BadgeRank::Attention | BadgeRank::Alarm => rank_ink(rank).colorWithAlphaComponent(0.14),
     }
 }
 
@@ -206,209 +179,5 @@ impl Badge {
             .performAsCurrentDrawingAppearance(&RcBlock::new(move || {
                 label.setTextColor(Some(&tone.ink()));
             }));
-    }
-}
-
-/// The badge row for a worktree, in display order: `(text, tone, tooltip)`.
-pub fn badges_for(
-    w: &wtm_core::WorktreeInfo,
-    main_branch: &str,
-) -> Vec<(String, BadgeTone, String)> {
-    let mut out = Vec::new();
-    if w.is_main {
-        out.push((
-            "primary".into(),
-            BadgeTone::Primary,
-            "The repository's primary working tree".into(),
-        ));
-    }
-    if w.locked {
-        out.push((
-            "locked".into(),
-            BadgeTone::Muted,
-            "This worktree is locked".into(),
-        ));
-    }
-    if w.prunable {
-        out.push((
-            "folder missing".into(),
-            BadgeTone::Missing,
-            "Folder was deleted outside the app — git still tracks this worktree. Delete the row to clean up git's bookkeeping.".into(),
-        ));
-        return out;
-    }
-    let Some(s) = &w.status else {
-        out.push((
-            "no status".into(),
-            BadgeTone::Muted,
-            "Status could not be determined".into(),
-        ));
-        return out;
-    };
-    let trunk = if s.trunk_ref.is_empty() {
-        main_branch
-    } else {
-        &s.trunk_ref
-    };
-    if !s.is_dirty() {
-        out.push((
-            "✓".into(),
-            BadgeTone::Clean,
-            "Clean working tree — no staged, unstaged, or untracked changes".into(),
-        ));
-    }
-    if s.has_staged {
-        out.push((
-            "staged".into(),
-            BadgeTone::Staged,
-            "Staged, uncommitted changes".into(),
-        ));
-    }
-    if s.has_unstaged {
-        out.push((
-            "unstaged".into(),
-            BadgeTone::Unstaged,
-            "Unstaged changes".into(),
-        ));
-    }
-    if s.has_untracked {
-        out.push((
-            "untracked".into(),
-            BadgeTone::Untracked,
-            "Untracked files".into(),
-        ));
-    }
-    match (s.ahead_of_main, s.behind_main) {
-        (Some(a), Some(b)) => {
-            if a > 0 {
-                out.push((
-                    format!("↑{a} {trunk}"),
-                    BadgeTone::Ahead,
-                    format!("{a} commit(s) ahead of {trunk}"),
-                ));
-            }
-            if b > 0 {
-                out.push((
-                    format!("↓{b} {trunk}"),
-                    BadgeTone::Behind,
-                    format!("{b} commit(s) behind {trunk}"),
-                ));
-            }
-        }
-        _ => out.push((
-            format!("? {trunk}"),
-            BadgeTone::Muted,
-            format!("Couldn't compare with {trunk} — check the repo's main-branch setting"),
-        )),
-    }
-    if s.unpushed {
-        out.push((
-            format!("⇡{} unpushed", s.unpushed_count),
-            BadgeTone::Unpushed,
-            format!("{} unpushed commit(s)", s.unpushed_count),
-        ));
-    } else if !s.has_upstream {
-        out.push((
-            "no upstream".into(),
-            BadgeTone::Muted,
-            "No upstream branch configured".into(),
-        ));
-    }
-    out
-}
-
-// Ranks govern only the dark appearance; in light every tone has its hue.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wtm_core::{WorktreeInfo, WorktreeStatus};
-
-    fn clean_status() -> WorktreeStatus {
-        WorktreeStatus {
-            has_unstaged: false,
-            has_staged: false,
-            has_untracked: false,
-            trunk_ref: "origin/main".into(),
-            ahead_of_main: Some(0),
-            behind_main: Some(0),
-            unpushed: false,
-            unpushed_count: 0,
-            has_upstream: true,
-        }
-    }
-
-    fn worktree(status: Option<WorktreeStatus>) -> WorktreeInfo {
-        WorktreeInfo {
-            path: "/w".into(),
-            branch: Some("feature/thing".into()),
-            head: "abc1234".into(),
-            is_main: false,
-            locked: false,
-            prunable: false,
-            status,
-        }
-    }
-
-    fn ranks(w: &WorktreeInfo) -> Vec<BadgeRank> {
-        badges_for(w, "main")
-            .into_iter()
-            .map(|(_, tone, _)| tone.rank())
-            .collect()
-    }
-
-    fn coloured(w: &WorktreeInfo) -> usize {
-        ranks(w)
-            .into_iter()
-            .filter(|r| matches!(r, BadgeRank::Attention | BadgeRank::Alarm))
-            .count()
-    }
-
-    #[test]
-    fn a_clean_in_sync_worktree_spends_no_colour() {
-        assert_eq!(coloured(&worktree(Some(clean_status()))), 0);
-    }
-
-    #[test]
-    fn distance_from_the_trunk_stays_quiet() {
-        let mut s = clean_status();
-        s.ahead_of_main = Some(4);
-        s.behind_main = Some(264);
-        assert!(ranks(&worktree(Some(s)))
-            .iter()
-            .all(|r| *r == BadgeRank::Quiet));
-    }
-
-    #[test]
-    fn unpushed_commits_are_notable_rather_than_coloured() {
-        let mut s = clean_status();
-        s.unpushed = true;
-        s.unpushed_count = 2;
-        let w = worktree(Some(s));
-        assert!(ranks(&w).contains(&BadgeRank::Notable));
-        assert_eq!(coloured(&w), 0);
-    }
-
-    #[test]
-    fn only_uncommitted_work_and_a_missing_folder_are_coloured() {
-        let mut s = clean_status();
-        s.has_staged = true;
-        s.has_unstaged = true;
-        s.has_untracked = true;
-        assert_eq!(coloured(&worktree(Some(s))), 3);
-
-        let mut gone = worktree(None);
-        gone.prunable = true;
-        assert_eq!(coloured(&gone), 1);
-
-        // A row the app could not read is a gap in knowledge, not an alarm.
-        assert_eq!(coloured(&worktree(None)), 0);
-    }
-
-    #[test]
-    fn primary_and_locked_markers_are_labels_not_alerts() {
-        let mut main = worktree(Some(clean_status()));
-        main.is_main = true;
-        main.locked = true;
-        assert_eq!(coloured(&main), 0);
     }
 }

@@ -2,6 +2,28 @@
 
 use std::path::{Path, PathBuf};
 
+/// A path as git writes it, so paths from the OS and from git compare equal.
+/// On Windows git prints `C:/Users/ada/app` where the OS gives
+/// `C:\Users\ada\app`, and canonicalising gives `\\?\C:\Users\ada\app`;
+/// all three become the first. Elsewhere a path is left alone: a backslash
+/// is an ordinary character in a Unix file name.
+pub fn normalise(path: &str) -> String {
+    normalise_for(path, cfg!(windows))
+}
+
+/// [`normalise`], for Windows or not.
+pub fn normalise_for(path: &str, windows: bool) -> String {
+    if !windows {
+        return path.to_string();
+    }
+    let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    path.replace('\\', "/")
+}
+
 /// Abbreviate the user's home directory to `~` for display purposes.
 pub fn tildify(path: &str, home: &str) -> String {
     if home.is_empty() {
@@ -51,14 +73,27 @@ pub fn slugify_branch(branch: &str) -> String {
 
 /// The on-disk path for a new worktree: `<root>/<repo name>/<branch slug>`.
 pub fn worktree_path_for(worktrees_root: &str, repo_name: &str, branch: &str) -> PathBuf {
-    Path::new(worktrees_root)
+    let path = Path::new(worktrees_root)
         .join(repo_name)
-        .join(slugify_branch(branch))
+        .join(slugify_branch(branch));
+    // Compared with the paths git lists, and Windows takes either slash.
+    PathBuf::from(normalise(&path.to_string_lossy()))
 }
 
 /// Repo display names double as a directory segment under the worktrees root,
 /// so they must never contain path separators or traversal sequences.
 pub fn sanitize_repo_name(name: &str) -> String {
+    sanitize_repo_name_for(name, cfg!(windows))
+}
+
+/// [`sanitize_repo_name`], for Windows or not. On Windows a colon is out
+/// too: `a:` joined onto the worktrees root is a drive of its own.
+pub fn sanitize_repo_name_for(name: &str, windows: bool) -> String {
+    let name = if windows {
+        name.replace(':', "-")
+    } else {
+        name.to_string()
+    };
     // Dots and whitespace are trimmed together: trimming one and then the
     // other leaves `. x` as ` x`, which the next save would trim again.
     let cleaned: String = name
@@ -77,6 +112,23 @@ pub fn sanitize_repo_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_paths_are_written_as_git_writes_them() {
+        assert_eq!(normalise_for(r"C:\Users\ada\app", true), "C:/Users/ada/app");
+        assert_eq!(
+            normalise_for(r"\\?\C:\Users\ada\app", true),
+            "C:/Users/ada/app"
+        );
+        assert_eq!(normalise_for("C:/Users/ada/app", true), "C:/Users/ada/app");
+        assert_eq!(
+            normalise_for(r"\\?\UNC\server\share\app", true),
+            "//server/share/app"
+        );
+        assert_eq!(normalise_for(r"\\server\share", true), "//server/share");
+        // A backslash in a Unix name is part of the name.
+        assert_eq!(normalise_for(r"/tmp/a\b", false), r"/tmp/a\b");
+    }
 
     #[test]
     fn tildify_abbreviates_home() {
@@ -128,6 +180,13 @@ mod tests {
         assert_eq!(sanitize_repo_name("../etc"), "--etc");
         assert_eq!(sanitize_repo_name("a/b"), "a-b");
         assert_eq!(sanitize_repo_name("  "), "repo");
+    }
+
+    #[test]
+    fn sanitize_repo_name_keeps_off_other_drives_on_windows() {
+        assert_eq!(sanitize_repo_name_for("a:", true), "a-");
+        assert_eq!(sanitize_repo_name_for("C:x", true), "C-x");
+        assert_eq!(sanitize_repo_name_for("a:", false), "a:");
     }
 
     #[test]

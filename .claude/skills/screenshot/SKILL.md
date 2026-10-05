@@ -1,63 +1,60 @@
 ---
 name: screenshot
-description: Regenerate docs/screenshot.png (the README image) after any change to the renderer's layout or styling. Use when asked to update, refresh, or retake the screenshot, or after a restyle that the user wants to review visually. Covers running the capture on Linux (Claude Code on the web) as well as macOS.
+description: Capture the running app as a PNG to review a UI change, on Linux (Claude Code on the web) through the GTK build under Xvfb. Use when asked for a screenshot, to check how a change looks, or after a change to what the shared UI shows. Also says what to do about docs/screenshot.png, the README image.
 ---
 
-# Regenerating the README screenshot
+# Screenshots
 
-`docs/screenshot.png` is produced by `scripts/screenshot.mjs`, which builds
-throwaway demo repos, seeds a sandboxed config profile, launches the production
-build under Playwright, and captures the window. Never edit the PNG by hand and
-never point the script at real user data.
+The UI is written once (`wtm-ui`) and shown by a toolkit per OS. In a Linux
+container the GTK build is the one that runs, and it can photograph itself:
+a change to what the shared UI shows can be checked here, and the picture
+shown to the user.
 
-## On macOS
+`docs/screenshot.png`, the README image, is a capture of the macOS app. It
+cannot be made here: ask the user to retake it on their Mac when a change
+should be reflected in it, and never replace it with a GTK capture.
 
-```sh
-pnpm screenshot
-```
+## Capturing the GTK build
 
-That builds `out/` and captures. A Retina display gives the 2x image directly.
+Never point the app at the real config. Everything below lives in a
+throwaway directory: demo repos, the config, the window state, and a fake
+`HOME`.
 
-## On Linux (Claude Code on the web)
-
-The script supports Linux, but three things differ from a Mac:
-
-1. **The Electron binary must be present.** `pnpm install` downloads it via the
-   root `postinstall`. Check `ls node_modules/electron/dist` shows more than
-   the licence files; if it doesn't, run `corepack pnpm install`.
-2. **There is no display.** Run the capture under Xvfb. The window is
-   1080x760 CSS pixels and the script forces a device scale factor of 2, so the
-   virtual screen has to be at least 2160x1520 or Chromium clamps the window
-   and the image comes out small. Use a comfortably larger screen:
+1. Make the sandbox: a repo or two with the states worth seeing (a linked
+   worktree, a dirty file, a `claude/` or `cursor/` branch for the agent
+   marks), and a `config.json` naming them:
 
    ```sh
-   corepack pnpm exec electron-vite build
-   xvfb-run -a -s "-screen 0 2600x1800x24" node scripts/screenshot.mjs
+   S=$(mktemp -d); mkdir -p "$S/home" "$S/data"
+   git init -q -b main "$S/app" && git -C "$S/app" -c user.email=a@b -c user.name=a commit -q --allow-empty -m init
+   git -C "$S/app" worktree add -q -b claude/fix-login "$S/app-wt"
+   cat > "$S/data/config.json" <<EOF
+   {"repos":[{"id":"r1","name":"app","path":"$S/app","mainBranch":"main","initCommand":""}],
+    "worktreesRoot":"$S/wt","editorCommand":"true"}
+   EOF
    ```
 
-   `pnpm screenshot` also works, wrapped the same way in `xvfb-run`.
+2. Build and capture (`scripts/cloud-setup.sh` has installed GTK and Xvfb):
 
-3. **Running as root.** Chromium refuses to start its sandbox as root; the
-   script already passes `--no-sandbox` in that one case. Do not add it
-   anywhere else.
+   ```sh
+   cargo build -p wtm-app
+   HOME="$S/home" WTM_USER_DATA="$S/data" WTM_NO_LAUNCH=1 \
+     WTM_SCREENSHOT="$S/shot.png" WTM_SCREENSHOT_QUIT=1 \
+     xvfb-run -a -s "-screen 0 1600x1100x24" target/debug/worktree-manager
+   ```
 
-Fonts on Linux are DejaVu, not San Francisco or Menlo, so the image differs from
-a Mac capture. That is fine for reviewing a layout change; say so when handing
-the image over, and note that a Mac run of `pnpm screenshot` restores the real
-fonts before publishing.
+   The PNG is written once the first listing has settled.
+   `WTM_APPEARANCE=dark` gives the dark look.
 
-## Afterwards
+3. To photograph a dialog, the picker or Settings, drive the UI first with
+   `WTM_SCREENSHOT_STEPS`, a comma-separated list run through the view's own
+   handlers: `new-worktree`, `repo-settings`, `picker`, `settings`,
+   `collapse:<card>`, `select:<row>`, `query:<text>`, `type:<text>`. Row and
+   card keys are `r:<repo id>`, `w:<path>`. See `crates/wtm-gtk/src/screenshot.rs`.
 
-- Confirm the size: `file docs/screenshot.png` should report 2160 x 1520.
-- Look at the image (Read the PNG) before committing. Check every row type the
-  demo data stages: primary, dirty, ahead/behind, no upstream, and the
-  `claude/` and `cursor/` agent-prefix branches.
-- Commit the PNG together with the styling change it documents.
+4. Look at the image (Read the PNG) before saying anything about it, then
+   put it under `/mnt/project-files/` to show the user, and delete the
+   sandbox.
 
-## Changing what the shot shows
-
-Demo repos and their states are built in `buildDemoRepos()` inside the script;
-the sandboxed config (repos, commands, worktrees root) is `seedProfile()`. Add
-new states there rather than in a real repo. The script cleans up `~/wtm-demo`
-and the temp profile on exit, success or failure, and refuses to touch a
-`~/wtm-demo` it did not create.
+Fonts and widgets are GTK's (Adwaita, DejaVu), so the picture shows layout
+and content, not how the Mac looks. Say so when handing it over.

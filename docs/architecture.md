@@ -1,43 +1,110 @@
 # Architecture
 
-**Real AppKit widgets** (`NSOutlineView`, `NSToolbar`, `NSAlert` sheets,
-`NSPopover`, SF Symbols) driven from Rust through objc2, aimed at the lowest
-possible latency: the UI never waits on git, and every repaint touches only the
-rows whose data changed.
+The UI is written once, in `wtm-ui`, as plain values: a description of the
+window, its list, dialogs, popover, panels and menus. A thin toolkit layer
+(`wtm-toolkit`) defines that vocabulary, and one backend per OS shows it with
+that OS's own widgets:
+
+| OS | crate | widgets |
+| --- | --- | --- |
+| macOS | `wtm-macos` | AppKit through objc2: `NSOutlineView`, `NSToolbar`, `NSAlert` sheets, `NSPopover`, SF Symbols |
+| Linux | `wtm-gtk` | GTK 4 through gtk4-rs |
+| Windows | `wtm-windows` | Win32 through the `windows` crate: common controls, owner-drawn rows |
+
+All three aim at the lowest possible latency: the UI never waits on git, and
+every repaint touches only the rows whose data changed.
 
 ```sh
 cargo run                 # dev build, runs as a bare binary (menu bar + window)
 cargo test                # unit tests + an end-to-end core test on a temp repo
-scripts/bundle.sh         # release build → target/bundle/Worktree Manager.app
+xvfb-run -a cargo test    # the same on Linux, where the GTK tests need a display
+scripts/bundle.sh         # macOS release build → target/bundle/Worktree Manager.app
 scripts/bundle.sh --install   # …and copy it to /Applications
 WTM_USER_DATA=/tmp/x cargo run   # sandboxed config dir (never touches real config)
-scripts/monkey.sh         # random input on a debug build, in a sandbox, until it crashes
+scripts/monkey.sh         # macOS: random input on a debug build, in a sandbox, until it crashes
 ```
 
-Config lives in `~/Library/Application Support/Worktree Manager/config.json`,
-in the same JSON shape the Electron app this replaced used, and that app's
-`worktree-manager.json` is imported on first launch if it is still there.
+Config lives in the platform's app-data directory
+(`~/Library/Application Support/Worktree Manager/config.json` on macOS,
+`$XDG_CONFIG_HOME/worktree-manager/` on Linux, `%APPDATA%\Worktree Manager\`
+on Windows), in the same JSON shape the Electron app this replaced used, and
+that app's `worktree-manager.json` is imported on first launch if it is still
+there.
 
 ## Crates
 
 ```
 crates/
   wtm-platform   Traits every OS backend implements (spawn detached, open
-                 terminal, reveal, app directories). ~60 lines, no deps.
+                 terminal, reveal, app directories, the updater). No deps.
   wtm-core       Everything that is not a widget: data model, git runner and
                  parsers, create/delete safety ladder, push/pull/merge/switch,
                  config + startup snapshot + window state, background fetch,
                  file watcher, and the `App` facade. Depends only on
                  wtm-platform. Tested.
-  wtm-macos      AppKit UI through objc2 + the macOS `Platform` impl.
-  wtm-app        The binary. The only place with `cfg(target_os)`: it picks a
-                 backend and hands it to the core.
+  wtm-toolkit    The wrapper: the `View` vocabulary, the `Program` and
+                 `Backend` traits and the loop between them, a headless
+                 backend for tests. Knows nothing of the app or any OS.
+  wtm-ui         The UI, once: `Ui` is the `Program`. Turns the core's model
+                 into a `View` and the view's messages into core `Action`s.
+                 Tested headlessly.
+  wtm-macos      The AppKit backend + the macOS `Platform` and updater.
+  wtm-gtk        The GTK 4 backend + the Linux `Platform`.
+  wtm-windows    The Win32 backend + the Windows `Platform`.
+  wtm-app        The binary. Picks a backend by `cfg(target_os)` and hands
+                 it, the core and the updater to `wtm_ui::run`.
 ```
 
-Dependency direction is strictly `wtm-app → wtm-macos → wtm-core → wtm-platform`.
-The core never names AppKit, threads of the UI, or an OS.
+Dependency direction is strictly `wtm-app → wtm-<os> → wtm-ui → wtm-toolkit`,
+with `wtm-ui → wtm-core → wtm-platform` beside it. Neither the core nor the
+UI names a toolkit, a thread of the UI, or an OS. Each backend crate is
+`#![cfg(target_os = ...)]` as a whole, so the workspace builds everywhere and
+only the matching backend has any code in it.
 
-## Architecture
+## One UI, three toolkits
+
+**The loop.** `wtm-toolkit` is shaped like Elm. `Ui::view` returns the whole
+UI as a `View`: the main window (toolbar, search, notice, a sectioned
+`TreeList` of repo cards and their worktree rows, an empty state), at most one
+open dialog first in a queue, the branch picker popover, panels such as
+Settings, and the menus. Handlers in it are values that send a message.
+`Backend::render` brings the native widgets in line with a view;
+`Backend::perform` runs one-off `Effect`s (copy, a folder picker, focus,
+scroll). A handler only queues its message; the queue is drained on the next
+turn of the main loop, so the program never runs inside a native callback and
+a backend is never asked to render while it is rendering. `Runtime::flush`
+drains at once for the two places that must see the result before returning:
+quitting, and menu validation.
+
+**What a backend owes.** The contract is the same everywhere, and
+`crates/wtm-gtk/tests/conformance.rs` checks the GTK backend against it:
+
+- Report only what the user did. A row expanded, a field's text written or a
+  selection moved *by a render* sends nothing back.
+- Keep widgets across renders and patch them in place. A row is identified by
+  its key (`r:<repo id>`, `w:<path>`, `p:<pending id>`), a dialog by its id,
+  the popover by its id, a panel by its key; a field being edited is never
+  rewritten under the cursor.
+- Show only the first dialog in the queue, and never show again one that a
+  button already closed, even if a render arrives before the program has
+  taken it out.
+- A popover or panel the view drops is closed without reporting `on_dismiss`
+  or `on_close`; one the user closes reports it.
+- Report host events: activation, the window's frame, the scroll offset, open
+  requests from the OS, and quitting.
+
+**Where the UI ends.** `wtm-ui` holds everything the window adds to the
+model (the search, closed cards, the selection, open dialogs and their
+drafts, the picker's query), and its tests drive it through the headless
+backend. Anything an OS decides — sheets versus modal windows, how a popover
+closes, which key is the menu shortcut modifier — stays in the backend.
+
+## The macOS backend
+
+The rest of this section is about `wtm-macos`. The GTK and Win32 backends
+follow the same rules with their own widgets; the notes that differ are under
+"Other backends" below.
+
 
 **One immutable snapshot.** `wtm_core::Model` is a plain value (config, repo
 nodes with their worktrees, per-worktree busy flags, pending creations, a
@@ -48,9 +115,9 @@ way. Listeners are called on whichever thread finished; the macOS backend
 coalesces bursts with an atomic flag and hops to the main queue once.
 
 **Targeted reloads.** The controller keeps one long-lived `WTMItem` object per
-repo, worktree and pending creation, so `NSOutlineView` identity (and thus
-expansion state) survives updates. On each snapshot it diffs against the one
-it last rendered and calls `reloadItem:` only for rows whose data differs.
+row key, so `NSOutlineView` identity (and thus expansion state) survives
+updates. On each render it diffs the view's `TreeList` against the one it
+last rendered and calls `reloadItem:` only for rows whose data differs.
 Rows that a search query or a snapshot adds or drops are inserted and removed
 in place (`wtm_core::splice` works out which), so every row that stays keeps
 its view, and a closed card whose rows changed reloads its children. A splice
@@ -197,18 +264,49 @@ and runs `git worktree remove` without `--force` first — a dirty tree comes
 back as `Dirty` and the UI asks a second, destructive-styled question.
 Mutations are serialised per worktree path.
 
+## Other backends
+
+**GTK.** `wtm-gtk` builds the list as a plain vertical box in a scrolled
+window, one widget per row key, rather than a recycling `GtkListView`: the
+list holds tens of rows, and a box keeps each row's widget for render to
+patch. Cards are drawn by CSS (`style.rs`), some icons and the agent marks by
+cairo; dialogs are modal windows on the main one, panels are windows of their
+own, and the picker is a `GtkPopover`. GTK cannot place or read a toplevel's position under Wayland,
+so `FrameChanged` carries the size with a position of zero, and only the
+size is restored. The screen sizes it reports are whole monitors, not their work
+areas. In a dialog Return activates the focused button rather than the
+default one, as GTK does everywhere.
+
+It can photograph itself, which is how a UI change is checked in a Linux
+container: `WTM_SCREENSHOT=<png>` writes the window once the first listing
+has settled, `WTM_SCREENSHOT_STEPS` drives the UI first (open a dialog, the
+picker, Settings, type into a field), and `WTM_SCREENSHOT_QUIT=1` exits
+afterwards. Under Xvfb set `GSK_RENDERER=cairo`. The `screenshot` skill has
+the whole recipe.
+
+**Win32.** `wtm-windows` is plain Win32 and common controls (comctl32 v6
+through the manifest): the list is an owner-drawn window that paints the
+cards, dialogs are modal windows owned by the main one, the picker is a
+borderless popup, and the menus are a menu bar with accelerators on Ctrl.
+Because the cards are painted, the list answers `WM_GETOBJECT` with an MSAA
+outline of its rows (`access.rs`) and raises focus events as the selection
+moves. The About box and the folder picker run modal loops of their own, in
+which the program keeps running; `app::nested` puts modality right after
+each. It builds from Linux for `x86_64-pc-windows-gnu`.
+
 ## Adding a platform
 
-1. Create `crates/wtm-<os>` implementing `wtm_platform::Platform` and exposing
-   `fn app_dirs() -> AppDirs` and `fn run(app: wtm_core::App) -> !`.
-2. Add a `#[cfg(target_os = "...")]` arm in `crates/wtm-app/src/main.rs`.
+1. Create `crates/wtm-<os>`, gated with `#![cfg(target_os = "...")]`, that
+   implements `wtm_toolkit::Toolkit` and `Backend`, and
+   `wtm_platform::Platform`, and exposes `fn app_dirs() -> AppDirs`.
+2. Add a `#[cfg(target_os = "...")]` arm in `crates/wtm-app/src/main.rs`
+   that builds the `App` with that platform and calls `wtm_ui::run`.
 
-Nothing in `wtm-core` changes. The UI contract is: subscribe to `Event`, read
-`App::model()`, call `App::dispatch(Action)`; `Action::DeleteWorktree` carries a
-reply callback for the confirmation ladder. The macOS controller (`rebuild` in
-`controller.rs`) is a reference for the snapshot-diffing approach.
+Nothing in `wtm-core` or `wtm-ui` changes. `wtm_toolkit::headless` is the
+smallest backend there is and shows what `render` is handed;
+`crates/wtm-gtk/tests/conformance.rs` is the list of behaviours to match.
 
-**Updating itself.** `updater.rs` reads `appcast.json` from the release its
+**Updating itself (macOS).** `wtm-macos`'s `updater.rs` reads `appcast.json` from the release its
 channel names — the rolling `latest` one for stable, the `beta` tag's
 prerelease for beta (`UpdateChannel::feed_url`) — 10s after launch and every
 six hours. Both are plain download URLs, so there is no API call and no token,
@@ -251,8 +349,10 @@ which between them satisfy the designated requirement Squirrel.Mac checks a
 downloaded bundle against. Their first launch of it is a first launch of this
 app, so their `worktree-manager.json` is imported by the config store.
 
+Linux and Windows builds have no updater yet (`wtm_platform::NoUpdater`).
+
 ## Not carried over from the Electron app
 
 The command runner with its terminal drawer, and the brushed-metal appearance
-(this uses the standard macOS look, light and dark). Both are in git history if
+(this uses each platform's standard look, light and dark). Both are in git history if
 they are wanted back.

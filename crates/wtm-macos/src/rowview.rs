@@ -429,8 +429,8 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(band, r - 1.0, r - 1.0);
             let dark = drawing_dark();
             // Aqua's blue, greyed down: the card colour tinted towards a
-            // desaturated system blue and darkened a little, deeper at the
-            // top and fading towards the plates.
+            // desaturated system blue and darkened a little, deepening
+            // towards the plates.
             let base = card_fill();
             let blue = NSColor::systemBlueColor()
                 .blendedColorWithFraction_ofColor(0.45, &NSColor::systemGrayColor())
@@ -442,14 +442,14 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                     })
                     .unwrap_or_else(|| base.clone())
             };
-            // Light on top when dark. Weaker blue there: a wash on a light
-            // card is a coloured band on a near-black one.
+            // The other way round when dark. Weaker blue there: a wash on a
+            // light card is a coloured band on a near-black one.
             let (deep, shallow) = if dark {
                 (tone(0.12, 0.05), tone(0.05, 0.02))
             } else {
                 (tone(0.26, 0.06), tone(0.12, 0.02))
             };
-            let (top, bottom) = if dark {
+            let (bottom, top) = if dark {
                 (shallow, deep)
             } else {
                 (deep, shallow)
@@ -463,9 +463,10 @@ fn draw(bounds: NSRect, style: RowStyle, selected: bool) {
                 MainThreadMarker::new()
                     .expect("drawing happens on the main thread")
                     .alloc(),
-                &top,
                 &bottom,
+                &top,
             ) {
+                // −90 starts at the bottom on screen (see `inner_shadow`).
                 g.drawInBezierPath_angle(&band_path, -90.0);
             }
             // Grain reads as dither on a dark ground.

@@ -28,12 +28,16 @@ fn launching_disabled(what: &str) -> bool {
 }
 
 impl Platform for MacPlatform {
-    fn spawn_detached(&self, command_line: &str) -> std::io::Result<()> {
+    fn spawn_detached(&self, command_line: &str, cwd: Option<&Path>) -> std::io::Result<()> {
         if launching_disabled(command_line) {
             return Ok(());
         }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        Command::new(shell)
+        let mut command = Command::new(shell);
+        if let Some(dir) = cwd {
+            command.current_dir(dir);
+        }
+        command
             .args(["-lc", command_line])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -75,6 +79,10 @@ impl Platform for MacPlatform {
 
     fn file_manager_name(&self) -> &'static str {
         "Finder"
+    }
+
+    fn terminal_note(&self) -> &'static str {
+        "“Open in terminal” uses your system default terminal (set via “Set as default terminal” in your terminal app)."
     }
 }
 

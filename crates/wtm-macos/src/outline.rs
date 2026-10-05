@@ -29,15 +29,16 @@ define_class!(
             NSRect::new(NSPoint::new(r.origin.x + CHEVRON_SHIFT, r.origin.y), r.size)
         }
 
-        /// Space opens the selected worktree's branch picker, the way Return
-        /// opens a row's default action elsewhere on the system.
+        /// Space is the selected row's own action (a worktree's branch
+        /// picker), the way Return opens a row's default action elsewhere
+        /// on the system.
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &objc2_app_kit::NSEvent) {
             let space = event.charactersIgnoringModifiers()
                 .map(|c| c.to_string() == " ")
                 .unwrap_or(false);
             let mtm = MainThreadMarker::from(self);
-            if space && crate::controller::open_selected_picker(mtm) {
+            if space && crate::controller::activate_selected(mtm) {
                 return;
             }
             let _: () = unsafe { msg_send![super(self), keyDown: event] };

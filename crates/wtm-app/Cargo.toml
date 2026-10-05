@@ -12,8 +12,15 @@ path = "src/main.rs"
 [dependencies]
 wtm-core = { workspace = true }
 wtm-platform = { workspace = true }
+wtm-ui = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wtm-macos = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wtm-gtk = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+wtm-windows = { workspace = true }

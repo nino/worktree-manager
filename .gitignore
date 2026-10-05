@@ -4,3 +4,6 @@
 
 # proptest replays a failure it saved here; a real one becomes a unit test instead
 *.proptest-regressions
+
+# Worktrees Claude Code makes for its subagents
+/.claude/worktrees/

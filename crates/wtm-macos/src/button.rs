@@ -49,12 +49,12 @@ define_class!(
 
         #[unsafe(method_id(nextValidKeyView))]
         fn next_valid_key_view(&self) -> Option<Retained<NSView>> {
-            crate::controller::key_view(self, true)
+            self.key_view(true)
         }
 
         #[unsafe(method_id(previousValidKeyView))]
         fn previous_valid_key_view(&self) -> Option<Retained<NSView>> {
-            crate::controller::key_view(self, false)
+            self.key_view(false)
         }
     }
 );
@@ -125,12 +125,15 @@ impl IconButton {
         this
     }
 
-    /// The tooltip text, which is also the button's accessibility help — the
-    /// system tooltip used to provide that, and these buttons no longer set
-    /// one. (Their name comes from the symbol's accessibility description.)
+    /// The tooltip text, which is also the button's accessibility name and
+    /// help — the system tooltip used to provide the help, and these buttons
+    /// no longer set one. A recycled row's button says what it does in the
+    /// row it now shows ("Pull main into this branch").
     pub fn set_hint(&self, hint: &str) {
         *self.ivars().hint.borrow_mut() = hint.to_string();
-        self.setAccessibilityHelp(Some(&crate::util::ns(hint)));
+        let hint = crate::util::ns(hint);
+        self.setAccessibilityLabel(Some(&hint));
+        self.setAccessibilityHelp(Some(&hint));
     }
 }
 
@@ -243,6 +246,16 @@ impl PillButton {
 }
 
 impl Button {
+    /// The list's own order for a button in a row; AppKit's loop for one
+    /// anywhere else (a sheet, the Settings window).
+    fn key_view(&self, forward: bool) -> Option<Retained<NSView>> {
+        match crate::controller::key_view(self, forward) {
+            Some(next) => next,
+            None if forward => unsafe { msg_send![super(self), nextValidKeyView] },
+            None => unsafe { msg_send![super(self), previousValidKeyView] },
+        }
+    }
+
     pub fn with_image(image: &NSImage, _mtm: MainThreadMarker) -> Retained<Self> {
         unsafe {
             msg_send![

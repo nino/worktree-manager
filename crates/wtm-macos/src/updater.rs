@@ -52,6 +52,62 @@ thread_local! {
     /// An authorised install is under way, so a second press of the button
     /// does not put a second password dialog on screen.
     static INSTALLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tells the UI that `ready_version` or `pending_version` changed.
+    static CHANGED: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn changed() {
+    CHANGED.with(|c| {
+        if let Some(f) = c.borrow().as_ref() {
+            f();
+        }
+    });
+}
+
+/// The updater as the UI sees it (`wtm_platform::Updater`).
+pub struct MacUpdater {
+    app: App,
+}
+
+impl MacUpdater {
+    pub fn new(app: App) -> Self {
+        MacUpdater { app }
+    }
+}
+
+impl wtm_platform::Updater for MacUpdater {
+    fn start(&self, on_change: Box<dyn Fn()>) {
+        CHANGED.with(|c| *c.borrow_mut() = Some(on_change));
+        if let Some(mtm) = MainThreadMarker::new() {
+            start(&self.app, mtm);
+        }
+    }
+
+    fn check_now(&self) {
+        if let Some(mtm) = MainThreadMarker::new() {
+            check_now(&self.app, mtm);
+        }
+    }
+
+    fn channel_changed(&self) {
+        if let Some(mtm) = MainThreadMarker::new() {
+            channel_changed(&self.app, mtm);
+        }
+    }
+
+    fn ready_version(&self) -> Option<String> {
+        MainThreadMarker::new().and_then(ready_version)
+    }
+
+    fn pending_version(&self) -> Option<String> {
+        MainThreadMarker::new().and_then(pending_version)
+    }
+
+    fn install_or_restart(&self) {
+        if let Some(mtm) = MainThreadMarker::new() {
+            install_or_restart(&self.app, mtm);
+        }
+    }
 }
 
 /// The version waiting for a restart, if an update has been installed.
@@ -258,11 +314,7 @@ fn report(
                 text: format!("Version {version} is installed. Restart to use it."),
                 tone: Tone::Info,
             });
-            if let Some(mtm) = MainThreadMarker::new() {
-                if let Some(c) = crate::controller::controller(mtm) {
-                    c.update_became_ready();
-                }
-            }
+            changed();
         }
         Ok(UpdateStatus::NeedsAuthorisation { version, advice }) => {
             log::info!("updates: {version} downloaded, waiting for authorisation");
@@ -272,11 +324,7 @@ fn report(
             });
             // Puts the button in the notice bar; the dialog comes when it is
             // pressed, not out of nowhere while someone is working.
-            if let Some(mtm) = MainThreadMarker::new() {
-                if let Some(c) = crate::controller::controller(mtm) {
-                    c.update_became_ready();
-                }
-            }
+            changed();
         }
         Ok(UpdateStatus::Unreplaceable { version, advice }) => {
             log::info!("updates: {version} available but not installable: {advice}");
@@ -719,7 +767,13 @@ pub fn restart(mtm: MainThreadMarker) {
         app = shell_quote(&install.bundle.to_string_lossy()),
     );
     let _ = Command::new("/bin/sh").args(["-c", &script]).spawn();
-    objc2_app_kit::NSApplication::sharedApplication(mtm).terminate(None);
+    // On the next turn: this runs from the program's update, and quitting
+    // there would leave `applicationWillTerminate:` unable to drain the
+    // window state into the program before the process exits.
+    DispatchQueue::main().exec_async(|| {
+        let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+        objc2_app_kit::NSApplication::sharedApplication(mtm).terminate(None);
+    });
 }
 
 fn shell_quote(s: &str) -> String {

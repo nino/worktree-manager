@@ -1,0 +1,9 @@
+[package]
+name = "wtm-toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The thin UI wrapper: a declarative widget vocabulary, the runtime that drives it, and a headless backend for tests"
+
+[dependencies]
+log = { workspace = true }
