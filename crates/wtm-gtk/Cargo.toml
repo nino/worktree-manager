@@ -1,0 +1,30 @@
+[package]
+name = "wtm-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Linux backend: the wtm-toolkit vocabulary shown with GTK 4, and the Linux platform services"
+
+[dependencies]
+wtm-platform = { workspace = true }
+wtm-toolkit = { workspace = true }
+log = { workspace = true }
+
+# Only Linux builds GTK: `cargo test --workspace` on macOS and Windows sees an
+# empty crate (lib.rs is cfg-gated too).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { package = "gtk4", version = "0.11.5", features = ["v4_14"] }
+
+[dev-dependencies]
+wtm-core = { workspace = true }
+wtm-ui = { workspace = true }
+env_logger = { workspace = true }
+
+# GTK wants every call on the one thread that initialised it, which libtest's
+# runner does not give; this test runs its own `main`.
+[[test]]
+name = "conformance"
+harness = false
+
+[[example]]
+name = "run"
