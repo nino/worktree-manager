@@ -305,7 +305,8 @@ pub async fn resolve_repo_root(some_path: &Path) -> GitResult<String> {
         Path::new(top.trim()).to_path_buf()
     };
     let real = tokio::fs::canonicalize(&root).await.unwrap_or(root);
-    Ok(real.to_string_lossy().into_owned())
+    // Compared with the paths `git worktree list` prints.
+    Ok(crate::paths::normalise(&real.to_string_lossy()))
 }
 
 /// Best-effort detection of a repo's default/main branch.

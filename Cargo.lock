@@ -1270,6 +1270,7 @@ dependencies = [
  "wtm-core",
  "wtm-macos",
  "wtm-platform",
+ "wtm-ui",
 ]
 
 [[package]]
@@ -1302,6 +1303,7 @@ dependencies = [
  "serde_json",
  "wtm-core",
  "wtm-platform",
+ "wtm-toolkit",
 ]
 
 [[package]]

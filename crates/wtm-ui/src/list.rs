@@ -213,7 +213,13 @@ pub fn sections(cx: &Context, open: impl Fn(&str) -> bool, v: &ViewCx<Msg>) -> V
         if searching && rows.is_empty() && node.error.is_none() {
             continue;
         }
-        let header = repo_header(cx, node, rows.len(), v);
+        // Worktrees only: the rows also hold creations in flight and failed
+        // ones, which the total ("of N") does not count.
+        let visible = rows
+            .iter()
+            .filter(|c| matches!(c, Child::Worktree(_)))
+            .count();
+        let header = repo_header(cx, node, visible, v);
         let rows = rows
             .iter()
             .map(|c| Row {

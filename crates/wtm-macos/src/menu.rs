@@ -1,12 +1,81 @@
-//! The menu bar. Every item targets the controller (or the responder chain for
-//! the standard Edit actions, which text fields in sheets rely on).
+//! The view's menus as the menu bar. The app's own items target the
+//! controller, which runs their handlers by tag; the standard ones go to the
+//! responder chain under AppKit's own selectors, which text fields in sheets
+//! rely on.
+//!
+//! The bar is rebuilt only when the menus change shape. An item's enabled
+//! state is read when AppKit validates it, so it is never rebuilt for that.
+
+use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{sel, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem};
+use objc2_foundation::NSInteger;
+use wtm_toolkit::{Handler, KeyName, Menu, MenuItem, MenuRole, Shortcut, Standard};
 
 use crate::util::ns;
+
+thread_local! {
+    /// What the bar was built from: everything but handlers and enabled
+    /// states, which are taken from each render.
+    static SHAPE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Each action item's handler and enabled state, by tag.
+    static ACTIONS: RefCell<Vec<(Handler, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the item with `tag` is enabled, as last rendered.
+pub fn enabled(tag: NSInteger) -> bool {
+    ACTIONS.with(|a| a.borrow().get(tag as usize).is_some_and(|(_, e)| *e))
+}
+
+/// Run the handler of the item with `tag`.
+pub fn perform(tag: NSInteger) {
+    let handler = ACTIONS.with(|a| a.borrow().get(tag as usize).map(|(h, _)| h.clone()));
+    if let Some(h) = handler {
+        h.call(());
+    }
+}
+
+/// The menus without what changes from render to render.
+fn shape(menus: &[Menu]) -> String {
+    let mut s = String::new();
+    for m in menus {
+        s.push_str(&format!("{:?}:{}[", m.role, m.title));
+        for i in &m.items {
+            match i {
+                MenuItem::Action {
+                    label, shortcut, ..
+                } => s.push_str(&format!("{label}{shortcut:?};")),
+                MenuItem::Separator => s.push_str("-;"),
+                MenuItem::Standard(st) => s.push_str(&format!("{st:?};")),
+            }
+        }
+        s.push(']');
+    }
+    s
+}
+
+pub fn render(menus: &[Menu], controller: &AnyObject, mtm: MainThreadMarker) {
+    let actions = menus
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|i| match i {
+            MenuItem::Action {
+                enabled, on_select, ..
+            } => Some((on_select.clone(), *enabled)),
+            _ => None,
+        })
+        .collect();
+    ACTIONS.with(|a| *a.borrow_mut() = actions);
+    let shape = shape(menus);
+    if SHAPE.with(|s| s.borrow().as_deref() == Some(shape.as_str())) {
+        return;
+    }
+    SHAPE.with(|s| *s.borrow_mut() = Some(shape));
+    install(menus, controller, mtm);
+}
 
 fn item(
     title: &str,
@@ -24,175 +93,109 @@ fn item(
     i
 }
 
-fn submenu(title: &str, mtm: MainThreadMarker) -> (Retained<NSMenuItem>, Retained<NSMenu>) {
-    let holder = item(title, None, "", None, mtm);
-    let menu = NSMenu::initWithTitle(mtm.alloc(), &ns(title));
-    holder.setSubmenu(Some(&menu));
-    (holder, menu)
+fn key_equivalent(s: &Shortcut) -> (String, NSEventModifierFlags) {
+    let key = match s.key {
+        KeyName::Char(c) => c.to_string(),
+        KeyName::Up => "\u{F700}".into(),
+        KeyName::Down => "\u{F701}".into(),
+    };
+    let mut mods = NSEventModifierFlags::Command;
+    if s.shift {
+        mods |= NSEventModifierFlags::Shift;
+    }
+    if s.alt {
+        mods |= NSEventModifierFlags::Option;
+    }
+    (key, mods)
 }
 
-pub fn install(app: &NSApplication, controller: &AnyObject, mtm: MainThreadMarker) {
-    let bar = NSMenu::new(mtm);
-
-    // Application menu.
-    let (app_item, app_menu) = submenu("Worktree Manager", mtm);
-    app_menu.addItem(&item(
-        "About Worktree Manager",
-        Some(sel!(orderFrontStandardAboutPanel:)),
-        "",
-        None,
-        mtm,
-    ));
-    app_menu.addItem(&item(
-        "Check for Updates…",
-        Some(sel!(checkForUpdates:)),
-        "",
-        Some(controller),
-        mtm,
-    ));
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    app_menu.addItem(&item(
-        "Settings…",
-        Some(sel!(openSettings:)),
-        ",",
-        Some(controller),
-        mtm,
-    ));
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    let services = NSMenu::new(mtm);
-    let services_item = item("Services", None, "", None, mtm);
-    services_item.setSubmenu(Some(&services));
-    app_menu.addItem(&services_item);
-    app.setServicesMenu(Some(&services));
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    app_menu.addItem(&item(
-        "Hide Worktree Manager",
-        Some(sel!(hide:)),
-        "h",
-        None,
-        mtm,
-    ));
-    let hide_others = item(
-        "Hide Others",
-        Some(sel!(hideOtherApplications:)),
-        "h",
-        None,
-        mtm,
-    );
-    hide_others
-        .setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Option);
-    app_menu.addItem(&hide_others);
-    app_menu.addItem(&item(
-        "Show All",
-        Some(sel!(unhideAllApplications:)),
-        "",
-        None,
-        mtm,
-    ));
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    app_menu.addItem(&item(
-        "Quit Worktree Manager",
-        Some(sel!(terminate:)),
-        "q",
-        None,
-        mtm,
-    ));
-    bar.addItem(&app_item);
-
-    // File.
-    let (file_item, file) = submenu("File", mtm);
-    file.addItem(&item(
-        "Add Repository…",
-        Some(sel!(addRepo:)),
-        "o",
-        Some(controller),
-        mtm,
-    ));
-    file.addItem(&item(
-        "New Worktree…",
-        Some(sel!(newWorktree:)),
-        "n",
-        Some(controller),
-        mtm,
-    ));
-    file.addItem(&item(
-        "Switch Branch…",
-        Some(sel!(switchBranch:)),
-        "t",
-        Some(controller),
-        mtm,
-    ));
-    file.addItem(&NSMenuItem::separatorItem(mtm));
-    // ⌥⌘↑ and ⌥⌘↓: the keyboard's way to do what dragging a card does.
-    for (title, action, key) in [
-        ("Move Repository Up", sel!(moveRepoUp:), "\u{F700}"),
-        ("Move Repository Down", sel!(moveRepoDown:), "\u{F701}"),
-    ] {
-        let i = item(title, Some(action), key, Some(controller), mtm);
-        i.setKeyEquivalentModifierMask(
-            NSEventModifierFlags::Command | NSEventModifierFlags::Option,
-        );
-        file.addItem(&i);
+/// A standard item: its title, AppKit's selector for it, its key and
+/// modifiers.
+fn standard(s: Standard, app_name: &str) -> (String, Sel, &'static str, NSEventModifierFlags) {
+    let cmd = NSEventModifierFlags::Command;
+    match s {
+        Standard::About => (
+            format!("About {app_name}"),
+            sel!(orderFrontStandardAboutPanel:),
+            "",
+            cmd,
+        ),
+        Standard::Services => unreachable!("built as a submenu by `install`"),
+        Standard::Hide => (format!("Hide {app_name}"), sel!(hide:), "h", cmd),
+        Standard::HideOthers => (
+            "Hide Others".into(),
+            sel!(hideOtherApplications:),
+            "h",
+            cmd | NSEventModifierFlags::Option,
+        ),
+        Standard::ShowAll => ("Show All".into(), sel!(unhideAllApplications:), "", cmd),
+        Standard::Quit => (format!("Quit {app_name}"), sel!(terminate:), "q", cmd),
+        Standard::Undo => ("Undo".into(), sel!(undo:), "z", cmd),
+        Standard::Redo => (
+            "Redo".into(),
+            sel!(redo:),
+            "z",
+            cmd | NSEventModifierFlags::Shift,
+        ),
+        Standard::Cut => ("Cut".into(), sel!(cut:), "x", cmd),
+        Standard::Copy => ("Copy".into(), sel!(copy:), "c", cmd),
+        Standard::Paste => ("Paste".into(), sel!(paste:), "v", cmd),
+        Standard::SelectAll => ("Select All".into(), sel!(selectAll:), "a", cmd),
+        Standard::CloseWindow => ("Close Window".into(), sel!(performClose:), "w", cmd),
+        Standard::Minimize => ("Minimize".into(), sel!(performMiniaturize:), "m", cmd),
+        Standard::Zoom => ("Zoom".into(), sel!(performZoom:), "", cmd),
+        Standard::BringAllToFront => ("Bring All to Front".into(), sel!(arrangeInFront:), "", cmd),
     }
-    file.addItem(&NSMenuItem::separatorItem(mtm));
-    file.addItem(&item(
-        "Refresh",
-        Some(sel!(refresh:)),
-        "r",
-        Some(controller),
-        mtm,
-    ));
-    file.addItem(&NSMenuItem::separatorItem(mtm));
-    file.addItem(&item(
-        "Close Window",
-        Some(sel!(performClose:)),
-        "w",
-        None,
-        mtm,
-    ));
-    bar.addItem(&file_item);
+}
 
-    // Edit: standard responder-chain actions so text fields work.
-    let (edit_item, edit) = submenu("Edit", mtm);
-    edit.addItem(&item("Undo", Some(sel!(undo:)), "z", None, mtm));
-    let redo = item("Redo", Some(sel!(redo:)), "z", None, mtm);
-    redo.setKeyEquivalentModifierMask(NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
-    edit.addItem(&redo);
-    edit.addItem(&NSMenuItem::separatorItem(mtm));
-    edit.addItem(&item("Cut", Some(sel!(cut:)), "x", None, mtm));
-    edit.addItem(&item("Copy", Some(sel!(copy:)), "c", None, mtm));
-    edit.addItem(&item("Paste", Some(sel!(paste:)), "v", None, mtm));
-    edit.addItem(&item("Select All", Some(sel!(selectAll:)), "a", None, mtm));
-    edit.addItem(&NSMenuItem::separatorItem(mtm));
-    edit.addItem(&item(
-        "Find",
-        Some(sel!(focusSearch:)),
-        "f",
-        Some(controller),
-        mtm,
-    ));
-    bar.addItem(&edit_item);
-
-    // Window.
-    let (window_item, window) = submenu("Window", mtm);
-    window.addItem(&item(
-        "Minimize",
-        Some(sel!(performMiniaturize:)),
-        "m",
-        None,
-        mtm,
-    ));
-    window.addItem(&item("Zoom", Some(sel!(performZoom:)), "", None, mtm));
-    window.addItem(&NSMenuItem::separatorItem(mtm));
-    window.addItem(&item(
-        "Bring All to Front",
-        Some(sel!(arrangeInFront:)),
-        "",
-        None,
-        mtm,
-    ));
-    bar.addItem(&window_item);
-    app.setWindowsMenu(Some(&window));
-
+fn install(menus: &[Menu], controller: &AnyObject, mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    let bar = NSMenu::new(mtm);
+    let app_name = menus
+        .iter()
+        .find(|m| m.role == MenuRole::App)
+        .map_or("", |m| m.title.as_str())
+        .to_string();
+    let mut tag: NSInteger = 0;
+    for m in menus {
+        let holder = item(&m.title, None, "", None, mtm);
+        let menu = NSMenu::initWithTitle(mtm.alloc(), &ns(&m.title));
+        holder.setSubmenu(Some(&menu));
+        for i in &m.items {
+            match i {
+                MenuItem::Action {
+                    label, shortcut, ..
+                } => {
+                    let (key, mods) = shortcut
+                        .as_ref()
+                        .map(key_equivalent)
+                        .unwrap_or_else(|| (String::new(), NSEventModifierFlags::Command));
+                    let it = item(label, Some(sel!(menuAction:)), &key, Some(controller), mtm);
+                    it.setKeyEquivalentModifierMask(mods);
+                    it.setTag(tag);
+                    tag += 1;
+                    menu.addItem(&it);
+                }
+                MenuItem::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+                MenuItem::Standard(Standard::Services) => {
+                    let services = NSMenu::new(mtm);
+                    let it = item("Services", None, "", None, mtm);
+                    it.setSubmenu(Some(&services));
+                    menu.addItem(&it);
+                    app.setServicesMenu(Some(&services));
+                }
+                MenuItem::Standard(s) => {
+                    let (title, action, key, mods) = standard(*s, &app_name);
+                    let it = item(&title, Some(action), key, None, mtm);
+                    it.setKeyEquivalentModifierMask(mods);
+                    menu.addItem(&it);
+                }
+            }
+        }
+        bar.addItem(&holder);
+        if m.role == MenuRole::Window {
+            app.setWindowsMenu(Some(&menu));
+        }
+    }
     app.setMainMenu(Some(&bar));
 }

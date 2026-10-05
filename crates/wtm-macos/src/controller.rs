@@ -1,55 +1,58 @@
-//! The single window controller: owns the outline view, translates model
-//! snapshots into targeted row reloads, and routes toolbar/menu actions.
+//! The main window as a backend: brings the window, its toolbar, the
+//! outline of repo cards, the notice bar and the empty state in line with
+//! each [`View`] the shared UI renders, and reports what the user does there
+//! through the view's handlers and [`host_event`].
+//!
+//! The outline is never reloaded wholesale for an ordinary change: each
+//! render is diffed against the last by row key, and rows are inserted,
+//! removed, moved and reloaded in place (`wtm_core::splice`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAnimationContext, NSApplication, NSApplicationDelegate, NSBackingStoreType, NSBezelStyle,
-    NSButton, NSColor, NSControl, NSControlSize, NSControlTextEditingDelegate, NSDragOperation,
-    NSDraggingInfo, NSDraggingSession, NSFont, NSLayoutAttribute, NSLayoutConstraint,
-    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow,
-    NSMenuItem, NSMenuItemValidation, NSOutlineView, NSOutlineViewDataSource,
-    NSOutlineViewDelegate, NSPasteboardItem, NSPasteboardWriting, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate,
-    NSSearchToolbarItem, NSStackView, NSStackViewDistribution, NSTableColumn,
-    NSTableViewAnimationOptions, NSTableViewColumnAutoresizingStyle,
-    NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
-    NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarFlexibleSpaceItemIdentifier,
-    NSToolbarItem, NSToolbarItemIdentifier, NSUserInterfaceItemIdentification,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
-    NSWindowToolbarStyle,
+    NSAnimationContext, NSApplication, NSApplicationDelegate, NSBackingStoreType, NSColor,
+    NSControl, NSControlSize, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
+    NSDraggingSession, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSMenuItem, NSMenuItemValidation,
+    NSOutlineView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSPasteboard, NSPasteboardItem,
+    NSPasteboardTypeString, NSPasteboardWriting, NSProgressIndicator, NSProgressIndicatorStyle,
+    NSScreen, NSScrollView, NSSearchField, NSSearchFieldDelegate, NSSearchToolbarItem, NSStackView,
+    NSStackViewDistribution, NSTableColumn, NSTableViewAnimationOptions,
+    NSTableViewColumnAutoresizingStyle, NSTableViewSelectionHighlightStyle, NSTableViewStyle,
+    NSTextFieldDelegate, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarFlexibleSpaceItemIdentifier, NSToolbarItem, NSToolbarItemIdentifier,
+    NSUserInterfaceItemIdentification, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRect, NSSize, NSUserDefaults, NSURL,
 };
-use wtm_core::model::Tone;
-use wtm_core::repos::drop_target;
 use wtm_core::splice::{moves, splice, Splice};
-use wtm_core::{Action, App, Event, Focus, Model, UiState, WindowFrame};
+use wtm_core::WindowFrame;
+use wtm_toolkit::{
+    flush, host_event, Effect, Element, Frame, HostEvent, MainWindow, PendingRow, RepoHeader,
+    RowContent, ToolItem, TreeList, View, WorktreeRow, BRANCH_BUTTON,
+};
 
 use crate::button::Button;
 use crate::cells::{
     PendingCell, PlateCell, RepoCell, WorktreeCell, PENDING_ROW_HEIGHT, REPO_ROW_HEIGHT,
     WORKTREE_ROW_HEIGHT,
 };
-use crate::dialogs;
+use crate::elements::{same_shape, symbol_name, Built};
 use crate::items::{ItemKind, WTMItem};
 use crate::outline::OutlineView;
 use crate::rowview::{RowStyle, RowView, LAST_ROW_EXTRA, WELL_LEAD};
-use crate::settings::SettingsWindow;
-use crate::util::{ns, render, secondary_label, symbol};
+use crate::util::{ns, render, symbol};
 
 static CONTROLLER: OnceLock<MainThreadBound<Retained<Controller>>> = OnceLock::new();
-/// A model-changed notification is already queued for the main thread.
-static REPAINT_QUEUED: AtomicBool = AtomicBool::new(false);
 
 pub fn controller(mtm: MainThreadMarker) -> Option<&'static Retained<Controller>> {
     CONTROLLER.get().map(|c| c.get(mtm))
@@ -57,6 +60,39 @@ pub fn controller(mtm: MainThreadMarker) -> Option<&'static Retained<Controller>
 
 pub fn main_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
     controller(mtm).and_then(|c| c.ivars().window.borrow().clone())
+}
+
+thread_local! {
+    /// The list as last rendered. Row buttons look their handlers up here
+    /// when pressed (see `cells.rs`).
+    static LIST: RefCell<TreeList> = RefCell::new(TreeList::default());
+}
+
+/// Run `f` with the header of section `key` as last rendered.
+pub fn with_header(key: &str, f: impl FnOnce(&RepoHeader)) {
+    let header = LIST.with(|l| l.borrow().section(key).map(|s| s.header.clone()));
+    if let Some(h) = header {
+        f(&h)
+    }
+}
+
+/// Run `f` with worktree row `key` as last rendered.
+pub fn with_worktree(key: &str, f: impl FnOnce(&WorktreeRow)) {
+    let row = LIST.with(|l| l.borrow().worktree(key).cloned());
+    if let Some(w) = row {
+        f(&w)
+    }
+}
+
+/// Run `f` with pending row `key` as last rendered.
+pub fn with_pending(key: &str, f: impl FnOnce(&PendingRow)) {
+    let row = LIST.with(|l| match l.borrow().row(key).map(|r| &r.content) {
+        Some(RowContent::Pending(p)) => Some(p.clone()),
+        _ => None,
+    });
+    if let Some(p) = row {
+        f(&p)
+    }
 }
 
 /// How long after a collapse the card is checked to be closed: the outline's
@@ -67,65 +103,56 @@ const COLLAPSE_SETTLE_NS: i64 = 400_000_000;
 /// which set the frame autosave name `WTMMainWindow`.
 const LEGACY_FRAME_KEY: &str = "NSWindow Frame WTMMainWindow";
 
-/// The pasteboard type of a repo dragged to a new place in the list: its id.
-/// Private to this app, so nothing else takes the drop.
+/// The pasteboard type of a repo dragged to a new place in the list: its
+/// key. Private to this app, so nothing else takes the drop.
 const REPO_DRAG_TYPE: &str = "uk.org.plinth.worktree-manager.repo";
 
-const TOOLBAR_ADD: &str = "wtm.add";
-const TOOLBAR_REFRESH: &str = "wtm.refresh";
-const TOOLBAR_SEARCH: &str = "wtm.search";
-const TOOLBAR_SETTINGS: &str = "wtm.settings";
+/// Toolbar item identifiers are the view's ids under this prefix.
+const TOOLBAR_PREFIX: &str = "wtm.";
 
-/// The tree the outline currently shows: repo items in order, each with its
-/// visible children (filtered worktrees then pending creations, sorted the
-/// way git will list them).
+/// The tree the outline currently shows: section items in order, each with
+/// its rows.
 #[derive(Default)]
 struct Tree {
     roots: Vec<Retained<WTMItem>>,
     children: HashMap<String, Vec<Retained<WTMItem>>>,
 }
 
+/// An element tree shown in a container, as last rendered.
+struct Shown {
+    element: Element,
+    built: Built,
+}
+
 pub struct ControllerIvars {
-    app: App,
     window: RefCell<Option<Retained<NSWindow>>>,
     outline: RefCell<Option<Retained<NSOutlineView>>>,
     column: RefCell<Option<Retained<NSTableColumn>>>,
     scroll: RefCell<Option<Retained<NSScrollView>>>,
     search: RefCell<Option<Retained<NSSearchField>>>,
-    empty: RefCell<Option<Retained<NSView>>>,
     notice_bar: RefCell<Option<Retained<NSView>>>,
-    notice_label: RefCell<Option<Retained<NSTextField>>>,
-    notice_details: RefCell<Option<Retained<NSButton>>>,
-    /// Shown in the notice bar once an update is installed and waiting.
-    notice_restart: RefCell<Option<Retained<NSButton>>>,
-    refresh_spinner: RefCell<Option<Retained<NSProgressIndicator>>>,
+    notice: RefCell<Option<Shown>>,
+    empty_box: RefCell<Option<Retained<NSView>>>,
+    empty: RefCell<Option<Shown>>,
+    activity: RefCell<Option<Retained<NSProgressIndicator>>>,
+    toolbar: RefCell<Vec<ToolItem>>,
     items: RefCell<HashMap<String, Retained<WTMItem>>>,
     tree: RefCell<Tree>,
-    /// The model the tree was last built from.
-    shown: RefCell<Option<Arc<Model>>>,
-    query: RefCell<String>,
-    /// The repo being dragged to a new place in the list, from the start of
-    /// the drag to its end.
-    dragged_repo: RefCell<Option<String>>,
-    /// Repos whose cards are closed, as the outline shows them.
+    /// The section being dragged to a new place in the list, from the start
+    /// of the drag to its end.
+    dragged: RefCell<Option<String>>,
+    /// Sections whose cards are closed, as the outline shows them.
     collapsed: RefCell<HashSet<String>>,
-    /// `collapsed` as it was before the current search, which opens every
-    /// card; put back when the search is cleared. `None` when not searching.
-    collapsed_before_search: RefCell<Option<HashSet<String>>>,
-    /// The scroll offset and focused row this launch is coming back to,
-    /// until `apply_restore` has put them back. Until then they are recorded
-    /// in place of the list's own: it sits at the top with nothing selected,
-    /// which is not what should be remembered.
-    restore: RefCell<Option<(f64, Option<Focus>)>>,
-    /// The window's frame from before it went full screen, recorded in place
+    /// A render is in progress: what the outline and the search field report
+    /// now is the render's doing, not the user's, and is not passed on.
+    rendering: Cell<bool>,
+    /// The window's frame from before it went full screen, reported in place
     /// of the full-screen one until it leaves: the next launch opens a
     /// window, and a window the size of the screen is not the one to open.
     frame_before_full_screen: Cell<Option<NSRect>>,
-    /// Id of the notice currently displayed, for the auto-clear timer.
-    notice_id: Cell<u64>,
-    /// When the app last became active; `None` until launch has settled.
-    last_activation: Cell<Option<std::time::Instant>>,
-    settings: RefCell<Option<Retained<SettingsWindow>>>,
+    /// The program's first render has not happened: `Started` waits for
+    /// AppKit to finish launching.
+    start: RefCell<Option<Box<dyn FnOnce(Vec<Frame>)>>>,
 }
 
 define_class!(
@@ -137,92 +164,21 @@ define_class!(
 
     unsafe impl NSObjectProtocol for Controller {}
 
-    // MARK: Actions (toolbar + menu)
-
     impl Controller {
-        #[unsafe(method(addRepo:))]
-        fn add_repo(&self, _s: Option<&AnyObject>) {
-            if let Some(w) = self.window() {
-                dialogs::add_repos(&self.ivars().app, &w);
+        #[unsafe(method(toolbarAction:))]
+        fn toolbar_action(&self, sender: Option<&AnyObject>) {
+            let id = sender
+                .and_then(|s| s.downcast_ref::<NSToolbarItem>())
+                .map(|i| i.itemIdentifier().to_string());
+            if let Some(id) = id {
+                self.press_tool(&id);
             }
         }
 
-        #[unsafe(method(refresh:))]
-        fn refresh(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::RefreshAll);
-        }
-
-        #[unsafe(method(openSettings:))]
-        fn open_settings(&self, _s: Option<&AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            let iv = self.ivars();
-            let settings = iv
-                .settings
-                .borrow_mut()
-                .get_or_insert_with(|| SettingsWindow::new(iv.app.clone(), mtm))
-                .clone();
-            settings.show();
-        }
-
-        #[unsafe(method(newWorktree:))]
-        fn new_worktree(&self, _s: Option<&AnyObject>) {
-            let Some(w) = self.window() else { return };
-            if let Some(repo_id) = self.creatable_repo_id() {
-                dialogs::create_worktree(&self.ivars().app, &w, &repo_id);
-            }
-        }
-
-        /// ⌘T: the branch picker for the selected worktree.
-        #[unsafe(method(switchBranch:))]
-        fn switch_branch(&self, _s: Option<&AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            open_selected_picker(mtm);
-        }
-
-        #[unsafe(method(moveRepoUp:))]
-        fn move_repo_up(&self, _s: Option<&AnyObject>) {
-            self.move_selected_repo(true);
-        }
-
-        #[unsafe(method(moveRepoDown:))]
-        fn move_repo_down(&self, _s: Option<&AnyObject>) {
-            self.move_selected_repo(false);
-        }
-
-        #[unsafe(method(focusSearch:))]
-        fn focus_search(&self, _s: Option<&AnyObject>) {
-            if let (Some(w), Some(s)) = (self.window(), self.ivars().search.borrow().as_ref()) {
-                w.makeFirstResponder(Some(s));
-            }
-        }
-
-        /// The app menu's "Check for Updates…".
-        #[unsafe(method(checkForUpdates:))]
-        fn check_for_updates(&self, _s: Option<&AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            crate::updater::check_now(&self.ivars().app, mtm);
-        }
-
-        /// Quit and come back as the version the updater installed — putting
-        /// it in place first, if it is still waiting on an administrator.
-        #[unsafe(method(restartForUpdate:))]
-        fn restart_for_update(&self, _s: Option<&AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            crate::updater::install_or_restart(&self.ivars().app, mtm);
-        }
-
-        #[unsafe(method(dismissNotice:))]
-        fn dismiss_notice(&self, _s: Option<&AnyObject>) {
-            self.ivars().app.dispatch(Action::ClearNotice);
-        }
-
-        /// Show the current notice in full, in a scrolling sheet.
-        #[unsafe(method(showNoticeDetails:))]
-        fn show_notice_details(&self, _s: Option<&AnyObject>) {
-            let model = self.ivars().app.model();
-            if let (Some(w), Some(n)) = (self.window(), model.notice.as_ref()) {
-                let title = n.text.lines().next().unwrap_or("Details").trim_end_matches(':');
-                dialogs::text_sheet(&w, title, &n.text);
+        #[unsafe(method(menuAction:))]
+        fn menu_action(&self, sender: Option<&AnyObject>) {
+            if let Some(item) = sender.and_then(|s| s.downcast_ref::<NSMenuItem>()) {
+                crate::menu::perform(item.tag());
             }
         }
 
@@ -236,24 +192,18 @@ define_class!(
         /// The list was scrolled, by whatever means.
         #[unsafe(method(clipBoundsChanged:))]
         fn clip_bounds_changed(&self, _n: &NSNotification) {
-            self.remember_ui_state();
+            self.report_scroll();
         }
     }
 
     unsafe impl NSMenuItemValidation for Controller {
+        /// The shared UI decides what is enabled. Whatever is still queued
+        /// (an arrow key's new selection) is run first, so ⌘N straight after
+        /// the arrow acts on the row the arrow went to.
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
-            if item.action() == Some(sel!(newWorktree:)) {
-                self.creatable_repo_id().is_some()
-            } else if item.action() == Some(sel!(switchBranch:)) {
-                self.selected_worktree_cell().is_some()
-            } else if item.action() == Some(sel!(moveRepoUp:)) {
-                self.selected_repo_move(true).is_some()
-            } else if item.action() == Some(sel!(moveRepoDown:)) {
-                self.selected_repo_move(false).is_some()
-            } else {
-                true
-            }
+            flush();
+            crate::menu::enabled(item.tag())
         }
     }
 
@@ -263,30 +213,19 @@ define_class!(
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _n: &NSNotification) {
             let mtm = MainThreadMarker::from(self);
-            self.build_window(mtm);
-            self.model_changed();
-            self.ivars().app.start();
-            crate::updater::start(&self.ivars().app, mtm);
-            self.ivars().last_activation.set(Some(std::time::Instant::now()));
+            let screens = NSScreen::screens(mtm)
+                .iter()
+                .map(|s| frame(s.visibleFrame()))
+                .collect();
+            let start = self.ivars().start.borrow_mut().take();
+            if let Some(start) = start {
+                start(screens);
+            }
         }
 
         #[unsafe(method(applicationDidBecomeActive:))]
         fn did_become_active(&self, _n: &NSNotification) {
-            // Coming back to the app is the moment stale status would be
-            // noticed; a refresh is cheap and runs off the main thread. The
-            // launch activation is skipped (start() already lists), as are
-            // rapid re-activations (Cmd-Tab flicker).
-            let iv = self.ivars();
-            let now = std::time::Instant::now();
-            let recent = iv
-                .last_activation
-                .get()
-                .map(|t| now.duration_since(t) < std::time::Duration::from_secs(2))
-                .unwrap_or(true);
-            iv.last_activation.set(Some(now));
-            if !recent {
-                iv.app.dispatch(Action::RefreshAll);
-            }
+            host_event(HostEvent::Activated);
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -294,12 +233,13 @@ define_class!(
             true
         }
 
-        /// Last chance to write the window state: the core's debounced write
-        /// would never run once the process is going away.
+        /// Last chance to write the window state, so it is run now rather
+        /// than on a turn of the run loop that will never come.
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _n: &NSNotification) {
-            self.remember_ui_state();
-            self.ivars().app.flush_ui_state();
+            self.report_frame();
+            host_event(HostEvent::WillQuit);
+            flush();
         }
 
         #[unsafe(method(applicationSupportsSecureRestorableState:))]
@@ -312,25 +252,25 @@ define_class!(
             let paths: Vec<std::path::PathBuf> =
                 urls.iter().filter_map(|u| u.path().map(|p| std::path::PathBuf::from(p.to_string()))).collect();
             if !paths.is_empty() {
-                self.ivars().app.dispatch(Action::AddRepos(paths));
+                host_event(HostEvent::OpenPaths(paths));
             }
         }
     }
 
     unsafe impl NSWindowDelegate for Controller {
         /// Both fire once per frame of a live resize or drag; the core
-        /// coalesces them into one write.
+        /// coalesces the writes.
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _n: &NSNotification) {
-            self.remember_ui_state();
+            self.report_frame();
         }
 
         #[unsafe(method(windowDidMove:))]
         fn window_did_move(&self, _n: &NSNotification) {
-            self.remember_ui_state();
+            self.report_frame();
         }
 
-        /// Before the transition starts, so none of its frames is recorded.
+        /// Before the transition starts, so none of its frames is reported.
         #[unsafe(method(windowWillEnterFullScreen:))]
         fn window_will_enter_full_screen(&self, _n: &NSNotification) {
             let frame = self.window().map(|w| w.frame());
@@ -345,7 +285,7 @@ define_class!(
         #[unsafe(method(windowDidExitFullScreen:))]
         fn window_did_exit_full_screen(&self, _n: &NSNotification) {
             self.ivars().frame_before_full_screen.set(None);
-            self.remember_ui_state();
+            self.report_frame();
         }
     }
 
@@ -359,12 +299,12 @@ define_class!(
 
         #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
         fn default_items(&self, _t: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-            toolbar_identifiers()
+            self.toolbar_identifiers()
         }
 
         #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
         fn allowed_items(&self, _t: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
-            toolbar_identifiers()
+            self.toolbar_identifiers()
         }
     }
 
@@ -373,13 +313,7 @@ define_class!(
     unsafe impl NSControlTextEditingDelegate for Controller {
         #[unsafe(method(controlTextDidChange:))]
         fn control_text_did_change(&self, n: &NSNotification) {
-            let Some(obj) = n.object() else { return };
-            let Some(field) = obj.downcast_ref::<NSControl>() else { return };
-            let q = field.stringValue().to_string();
-            if *self.ivars().query.borrow() != q {
-                *self.ivars().query.borrow_mut() = q;
-                self.rebuild(true);
-            }
+            self.search_changed(n);
         }
     }
     unsafe impl NSTextFieldDelegate for Controller {}
@@ -393,7 +327,7 @@ define_class!(
             let tree = self.ivars().tree.borrow();
             match item.and_then(|i| i.downcast_ref::<WTMItem>()) {
                 None => tree.roots.len() as NSInteger,
-                Some(i) => tree.children.get(&i.kind().key()).map(|c| c.len()).unwrap_or(0) as NSInteger,
+                Some(i) => tree.children.get(i.key()).map(|c| c.len()).unwrap_or(0) as NSInteger,
             }
         }
 
@@ -402,14 +336,14 @@ define_class!(
             let tree = self.ivars().tree.borrow();
             let child = match item.and_then(|i| i.downcast_ref::<WTMItem>()) {
                 None => tree.roots[index as usize].clone(),
-                Some(i) => tree.children[&i.kind().key()][index as usize].clone(),
+                Some(i) => tree.children[i.key()][index as usize].clone(),
             };
             Retained::into_super(Retained::into_super(child))
         }
 
         #[unsafe(method(outlineView:isItemExpandable:))]
         unsafe fn is_expandable(&self, _o: &NSOutlineView, item: &AnyObject) -> bool {
-            matches!(item.downcast_ref::<WTMItem>().map(|i| i.kind()), Some(ItemKind::Repo { .. }))
+            item.downcast_ref::<WTMItem>().is_some_and(|i| i.kind() == ItemKind::Header)
         }
 
         /// Repos can be dragged to a new place in the list; worktrees keep
@@ -421,14 +355,14 @@ define_class!(
 
         #[unsafe(method(outlineView:draggingSession:willBeginAtPoint:forItems:))]
         unsafe fn drag_will_begin(&self, _o: &NSOutlineView, _s: &NSDraggingSession, _p: NSPoint, items: &NSArray) {
-            *self.ivars().dragged_repo.borrow_mut() = items
+            *self.ivars().dragged.borrow_mut() = items
                 .firstObject()
-                .and_then(|i| i.downcast_ref::<WTMItem>().map(|i| i.kind().repo_id().to_string()));
+                .and_then(|i| i.downcast_ref::<WTMItem>().map(|i| i.key().to_string()));
         }
 
         #[unsafe(method(outlineView:draggingSession:endedAtPoint:operation:))]
         fn drag_ended(&self, _o: &NSOutlineView, _s: &NSDraggingSession, _p: NSPoint, _op: NSDragOperation) {
-            *self.ivars().dragged_repo.borrow_mut() = None;
+            *self.ivars().dragged.borrow_mut() = None;
         }
 
         #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
@@ -460,10 +394,10 @@ define_class!(
             }
         }
 
-        /// The keyboard's cursor moved; remember which row has it.
+        /// The keyboard's cursor moved.
         #[unsafe(method(outlineViewSelectionDidChange:))]
         fn selection_did_change(&self, _n: &NSNotification) {
-            self.remember_ui_state();
+            self.report_selection();
         }
 
         #[unsafe(method(outlineView:shouldSelectItem:))]
@@ -490,9 +424,10 @@ define_class!(
         /// loses the rounded bottom as the rows start unrolling beneath it.
         #[unsafe(method(outlineViewItemWillExpand:))]
         fn will_expand(&self, n: &NSNotification) {
-            if let Some(id) = expanded_repo_id(n) {
-                self.ivars().collapsed.borrow_mut().remove(&id);
-                self.sync_header_style(&id, None);
+            if let Some(key) = expanded_section(n) {
+                self.ivars().collapsed.borrow_mut().remove(&key);
+                self.sync_header_style(&key, None);
+                self.report_toggle(key, true);
             }
         }
 
@@ -500,40 +435,15 @@ define_class!(
         /// last of them leaves the outline (see `child_row_leaving`).
         #[unsafe(method(outlineViewItemWillCollapse:))]
         fn will_collapse(&self, n: &NSNotification) {
-            if let Some(id) = expanded_repo_id(n) {
-                self.ivars().collapsed.borrow_mut().insert(id);
+            if let Some(key) = expanded_section(n) {
+                self.ivars().collapsed.borrow_mut().insert(key.clone());
+                self.report_toggle(key, false);
             }
-            // The rows about to slide away can no longer draw (see
-            // `RowView::set_snapshot`): freeze each one as an image first.
-            if let (Some(outline), Some(obj)) = (
-                self.ivars().outline.borrow().clone(),
-                n.userInfo().and_then(|i| i.objectForKey(&*ns("NSObject"))),
-            ) {
-                let row = unsafe { outline.rowForItem(Some(&obj)) };
-                if row >= 0 {
-                    let count = obj
-                        .downcast_ref::<WTMItem>()
-                        .and_then(|i| self.ivars().tree.borrow().children.get(&i.kind().key()).map(|c| c.len()))
-                        .unwrap_or(0) as NSInteger;
-                    for r in row + 1..=row + count {
-                        if let Some(v) = outline.rowViewAtRow_makeIfNecessary(r, false) {
-                            if let Some(v) = v.downcast_ref::<RowView>() {
-                                if let Some(rep) = render(v) {
-                                    v.set_snapshot(Some(rep));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            self.snapshot_collapsing_rows(n);
         }
 
-        /// Which cards are closed is recorded here and in `did_collapse`, not
-        /// in the `Will` notifications: there the rows have not moved yet,
-        /// and the selected row answers for the tree as it was.
         #[unsafe(method(outlineViewItemDidExpand:))]
         fn did_expand(&self, _n: &NSNotification) {
-            self.remember_ui_state();
             self.sync_row_styles_later();
         }
 
@@ -544,14 +454,13 @@ define_class!(
         /// never stay drawn open with nothing under it.
         #[unsafe(method(outlineViewItemDidCollapse:))]
         fn did_collapse(&self, n: &NSNotification) {
-            self.remember_ui_state();
-            let Some(id) = expanded_repo_id(n) else { return };
+            let Some(key) = expanded_section(n) else { return };
             let _ = DispatchQueue::main().after(
                 dispatch2::DispatchTime::NOW.time(COLLAPSE_SETTLE_NS),
                 move || {
                     let mtm = MainThreadMarker::new().expect("main queue");
                     if let Some(c) = controller(mtm) {
-                        c.sync_header_style(&id, None);
+                        c.sync_header_style(&key, None);
                     }
                 },
             );
@@ -586,8 +495,10 @@ fn row_controls(outline: &NSOutlineView, row: NSInteger, make: bool) -> Vec<Reta
 
 /// The key view before or after `from`, one of the row buttons: the next
 /// button in its row, else the first in a following row (brought into view),
-/// else whatever follows the outline in the window's loop.
-pub fn key_view(from: &NSView, forward: bool) -> Option<Retained<NSView>> {
+/// else whatever follows the outline in the window's loop. `None` when
+/// `from` is not in the list (a button in a sheet or the Settings window),
+/// which keeps AppKit's own loop.
+pub fn key_view(from: &NSView, forward: bool) -> Option<Option<Retained<NSView>>> {
     let mtm = MainThreadMarker::new()?;
     let outline = controller(mtm)?.ivars().outline.borrow().clone()?;
     let row = outline.rowForView(from);
@@ -599,42 +510,45 @@ pub fn key_view(from: &NSView, forward: bool) -> Option<Retained<NSView>> {
         .iter()
         .position(|c| std::ptr::eq(Retained::as_ptr(c), from))?;
     let n = outline.numberOfRows();
-    if forward {
+    Some(if forward {
         if let Some(c) = controls.get(idx + 1) {
-            return Some(c.clone());
+            return Some(Some(c.clone()));
         }
         for r in row + 1..n {
             if let Some(c) = row_controls(&outline, r, true).into_iter().next() {
-                return Some(c);
+                return Some(Some(c));
             }
         }
         unsafe { outline.nextValidKeyView() }
     } else {
         if idx > 0 {
-            return Some(controls[idx - 1].clone());
+            return Some(Some(controls[idx - 1].clone()));
         }
         for r in (0..row).rev() {
             if let Some(c) = row_controls(&outline, r, true).into_iter().last() {
-                return Some(c);
+                return Some(Some(c));
             }
         }
         unsafe { outline.previousValidKeyView() }
-    }
+    })
 }
 
-/// Open the branch picker for the selected worktree, if one is selected.
-/// Returns whether it opened.
-pub fn open_selected_picker(mtm: MainThreadMarker) -> bool {
+/// Space on the selected row. Returns whether the row took it: only a
+/// worktree row has something Space does (its branch picker), and on any
+/// other the key goes on to the outline.
+pub fn activate_selected(mtm: MainThreadMarker) -> bool {
     let Some(c) = controller(mtm) else {
         return false;
     };
-    match c.selected_worktree_cell() {
-        Some(cell) => {
-            cell.open_picker();
-            true
-        }
-        None => false,
+    let Some((_, item)) = c.selected_item() else {
+        return false;
+    };
+    if item.kind() != ItemKind::Worktree {
+        return false;
     }
+    let handler = LIST.with(|l| l.borrow().on_activate.clone());
+    handler.call(item.key().to_string());
+    true
 }
 
 /// Put the keyboard back on the tree, so the arrow keys move the selection
@@ -673,18 +587,37 @@ pub fn focus_first_row_control(forward: bool, mtm: MainThreadMarker) {
     }
 }
 
-/// Whether any child row view of `repo_id`'s card is still in the outline
-/// (it no longer has the rows, but keeps their views while they slide away).
-/// `except` is a row on its way out: `viewWillMoveToSuperview:` runs before
-/// the view is actually removed, so the last one to leave would otherwise
-/// still count itself and the card would never close.
-fn rows_lingering(outline: &NSOutlineView, repo_id: &str, except: Option<&RowView>) -> bool {
+/// The view a popover anchored at `(key, id)` hangs from, brought into view.
+pub fn anchor(key: &str, id: &str, mtm: MainThreadMarker) -> Option<Retained<NSView>> {
+    let c = controller(mtm)?;
+    let outline = c.ivars().outline.borrow().clone()?;
+    let item = c.ivars().items.borrow().get(key).cloned()?;
+    let row = unsafe { outline.rowForItem(Some(&item)) };
+    if row < 0 {
+        return None;
+    }
+    outline.scrollRowToVisible(row);
+    let cell = outline.viewAtColumn_row_makeIfNecessary(0, row, true)?;
+    match id {
+        BRANCH_BUTTON => cell
+            .downcast_ref::<WorktreeCell>()
+            .map(|c| c.branch_button()),
+        _ => Some(cell),
+    }
+}
+
+/// Whether any child row view of section `key`'s card is still in the
+/// outline (it no longer has the rows, but keeps their views while they
+/// slide away). `except` is a row on its way out: `viewWillMoveToSuperview:`
+/// runs before the view is actually removed, so the last one to leave would
+/// otherwise still count itself and the card would never close.
+fn rows_lingering(outline: &NSOutlineView, key: &str, except: Option<&RowView>) -> bool {
     let is_child_of = |v: &NSView| {
         v.downcast_ref::<RowView>()
             .map(|r| {
                 !except.map(|e| std::ptr::eq(e, r)).unwrap_or(false)
                     && matches!(r.style(), RowStyle::Child { .. })
-                    && r.owner() == repo_id
+                    && r.owner() == key
             })
             .unwrap_or(false)
     };
@@ -707,9 +640,9 @@ pub fn child_row_leaving(row: &RowView) {
     let Some(c) = controller(mtm) else {
         return;
     };
-    let repo_id = row.owner();
-    if c.ivars().collapsed.borrow().contains(&repo_id) {
-        c.sync_header_style(&repo_id, Some(row));
+    let key = row.owner();
+    if c.ivars().collapsed.borrow().contains(&key) {
+        c.sync_header_style(&key, Some(row));
     }
 }
 
@@ -722,74 +655,196 @@ fn set_cell_lead(cell: &NSView, first: bool) {
     }
 }
 
-/// The repo id carried by an expand/collapse notification.
-fn expanded_repo_id(n: &NSNotification) -> Option<String> {
+/// The section key carried by an expand/collapse notification.
+fn expanded_section(n: &NSNotification) -> Option<String> {
     let info = n.userInfo()?;
     let obj = info.objectForKey(&*ns("NSObject"))?;
     let item = obj.downcast_ref::<WTMItem>()?;
-    match item.kind() {
-        ItemKind::Repo { repo_id } => Some(repo_id),
-        _ => None,
-    }
+    (item.kind() == ItemKind::Header).then(|| item.key().to_string())
 }
 
-fn toolbar_identifiers() -> Retained<NSArray<NSToolbarItemIdentifier>> {
-    let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier }.to_string();
-    NSArray::from_retained_slice(&[
-        ns(TOOLBAR_ADD),
-        ns(TOOLBAR_REFRESH),
-        ns(&flexible),
-        ns(TOOLBAR_SEARCH),
-        ns(TOOLBAR_SETTINGS),
-    ])
+fn copy_to_pasteboard(text: &str) {
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    unsafe { pb.setString_forType(&ns(text), NSPasteboardTypeString) };
 }
 
 impl Controller {
+    pub fn new(start: impl FnOnce(Vec<Frame>) + 'static, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(ControllerIvars {
+            window: RefCell::new(None),
+            outline: RefCell::new(None),
+            column: RefCell::new(None),
+            scroll: RefCell::new(None),
+            search: RefCell::new(None),
+            notice_bar: RefCell::new(None),
+            notice: RefCell::new(None),
+            empty_box: RefCell::new(None),
+            empty: RefCell::new(None),
+            activity: RefCell::new(None),
+            toolbar: RefCell::new(Vec::new()),
+            items: RefCell::new(HashMap::new()),
+            tree: RefCell::new(Tree::default()),
+            dragged: RefCell::new(None),
+            collapsed: RefCell::new(HashSet::new()),
+            rendering: Cell::new(false),
+            frame_before_full_screen: Cell::new(None),
+            start: RefCell::new(Some(Box::new(start))),
+        });
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        let _ = CONTROLLER.set(MainThreadBound::new(this.clone(), mtm));
+        this
+    }
+
+    fn window(&self) -> Option<Retained<NSWindow>> {
+        self.ivars().window.borrow().clone()
+    }
+
+    // MARK: Reporting
+
+    fn report_frame(&self) {
+        let Some(window) = self.window() else { return };
+        let f = self
+            .ivars()
+            .frame_before_full_screen
+            .get()
+            .unwrap_or_else(|| window.frame());
+        host_event(HostEvent::FrameChanged(frame(f)));
+    }
+
+    fn report_scroll(&self) {
+        if let Some(scroll) = self.ivars().scroll.borrow().as_ref() {
+            host_event(HostEvent::Scrolled(scroll.contentView().bounds().origin.y));
+        }
+    }
+
+    fn report_selection(&self) {
+        if self.ivars().rendering.get() {
+            return;
+        }
+        let key = self.selected_item().map(|(_, i)| i.key().to_string());
+        let handler = LIST.with(|l| l.borrow().on_select.clone());
+        handler.call(key);
+    }
+
+    fn report_toggle(&self, key: String, open: bool) {
+        if self.ivars().rendering.get() {
+            return;
+        }
+        let handler = LIST.with(|l| l.borrow().on_toggle.clone());
+        handler.call((key, open));
+    }
+
+    fn search_changed(&self, n: &NSNotification) {
+        if self.ivars().rendering.get() {
+            return;
+        }
+        let Some(obj) = n.object() else { return };
+        let Some(field) = obj.downcast_ref::<NSControl>() else {
+            return;
+        };
+        let value = field.stringValue().to_string();
+        let handler = self.ivars().toolbar.borrow().iter().find_map(|t| match t {
+            ToolItem::Search { on_change, .. } => Some(on_change.clone()),
+            _ => None,
+        });
+        if let Some(h) = handler {
+            h.call(value);
+        }
+    }
+
+    fn press_tool(&self, identifier: &str) {
+        let Some(id) = identifier.strip_prefix(TOOLBAR_PREFIX) else {
+            return;
+        };
+        let handler = self.ivars().toolbar.borrow().iter().find_map(|t| match t {
+            ToolItem::Button {
+                id: i, on_press, ..
+            } if *i == id => Some(on_press.clone()),
+            _ => None,
+        });
+        if let Some(h) = handler {
+            h.call(());
+        }
+    }
+
+    // MARK: Toolbar
+
+    fn toolbar_identifiers(&self) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+        let flexible = unsafe { NSToolbarFlexibleSpaceItemIdentifier }.to_string();
+        let ids: Vec<_> = self
+            .ivars()
+            .toolbar
+            .borrow()
+            .iter()
+            .map(|t| match t {
+                ToolItem::Button { id, .. } | ToolItem::Search { id, .. } => {
+                    ns(&format!("{TOOLBAR_PREFIX}{id}"))
+                }
+                ToolItem::Flex => ns(&flexible),
+            })
+            .collect();
+        NSArray::from_retained_slice(&ids)
+    }
+
     fn make_toolbar_item(
         &self,
         ident: &NSToolbarItemIdentifier,
     ) -> Option<Retained<NSToolbarItem>> {
         let mtm = MainThreadMarker::from(self);
         let id = ident.to_string();
-        let make = |label: &str, sym: &str, action: objc2::runtime::Sel| {
-            let item = NSToolbarItem::initWithItemIdentifier(mtm.alloc(), ident);
-            item.setLabel(&ns(label));
-            item.setToolTip(Some(&ns(label)));
-            item.setImage(symbol(sym, label).as_deref());
-            item.setBordered(true);
-            unsafe {
-                item.setTarget(Some(self.as_ref()));
-                item.setAction(Some(action));
+        let id = id.strip_prefix(TOOLBAR_PREFIX)?;
+        let tool = self
+            .ivars()
+            .toolbar
+            .borrow()
+            .iter()
+            .find(|t| match t {
+                ToolItem::Button { id: i, .. } | ToolItem::Search { id: i, .. } => *i == id,
+                ToolItem::Flex => false,
+            })?
+            .clone();
+        match tool {
+            ToolItem::Button { label, icon, .. } => {
+                let item = NSToolbarItem::initWithItemIdentifier(mtm.alloc(), ident);
+                item.setLabel(&ns(&label));
+                item.setToolTip(Some(&ns(&label)));
+                item.setImage(symbol(symbol_name(icon), &label).as_deref());
+                item.setBordered(true);
+                unsafe {
+                    item.setTarget(Some(self.as_ref()));
+                    item.setAction(Some(sel!(toolbarAction:)));
+                }
+                Some(item)
             }
-            item
-        };
-        match id.as_str() {
-            TOOLBAR_ADD => Some(make("Add Repo", "plus", sel!(addRepo:))),
-            TOOLBAR_REFRESH => Some(make("Refresh", "arrow.clockwise", sel!(refresh:))),
-            TOOLBAR_SETTINGS => Some(make("Settings", "gearshape", sel!(openSettings:))),
-            TOOLBAR_SEARCH => {
+            ToolItem::Search {
+                value, placeholder, ..
+            } => {
                 let item = NSSearchToolbarItem::initWithItemIdentifier(mtm.alloc(), ident);
                 item.setPreferredWidthForSearchField(220.0);
                 let field = item.searchField();
-                field.setPlaceholderString(Some(&ns("Search worktrees")));
+                field.setPlaceholderString(Some(&ns(&placeholder)));
+                field.setStringValue(&ns(&value));
                 field.setSendsSearchStringImmediately(true);
                 field.setSendsWholeSearchString(false);
                 unsafe { field.setDelegate(Some(ProtocolObject::from_ref(self))) };
                 *self.ivars().search.borrow_mut() = Some(field);
                 Some(Retained::into_super(item))
             }
-            _ => None,
+            ToolItem::Flex => None,
         }
     }
+
+    // MARK: Rows
 
     fn row_height(&self, outline: &NSOutlineView, item: &WTMItem) -> f64 {
         // Heights never change on expand or collapse: the header is one
         // height open or closed, and a card's first and last rows carry the
         // well's padding — known when they are inserted.
         let base = match item.kind() {
-            ItemKind::Repo { .. } => return REPO_ROW_HEIGHT,
-            ItemKind::Worktree { .. } => WORKTREE_ROW_HEIGHT,
-            ItemKind::Pending { .. } => PENDING_ROW_HEIGHT,
+            ItemKind::Header => return REPO_ROW_HEIGHT,
+            ItemKind::Worktree => WORKTREE_ROW_HEIGHT,
+            ItemKind::Pending => PENDING_ROW_HEIGHT,
         };
         match self.row_style(outline, item) {
             RowStyle::Child { first, last } => {
@@ -812,23 +867,23 @@ impl Controller {
         leaving: Option<&RowView>,
     ) -> RowStyle {
         let tree = self.ivars().tree.borrow();
+        let section = item.section();
         match item.kind() {
-            ItemKind::Repo { repo_id } => {
+            ItemKind::Header => {
                 let has_children = tree
                     .children
-                    .get(&item.kind().key())
+                    .get(section)
                     .map(|c| !c.is_empty())
                     .unwrap_or(false);
                 // A collapsing card is still open while its rows are on their
                 // way out: the outline keeps their views until the slide ends.
                 let open = has_children
-                    && (!self.ivars().collapsed.borrow().contains(&repo_id)
-                        || rows_lingering(outline, &repo_id, leaving));
+                    && (!self.ivars().collapsed.borrow().contains(section)
+                        || rows_lingering(outline, section, leaving));
                 RowStyle::Header { closed: !open }
             }
-            ItemKind::Worktree { repo_id, .. } | ItemKind::Pending { repo_id, .. } => {
-                let key = ItemKind::Repo { repo_id }.key();
-                let children = tree.children.get(&key);
+            ItemKind::Worktree | ItemKind::Pending => {
+                let children = tree.children.get(section);
                 let is = |c: Option<&Retained<WTMItem>>| {
                     c.map(|l| std::ptr::eq(Retained::as_ptr(l), item))
                         .unwrap_or(false)
@@ -859,26 +914,18 @@ impl Controller {
                 }
             };
         view.set_snapshot(None);
-        view.set_owner(item.kind().repo_id());
+        view.set_owner(item.section());
         view.set_style(style);
         Some(Retained::into_super(view))
     }
 
-    /// An update finished installing: the notice bar grows a Restart button.
-    pub fn update_became_ready(&self) {
-        self.update_chrome(&self.ivars().app.model());
-    }
-
     /// Re-tag one card's header row, e.g. when the card opens or closes.
     /// Only a redraw: header heights never change.
-    fn sync_header_style(&self, repo_id: &str, leaving: Option<&RowView>) {
+    fn sync_header_style(&self, key: &str, leaving: Option<&RowView>) {
         let Some(outline) = self.ivars().outline.borrow().clone() else {
             return;
         };
-        let kind = ItemKind::Repo {
-            repo_id: repo_id.to_string(),
-        };
-        let Some((item, row)) = self.row_of(&outline, &kind) else {
+        let Some((item, row)) = self.row_of(&outline, key) else {
             return;
         };
         let style = self.row_style_excluding(&outline, &item, leaving);
@@ -888,6 +935,41 @@ impl Controller {
                     // Drawn now, not on the next pass: a card closing as its
                     // last sliding row is dropped must change in that frame.
                     v.displayIfNeeded();
+                }
+            }
+        }
+    }
+
+    /// The rows about to slide away can no longer draw (see
+    /// `RowView::set_snapshot`): freeze each one as an image first.
+    fn snapshot_collapsing_rows(&self, n: &NSNotification) {
+        let (Some(outline), Some(obj)) = (
+            self.ivars().outline.borrow().clone(),
+            n.userInfo().and_then(|i| i.objectForKey(&*ns("NSObject"))),
+        ) else {
+            return;
+        };
+        let row = unsafe { outline.rowForItem(Some(&obj)) };
+        if row < 0 {
+            return;
+        }
+        let count = obj
+            .downcast_ref::<WTMItem>()
+            .and_then(|i| {
+                self.ivars()
+                    .tree
+                    .borrow()
+                    .children
+                    .get(i.key())
+                    .map(|c| c.len())
+            })
+            .unwrap_or(0) as NSInteger;
+        for r in row + 1..=row + count {
+            if let Some(v) = outline.rowViewAtRow_makeIfNecessary(r, false) {
+                if let Some(v) = v.downcast_ref::<RowView>() {
+                    if let Some(rep) = render(v) {
+                        v.set_snapshot(Some(rep));
+                    }
                 }
             }
         }
@@ -964,129 +1046,49 @@ impl Controller {
     ) -> Option<Retained<NSView>> {
         let mtm = MainThreadMarker::from(self);
         let item = item.downcast_ref::<WTMItem>()?;
-        let shown = self.ivars().shown.borrow();
-        let model = shown.as_ref()?;
-        let app = &self.ivars().app;
-        match item.kind() {
-            ItemKind::Repo { repo_id } => {
-                let node = model.repo(&repo_id)?;
+        let key = item.key();
+        let cell: Retained<NSView> = match item.kind() {
+            ItemKind::Header => {
+                let header = LIST.with(|l| l.borrow().section(key).map(|s| s.header.clone()))?;
                 let cell = match unsafe {
                     outline.makeViewWithIdentifier_owner(&ns(RepoCell::IDENTIFIER), None)
                 } {
                     Some(v) => v.downcast::<RepoCell>().ok()?,
-                    None => RepoCell::new(app.clone(), mtm),
+                    None => RepoCell::new(mtm),
                 };
-                // Worktrees only: the rows also hold creations in flight and
-                // failed ones, which the total ("of N") does not count.
-                let visible = self
-                    .ivars()
-                    .tree
-                    .borrow()
-                    .children
-                    .get(&item.kind().key())
-                    .map(|c| {
-                        c.iter()
-                            .filter(|i| matches!(i.kind(), ItemKind::Worktree { .. }))
-                            .count()
-                    })
-                    .unwrap_or(0);
-                cell.configure(
-                    node,
-                    model,
-                    visible,
-                    !self.ivars().query.borrow().trim().is_empty(),
-                );
-                Some(Retained::into_super(Retained::into_super(cell)))
+                cell.configure(key, &header);
+                return Some(Retained::into_super(Retained::into_super(cell)));
             }
-            ItemKind::Worktree { repo_id, path } => {
-                let node = model.repo(&repo_id)?;
-                let w = node.worktree(&path)?;
+            ItemKind::Worktree => {
+                let row = LIST.with(|l| l.borrow().worktree(key).cloned())?;
                 let cell = match unsafe {
                     outline.makeViewWithIdentifier_owner(&ns(WorktreeCell::IDENTIFIER), None)
                 } {
                     Some(v) => v.downcast::<WorktreeCell>().ok()?,
-                    None => WorktreeCell::new(app.clone(), mtm),
+                    None => WorktreeCell::new(mtm),
                 };
-                cell.configure(
-                    &node.repo,
-                    w,
-                    &node.branches,
-                    model.busy_for(&path),
-                    &model.home,
-                );
-                if let RowStyle::Child { first, .. } = self.row_style(outline, item) {
-                    cell.set_lead(if first { WELL_LEAD } else { 0.0 });
-                }
-                Some(Retained::into_super(Retained::into_super(cell)))
+                cell.configure(key, &row);
+                Retained::into_super(Retained::into_super(cell))
             }
-            ItemKind::Pending { id, .. } => {
-                let p = model.pending.iter().find(|p| p.id == id)?;
+            ItemKind::Pending => {
+                let row = LIST.with(|l| match l.borrow().row(key).map(|r| &r.content) {
+                    Some(RowContent::Pending(p)) => Some(p.clone()),
+                    _ => None,
+                })?;
                 let cell = match unsafe {
                     outline.makeViewWithIdentifier_owner(&ns(PendingCell::IDENTIFIER), None)
                 } {
                     Some(v) => v.downcast::<PendingCell>().ok()?,
-                    None => PendingCell::new(app.clone(), mtm),
+                    None => PendingCell::new(mtm),
                 };
-                cell.configure(p);
-                if let RowStyle::Child { first, .. } = self.row_style(outline, item) {
-                    cell.set_lead(if first { WELL_LEAD } else { 0.0 });
-                }
-                Some(Retained::into_super(Retained::into_super(cell)))
+                cell.configure(key, &row);
+                Retained::into_super(Retained::into_super(cell))
             }
+        };
+        if let RowStyle::Child { first, .. } = self.row_style(outline, item) {
+            set_cell_lead(&cell, first);
         }
-    }
-
-    pub fn new(app: App, mtm: MainThreadMarker) -> Retained<Self> {
-        // Read before the core is moved into the ivars: the closed cards have
-        // to be known before the first tree is built, or every card would
-        // open and then shut again in front of the user.
-        let saved = app.ui_state();
-        let this = mtm.alloc::<Self>().set_ivars(ControllerIvars {
-            app,
-            window: RefCell::new(None),
-            outline: RefCell::new(None),
-            column: RefCell::new(None),
-            scroll: RefCell::new(None),
-            search: RefCell::new(None),
-            empty: RefCell::new(None),
-            notice_bar: RefCell::new(None),
-            notice_label: RefCell::new(None),
-            notice_details: RefCell::new(None),
-            notice_restart: RefCell::new(None),
-            refresh_spinner: RefCell::new(None),
-            items: RefCell::new(HashMap::new()),
-            tree: RefCell::new(Tree::default()),
-            shown: RefCell::new(None),
-            query: RefCell::new(String::new()),
-            collapsed: RefCell::new(saved.collapsed_repos.into_iter().collect()),
-            restore: RefCell::new(Some((saved.scroll, saved.focus))),
-            frame_before_full_screen: Cell::new(None),
-            collapsed_before_search: RefCell::new(None),
-            notice_id: Cell::new(0),
-            last_activation: Cell::new(None),
-            settings: RefCell::new(None),
-            dragged_repo: RefCell::new(None),
-        });
-        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        let _ = CONTROLLER.set(MainThreadBound::new(this.clone(), mtm));
-
-        // Model changes arrive on core threads; coalesce and hop to main.
-        this.ivars().app.subscribe(|_: Event| {
-            if !REPAINT_QUEUED.swap(true, Ordering::AcqRel) {
-                DispatchQueue::main().exec_async(|| {
-                    REPAINT_QUEUED.store(false, Ordering::Release);
-                    let mtm = MainThreadMarker::new().expect("main queue");
-                    if let Some(c) = controller(mtm) {
-                        c.model_changed();
-                    }
-                });
-            }
-        });
-        this
-    }
-
-    fn window(&self) -> Option<Retained<NSWindow>> {
-        self.ivars().window.borrow().clone()
+        Some(cell)
     }
 
     fn fit_column(&self) {
@@ -1105,114 +1107,42 @@ impl Controller {
         }
     }
 
-    /// The selected row and what it shows.
-    fn selected_item(&self) -> Option<(NSInteger, ItemKind)> {
+    /// The selected row and its item.
+    fn selected_item(&self) -> Option<(NSInteger, Retained<WTMItem>)> {
         let outline = self.ivars().outline.borrow().clone()?;
         let row = outline.selectedRow();
         if row < 0 {
             return None;
         }
         let item = outline.itemAtRow(row)?;
-        Some((row, item.downcast_ref::<WTMItem>()?.kind()))
+        Some((row, item.downcast::<WTMItem>().ok()?))
     }
 
-    /// The cell of the selected row, when a worktree is selected.
-    fn selected_worktree_cell(&self) -> Option<Retained<WorktreeCell>> {
-        let (row, kind) = self.selected_item()?;
-        if !matches!(kind, ItemKind::Worktree { .. }) {
-            return None;
-        }
-        self.ivars()
-            .outline
-            .borrow()
-            .as_ref()?
-            .viewAtColumn_row_makeIfNecessary(0, row, false)?
-            .downcast::<WorktreeCell>()
-            .ok()
-    }
-
-    fn selected_repo_id(&self) -> Option<String> {
-        if let Some((_, kind)) = self.selected_item() {
-            return Some(kind.repo_id().to_string());
-        }
-        self.ivars()
-            .shown
-            .borrow()
-            .as_ref()?
-            .repos
-            .first()
-            .map(|r| r.repo.id.clone())
-    }
-
-    /// The selected repo, if a worktree can be created in it: not one whose
-    /// listing failed, as the card's own New Worktree button is disabled for.
-    fn creatable_repo_id(&self) -> Option<String> {
-        let repo_id = self.selected_repo_id()?;
-        let model = self.ivars().app.model();
-        model
-            .repo(&repo_id)
-            .is_some_and(|node| node.error.is_none())
-            .then_some(repo_id)
+    /// The outline row showing `key`, and its item. `None` when it is not in
+    /// the tree, or sits inside a card that is closed.
+    fn row_of(&self, outline: &NSOutlineView, key: &str) -> Option<(Retained<WTMItem>, NSInteger)> {
+        let item = self.ivars().items.borrow().get(key).cloned()?;
+        let row = unsafe { outline.rowForItem(Some(&item)) };
+        (row >= 0).then_some((item, row))
     }
 
     // MARK: Reordering repos
 
-    /// Where `repo_id` goes when put in the gap before the `gap`th repo the
-    /// list shows: the repo it then goes before, `None` for last. The outer
-    /// `None` is a move that would change nothing.
-    fn repo_move(&self, repo_id: &str, gap: usize) -> Option<Option<String>> {
-        let model = self.ivars().app.model();
-        let all: Vec<&str> = model.repos.iter().map(|r| r.repo.id.as_str()).collect();
-        let tree = self.ivars().tree.borrow();
-        let shown: Vec<String> = tree
-            .roots
-            .iter()
-            .map(|r| r.kind().repo_id().to_string())
-            .collect();
-        let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-        drop_target(&all, &shown, repo_id, gap).map(|before| before.map(str::to_string))
-    }
-
     /// `item` is a card the user closed and a repo is being dragged, which
     /// is when the outline opens cards on its own (see `should_expand`).
-    /// Cards meant to be open still open, so a refresh landing mid-drag
-    /// puts back what it rebuilds.
+    /// Cards meant to be open still open, so a render landing mid-drag puts
+    /// back what it rebuilds.
     fn closed_card_under_drag(&self, item: &AnyObject) -> bool {
         let iv = self.ivars();
-        iv.dragged_repo.borrow().is_some()
+        iv.dragged.borrow().is_some()
+            && !iv.rendering.get()
             && item.downcast_ref::<WTMItem>().is_some_and(|i| {
-                matches!(i.kind(), ItemKind::Repo { .. })
-                    && iv.collapsed.borrow().contains(i.kind().repo_id())
+                i.kind() == ItemKind::Header && iv.collapsed.borrow().contains(i.key())
             })
     }
 
-    /// The selected card moved one place up or down the list, as the repo
-    /// it goes before (see `repo_move`).
-    fn selected_repo_move(&self, up: bool) -> Option<(String, Option<String>)> {
-        let (_, kind) = self.selected_item()?;
-        let repo_id = kind.repo_id().to_string();
-        let from = self
-            .ivars()
-            .tree
-            .borrow()
-            .roots
-            .iter()
-            .position(|r| r.kind().repo_id() == repo_id)?;
-        let gap = if up { from.checked_sub(1)? } else { from + 2 };
-        let before = self.repo_move(&repo_id, gap)?;
-        Some((repo_id, before))
-    }
-
-    fn move_selected_repo(&self, up: bool) {
-        if let Some((repo_id, before)) = self.selected_repo_move(up) {
-            self.ivars()
-                .app
-                .dispatch(Action::MoveRepo { repo_id, before });
-        }
-    }
-
     /// The gap between cards a drag at `info`'s location is over, as an
-    /// index among the repos the list shows. The drop is always between
+    /// index among the sections the list shows. The drop is always between
     /// cards, never into one: the upper half of a card, header and open rows
     /// together, is the gap before it, the lower half the gap after.
     fn repo_drop_gap(
@@ -1230,7 +1160,7 @@ impl Controller {
                 continue;
             }
             let open = if unsafe { outline.isItemExpanded(Some(root)) } {
-                tree.children.get(&root.kind().key()).map_or(0, Vec::len)
+                tree.children.get(root.key()).map_or(0, Vec::len)
             } else {
                 0
             };
@@ -1244,17 +1174,24 @@ impl Controller {
         tree.roots.len()
     }
 
-    /// The dragged repo and where a drop at `info`'s location puts it, or
-    /// `None` when that is no drag of a repo or would change nothing.
+    /// The gap a drop at `info`'s location goes in, and the drop as the view
+    /// takes it: the dragged section and the one it lands before. `None`
+    /// for no drag of a section, or a drop beside the dragged one, which
+    /// would change nothing.
     fn repo_drop(
         &self,
         outline: &NSOutlineView,
         info: &ProtocolObject<dyn NSDraggingInfo>,
     ) -> Option<(usize, String, Option<String>)> {
-        let repo_id = self.ivars().dragged_repo.borrow().clone()?;
+        let dragged = self.ivars().dragged.borrow().clone()?;
         let gap = self.repo_drop_gap(outline, info);
-        let before = self.repo_move(&repo_id, gap)?;
-        Some((gap, repo_id, before))
+        let tree = self.ivars().tree.borrow();
+        let from = tree.roots.iter().position(|r| r.key() == dragged)?;
+        if gap == from || gap == from + 1 {
+            return None;
+        }
+        let before = tree.roots.get(gap).map(|r| r.key().to_string());
+        Some((gap, dragged, before))
     }
 
     fn validate_repo_drop(
@@ -1276,133 +1213,22 @@ impl Controller {
         outline: &NSOutlineView,
         info: &ProtocolObject<dyn NSDraggingInfo>,
     ) -> bool {
-        let Some((_, repo_id, before)) = self.repo_drop(outline, info) else {
+        let Some((_, dragged, before)) = self.repo_drop(outline, info) else {
             return false;
         };
-        self.ivars()
-            .app
-            .dispatch(Action::MoveRepo { repo_id, before });
-        true
-    }
-
-    // MARK: Window state
-
-    /// Record where the window is, how far the list is scrolled, which row
-    /// has the keyboard and which cards are closed. Called from every window
-    /// move, scroll, selection change and card opened or closed; the core
-    /// discards an unchanged value and coalesces the rest into one write.
-    fn remember_ui_state(&self) {
-        let iv = self.ivars();
-        let Some(window) = iv.window.borrow().clone() else {
-            return;
-        };
-        let pending = iv.restore.borrow().clone();
-        let (scroll, focus) = pending.unwrap_or_else(|| {
-            let scroll = iv.scroll.borrow();
-            (
-                scroll
-                    .as_ref()
-                    .map_or(0.0, |s| s.contentView().bounds().origin.y),
-                self.selected_item().and_then(|(_, kind)| kind.focus()),
-            )
-        });
-        iv.app.store_ui_state(UiState {
-            window: Some(window_frame(
-                iv.frame_before_full_screen
-                    .get()
-                    .unwrap_or_else(|| window.frame()),
-            )),
-            scroll,
-            focus,
-            // Mid-search every card is open; what is remembered is how they
-            // were before it.
-            collapsed_repos: match iv.collapsed_before_search.borrow().as_ref() {
-                Some(before) => before.iter().cloned().collect(),
-                None => iv.collapsed.borrow().iter().cloned().collect(),
-            },
-        });
-    }
-
-    /// The outline row showing `kind`, and its item. `None` when it is not in
-    /// the tree, or sits inside a card that is closed.
-    fn row_of(
-        &self,
-        outline: &NSOutlineView,
-        kind: &ItemKind,
-    ) -> Option<(Retained<WTMItem>, NSInteger)> {
-        let item = self.ivars().items.borrow().get(&kind.key()).cloned()?;
-        let row = unsafe { outline.rowForItem(Some(&item)) };
-        (row >= 0).then_some((item, row))
-    }
-
-    /// Put the list back where it was, once there is a list to put back.
-    ///
-    /// Called after every model change until it has run: with nothing cached
-    /// in `snapshot.json` the rows only exist after the first listing, and an
-    /// offset clamped against a one-row-tall outline would come out at zero.
-    /// The work itself waits for the next run-loop turn, because the outline's
-    /// height settles after the reload that is still in progress here.
-    fn restore_ui_state(&self, model: &Model) {
-        // Each card has to hold its worktrees, from the cached snapshot or
-        // from the listing that replaces it.
-        if self.ivars().restore.borrow().is_some()
-            && model
-                .repos
-                .iter()
-                .all(|r| r.loaded || !r.worktrees.is_empty())
-        {
-            on_next_turn(|c| c.apply_restore());
-        }
-    }
-
-    /// Select the remembered row and scroll to the remembered offset, once.
-    /// A later listing must never move the list under someone who is already
-    /// using it, so the state is taken rather than read.
-    fn apply_restore(&self) {
-        let iv = self.ivars();
-        let (Some(outline), Some(scroll)) =
-            (iv.outline.borrow().clone(), iv.scroll.borrow().clone())
-        else {
-            return;
-        };
-        let Some((offset, focus)) = iv.restore.borrow_mut().take() else {
-            return;
-        };
-        // Nothing is found for a worktree that is gone, or one inside a card
-        // that is closed; either way the tree simply starts unselected.
-        let row = focus
-            .map(ItemKind::from)
-            .and_then(|kind| self.row_of(&outline, &kind));
-        if let Some((_, row)) = row {
-            outline.selectRowIndexes_byExtendingSelection(
-                &NSIndexSet::indexSetWithIndex(row as usize),
-                false,
-            );
-        }
-        // Selecting does not scroll, so the offset is applied after it and
-        // wins. It is clamped here because the list may be shorter than it
-        // was — worktrees deleted elsewhere, or a card closed.
-        let clip = scroll.contentView();
-        let document = scroll.documentView().map_or(0.0, |d| d.frame().size.height);
-        let y = offset.clamp(0.0, (document - clip.bounds().size.height).max(0.0));
-        if y > 0.0 {
-            clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
-            scroll.reflectScrolledClipView(&clip);
+        let handler = LIST.with(|l| l.borrow().on_reorder.clone());
+        match handler {
+            Some(h) => {
+                h.call((dragged, before));
+                true
+            }
+            None => false,
         }
     }
 
     // MARK: Window construction
 
-    fn build_window(&self, mtm: MainThreadMarker) {
-        // Read before the window exists: from then on each of its moves is
-        // recorded over this. Until a launch has recorded one, the frame
-        // AppKit autosaved for earlier versions is used instead.
-        let saved_frame = self
-            .ivars()
-            .app
-            .ui_state()
-            .window
-            .or_else(legacy_autosaved_frame);
+    fn build_window(&self, view: &MainWindow, mtm: MainThreadMarker) {
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
@@ -1416,16 +1242,17 @@ impl Controller {
                 false,
             )
         };
-        window.setTitle(&ns("Worktree Manager"));
-        window.setMinSize(NSSize::new(640.0, 400.0));
+        window.setTitle(&ns(&view.title));
+        window.setMinSize(NSSize::new(view.min_size.0, view.min_size.1));
         window.setToolbarStyle(NSWindowToolbarStyle::Unified);
         window.setDelegate(Some(ProtocolObject::from_ref(self)));
         // No `setFrameAutosaveName`: the frame is kept in the app's own state
         // file along with the scroll offset and the focused row, so that
         // `WTM_USER_DATA` sandboxes all of it together (see
-        // `wtm_core::ui_state`). It is applied below, once the window is built.
+        // `wtm_core::ui_state`).
         unsafe { window.setReleasedWhenClosed(false) };
 
+        *self.ivars().toolbar.borrow_mut() = view.toolbar.clone();
         let toolbar = NSToolbar::initWithIdentifier(mtm.alloc(), &ns("wtm.toolbar"));
         toolbar.setDelegate(Some(ProtocolObject::from_ref(self)));
         toolbar.setDisplayMode(NSToolbarDisplayMode::IconOnly);
@@ -1503,136 +1330,23 @@ impl Controller {
         scroll.setDrawsBackground(false);
         scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
 
-        // Notice bar (hidden until there is something to say).
+        // Notice bar (hidden until there is something to say). Its content
+        // is built from the view on each render (see `render_notice`).
         let notice_bar = NSView::new(mtm);
         notice_bar.setTranslatesAutoresizingMaskIntoConstraints(false);
         notice_bar.setHidden(true);
-        let notice_label = NSTextField::wrappingLabelWithString(&ns(""), mtm);
-        notice_label.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-        notice_label.setTranslatesAutoresizingMaskIntoConstraints(false);
-        notice_label.setSelectable(true);
         // A notice must never resize the window: git output can run to
-        // hundreds of lines. Three lines here; the rest behind "Details…".
-        notice_label.setAlignment(objc2_app_kit::NSTextAlignment::Left);
-        notice_label.setMaximumNumberOfLines(2);
-        notice_label.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
-        notice_label.setContentCompressionResistancePriority_forOrientation(
-            NSLayoutPriorityDefaultLow,
-            NSLayoutConstraintOrientation::Vertical,
-        );
+        // hundreds of lines.
         notice_bar
             .heightAnchor()
             .constraintLessThanOrEqualToConstant(64.0)
             .setActive(true);
-        let details = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &ns("Details…"),
-                Some(self.as_ref()),
-                Some(sel!(showNoticeDetails:)),
-                mtm,
-            )
-        };
-        details.setControlSize(NSControlSize::Small);
-        details.setBezelStyle(NSBezelStyle::AccessoryBarAction);
-        details.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        details.setTranslatesAutoresizingMaskIntoConstraints(false);
-        details.setHidden(true);
-        let restart = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &ns("Restart"),
-                Some(self.as_ref()),
-                Some(sel!(restartForUpdate:)),
-                mtm,
-            )
-        };
-        restart.setControlSize(NSControlSize::Small);
-        restart.setBezelStyle(NSBezelStyle::Push);
-        restart.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        restart.setTranslatesAutoresizingMaskIntoConstraints(false);
-        restart.setHidden(true);
-        let close = unsafe {
-            NSButton::buttonWithImage_target_action(
-                &symbol("xmark", "Dismiss").unwrap(),
-                Some(self.as_ref()),
-                Some(sel!(dismissNotice:)),
-                mtm,
-            )
-        };
-        close.setBordered(false);
-        close.setBezelStyle(NSBezelStyle::AccessoryBarAction);
-        close.setControlSize(NSControlSize::Small);
-        close.setTranslatesAutoresizingMaskIntoConstraints(false);
-        // A stack, so the Details and Restart buttons take no room while they
-        // are hidden, and the label, hugging loosest, takes whatever width is
-        // left rather than the close button stretching to fill it.
-        let notice_row = NSStackView::new(mtm);
-        notice_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-        notice_row.setAlignment(NSLayoutAttribute::CenterY);
-        notice_row.setSpacing(6.0);
-        notice_row.setTranslatesAutoresizingMaskIntoConstraints(false);
-        notice_row.addArrangedSubview(&notice_label);
-        notice_row.addArrangedSubview(&details);
-        notice_row.addArrangedSubview(&restart);
-        notice_row.addArrangedSubview(&close);
-        notice_row.setCustomSpacing_afterView(8.0, &notice_label);
-        notice_row.setCustomSpacing_afterView(4.0, &restart);
-        notice_label.setContentHuggingPriority_forOrientation(
-            NSLayoutPriorityDefaultLow - 1.0,
-            NSLayoutConstraintOrientation::Horizontal,
-        );
-        for button in [&details, &restart, &close] {
-            button.setContentHuggingPriority_forOrientation(
-                NSLayoutPriorityDefaultHigh,
-                NSLayoutConstraintOrientation::Horizontal,
-            );
-        }
-        notice_bar.addSubview(&notice_row);
-        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            notice_row
-                .leadingAnchor()
-                .constraintEqualToAnchor_constant(&notice_bar.leadingAnchor(), 20.0),
-            notice_row
-                .trailingAnchor()
-                .constraintEqualToAnchor_constant(&notice_bar.trailingAnchor(), -12.0),
-            notice_row
-                .centerYAnchor()
-                .constraintEqualToAnchor(&notice_bar.centerYAnchor()),
-            // The label's lines, not the buttons, set the bar's height.
-            notice_label
-                .topAnchor()
-                .constraintEqualToAnchor_constant(&notice_bar.topAnchor(), 8.0),
-            notice_label
-                .bottomAnchor()
-                .constraintEqualToAnchor_constant(&notice_bar.bottomAnchor(), -8.0),
-        ]));
 
-        // Empty state.
-        let empty = NSStackView::new(mtm);
-        empty.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        empty.setAlignment(NSLayoutAttribute::CenterX);
-        empty.setSpacing(10.0);
-        empty.setTranslatesAutoresizingMaskIntoConstraints(false);
-        let title = NSTextField::labelWithString(&ns("No repositories yet"), mtm);
-        title.setFont(Some(&NSFont::systemFontOfSize_weight(
-            16.0,
-            crate::util::SEMIBOLD,
-        )));
-        let sub = secondary_label("Add a git repository to see its worktrees here.", 12.0, mtm);
-        let add = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &ns("Add Repository…"),
-                Some(self.as_ref()),
-                Some(sel!(addRepo:)),
-                mtm,
-            )
-        };
-        add.setKeyEquivalent(&ns("\r"));
-        empty.addArrangedSubview(&title);
-        empty.addArrangedSubview(&sub);
-        empty.addArrangedSubview(&add);
-        empty.setHidden(true);
+        // Empty state, centred over the list.
+        let empty_box = NSView::new(mtm);
+        empty_box.setTranslatesAutoresizingMaskIntoConstraints(false);
+        empty_box.setHidden(true);
 
-        // Refresh spinner lives in the empty-state stack's sibling column.
         let spinner = NSProgressIndicator::new(mtm);
         spinner.setStyle(NSProgressIndicatorStyle::Spinning);
         spinner.setControlSize(NSControlSize::Small);
@@ -1651,13 +1365,13 @@ impl Controller {
             NSLayoutPriorityDefaultLow - 10.0,
             NSLayoutConstraintOrientation::Vertical,
         );
-        content.addSubview(&empty);
+        content.addSubview(&empty_box);
         content.addSubview(&spinner);
         // Centred in the space the list would occupy, below the notice bar
         // rather than in the whole window, and never pushed up under the bar:
         // in a short window the centring gives way and the stack stays below
         // the bar, running off the bottom instead.
-        let centred = empty
+        let centred = empty_box
             .centerYAnchor()
             .constraintEqualToAnchor_constant(&scroll.centerYAnchor(), -20.0);
         centred.setPriority(NSLayoutPriorityDefaultHigh);
@@ -1668,11 +1382,11 @@ impl Controller {
             notice_bar
                 .widthAnchor()
                 .constraintEqualToAnchor(&content.widthAnchor()),
-            empty
+            empty_box
                 .centerXAnchor()
                 .constraintEqualToAnchor(&content.centerXAnchor()),
             centred,
-            empty
+            empty_box
                 .topAnchor()
                 .constraintGreaterThanOrEqualToAnchor_constant(&scroll.topAnchor(), 16.0),
             spinner
@@ -1689,237 +1403,202 @@ impl Controller {
         *iv.outline.borrow_mut() = Some(outline);
         *iv.column.borrow_mut() = Some(column);
         *iv.scroll.borrow_mut() = Some(scroll);
-        *iv.empty.borrow_mut() = Some(Retained::into_super(empty));
         *iv.notice_bar.borrow_mut() = Some(notice_bar);
-        *iv.notice_label.borrow_mut() = Some(notice_label);
-        *iv.notice_details.borrow_mut() = Some(details);
-        *iv.notice_restart.borrow_mut() = Some(restart);
-        *iv.refresh_spinner.borrow_mut() = Some(spinner);
+        *iv.empty_box.borrow_mut() = Some(empty_box);
+        *iv.activity.borrow_mut() = Some(spinner);
 
-        crate::menu::install(&NSApplication::sharedApplication(mtm), self.as_ref(), mtm);
-        // Back where it was, unless that frame no longer lands on a screen —
-        // the display it was on may be gone, and a window off the edge cannot
-        // be dragged back.
-        match saved_frame.filter(|f| f.is_usable_on(&screen_frames(mtm))) {
+        // Where the program says: the frame it remembered, already checked
+        // to land on a screen, else centred at the default size.
+        match view.frame {
             Some(f) => window.setFrame_display(ns_rect(f), false),
             None => window.center(),
         }
         window.makeKeyAndOrderFront(None);
-        // The tree starts focused, so the arrow keys work without a click.
-        if let Some(o) = iv.outline.borrow().as_ref() {
-            window.makeFirstResponder(Some(o));
-        }
         self.fit_column();
     }
 
-    // MARK: Model → view
+    // MARK: View → window
 
-    /// Called on the main thread whenever the core publishes a new snapshot.
-    pub fn model_changed(&self) {
-        let model = self.ivars().app.model();
-        self.rebuild(false);
-        self.update_chrome(&model);
-        self.restore_ui_state(&model);
-        dialogs::model_changed();
-    }
-
-    fn update_chrome(&self, model: &Model) {
+    pub fn render(&self, view: &View) {
+        let mtm = MainThreadMarker::from(self);
+        if self.window().is_none() {
+            self.build_window(&view.window, mtm);
+        }
         let iv = self.ivars();
-        if let Some(e) = iv.empty.borrow().as_ref() {
-            e.setHidden(!model.repos.is_empty());
-        }
-        // Hide the list, not its scroll view. The content stack drops hidden
-        // views from its layout, and with the scroll view gone a notice bar
-        // would be the only thing in it, and the window would shrink to the
-        // bar's height.
+        iv.rendering.set(true);
+        crate::menu::render(&view.menus, self.as_ref(), mtm);
+        self.render_toolbar(&view.window.toolbar);
+        self.rebuild(&view.window.list);
+        self.render_notice(view.window.notice.as_ref(), mtm);
+        self.render_empty(view.window.empty.as_ref(), mtm);
         if let Some(o) = iv.outline.borrow().as_ref() {
-            o.setHidden(model.repos.is_empty());
+            // Hide the list, not its scroll view. The content stack drops
+            // hidden views from its layout, and with the scroll view gone a
+            // notice bar would be the only thing in it, and the window would
+            // shrink to the bar's height.
+            o.setHidden(view.window.empty.is_some());
         }
-        if let Some(sp) = iv.refresh_spinner.borrow().as_ref() {
-            if model.refreshing || model.fetching {
+        if let Some(sp) = iv.activity.borrow().as_ref() {
+            if view.window.activity.spinning {
                 unsafe { sp.startAnimation(None) };
             } else {
                 unsafe { sp.stopAnimation(None) };
             }
-            sp.setToolTip(Some(&ns(if model.fetching {
-                "Fetching remotes…"
-            } else {
-                "Refreshing…"
-            })));
+            sp.setToolTip(view.window.activity.tooltip.as_deref().map(ns).as_deref());
         }
-        if let (Some(bar), Some(label)) = (
-            iv.notice_bar.borrow().as_ref(),
-            iv.notice_label.borrow().as_ref(),
-        ) {
-            match &model.notice {
-                Some(n) => {
-                    label.setStringValue(&ns(&notice_summary(&n.text)));
-                    let color = match n.tone {
-                        Tone::Error => NSColor::systemRedColor(),
-                        Tone::Info => NSColor::labelColor(),
-                    };
-                    label.setTextColor(Some(&color));
-                    label.setToolTip(Some(&ns(&n.text)));
-                    let long = n.text.lines().count() > 3 || n.text.len() > 240;
-                    if let Some(d) = iv.notice_details.borrow().as_ref() {
-                        d.setHidden(!long);
-                    }
-                    let waiting = crate::updater::ready_version(MainThreadMarker::from(self));
-                    let pending = crate::updater::pending_version(MainThreadMarker::from(self));
-                    if let Some(r) = iv.notice_restart.borrow().as_ref() {
-                        r.setHidden(waiting.is_none() && pending.is_none());
-                        // An update still waiting on an administrator is put in
-                        // place by this button, not just switched to, and the
-                        // label is what warns that a password will be asked for.
-                        r.setTitle(&ns(if waiting.is_some() {
-                            "Restart"
-                        } else {
-                            "Install and Restart"
-                        }));
-                    }
-                    bar.setHidden(false);
-                    if iv.notice_id.get() != n.id {
-                        iv.notice_id.set(n.id);
-                        // An update that is installed, or waiting to be, stays
-                        // on offer until it is taken.
-                        if n.tone == Tone::Info && waiting.is_none() && pending.is_none() {
-                            // Informational notices fade once the tree shows the outcome.
-                            let app = iv.app.clone();
-                            let id = n.id;
-                            let _ = DispatchQueue::main().after(
-                                dispatch2::DispatchTime::NOW.time(5_000_000_000),
-                                move || {
-                                    if app.model().notice.as_ref().map(|x| x.id) == Some(id) {
-                                        app.dispatch(Action::ClearNotice);
-                                    }
-                                },
-                            );
-                        }
-                    }
-                }
-                None => bar.setHidden(true),
+        iv.rendering.set(false);
+        if let Some(window) = self.window() {
+            crate::dialogs::render(&view.dialogs, &window, mtm);
+        }
+        crate::picker::render(view.popover.as_ref(), mtm);
+        crate::settings::render(&view.panels, mtm);
+    }
+
+    fn render_toolbar(&self, items: &[ToolItem]) {
+        *self.ivars().toolbar.borrow_mut() = items.to_vec();
+        let Some(field) = self.ivars().search.borrow().clone() else {
+            return;
+        };
+        let value = items.iter().find_map(|t| match t {
+            ToolItem::Search { value, .. } => Some(value.clone()),
+            _ => None,
+        });
+        // Only when it differs: setting it moves the insertion point to the
+        // end, which mid-typing would be wrong.
+        if let Some(v) = value {
+            if field.stringValue().to_string() != v {
+                field.setStringValue(&ns(&v));
             }
         }
     }
 
-    /// Open each of `roots` a search or the user left open, and close the
-    /// rest. The outline keeps an item's expansion across `reloadData`, so a
-    /// card is closed here as well as opened.
-    fn open_or_close(&self, outline: &NSOutlineView, roots: &[Retained<WTMItem>], searching: bool) {
-        // Cloned: expanding and collapsing call back into the delegate, which
-        // borrows `collapsed` again.
-        let collapsed = self.ivars().collapsed.borrow().clone();
-        for root in roots {
-            if searching || !collapsed.contains(root.kind().repo_id()) {
-                unsafe { outline.expandItem(Some(root)) };
-            } else if unsafe { outline.isItemExpanded(Some(root)) } {
-                unsafe { outline.collapseItem(Some(root)) };
-            }
-        }
+    fn render_notice(&self, notice: Option<&Element>, mtm: MainThreadMarker) {
+        let Some(bar) = self.ivars().notice_bar.borrow().clone() else {
+            return;
+        };
+        show_in(&bar, &self.ivars().notice, notice, mtm, |built, bar| {
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                built
+                    .leadingAnchor()
+                    .constraintEqualToAnchor_constant(&bar.leadingAnchor(), 20.0),
+                built
+                    .trailingAnchor()
+                    .constraintEqualToAnchor_constant(&bar.trailingAnchor(), -12.0),
+                built
+                    .topAnchor()
+                    .constraintEqualToAnchor_constant(&bar.topAnchor(), 8.0),
+                built
+                    .bottomAnchor()
+                    .constraintEqualToAnchor_constant(&bar.bottomAnchor(), -8.0),
+            ]));
+        });
     }
 
-    /// Build the display tree from the current model and apply the smallest
-    /// outline update that covers the difference from what is on screen.
-    fn rebuild(&self, query_changed: bool) {
+    fn render_empty(&self, empty: Option<&Element>, mtm: MainThreadMarker) {
+        let Some(holder) = self.ivars().empty_box.borrow().clone() else {
+            return;
+        };
+        show_in(&holder, &self.ivars().empty, empty, mtm, |built, holder| {
+            NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                built
+                    .leadingAnchor()
+                    .constraintEqualToAnchor(&holder.leadingAnchor()),
+                built
+                    .trailingAnchor()
+                    .constraintEqualToAnchor(&holder.trailingAnchor()),
+                built
+                    .topAnchor()
+                    .constraintEqualToAnchor(&holder.topAnchor()),
+                built
+                    .bottomAnchor()
+                    .constraintEqualToAnchor(&holder.bottomAnchor()),
+            ]));
+        });
+    }
+
+    // MARK: The list
+
+    /// Bring the outline in line with `list`, applying the smallest update
+    /// that covers the difference from what is on screen.
+    fn rebuild(&self, list: &TreeList) {
         let mtm = MainThreadMarker::from(self);
         let iv = self.ivars();
-        let model = iv.app.model();
-        let query = iv.query.borrow().trim().to_lowercase();
-        let searching = !query.is_empty();
 
         let mut items = iv.items.borrow_mut();
-        let mut item_for = |kind: ItemKind| -> Retained<WTMItem> {
-            items
-                .entry(kind.key())
-                .or_insert_with(|| WTMItem::new(kind, mtm))
-                .clone()
+        let mut item_for = |kind: ItemKind, key: &str, section: &str| -> Retained<WTMItem> {
+            let item = items
+                .entry(key.to_string())
+                .or_insert_with(|| WTMItem::new(kind, key, section, mtm));
+            // A key is a row's identity, but not its kind: a pending row and
+            // a worktree never share one, so this only guards a program bug.
+            if item.kind() != kind || item.section() != section {
+                *item = WTMItem::new(kind, key, section, mtm);
+            }
+            item.clone()
         };
-
         let mut tree = Tree::default();
-        for node in &model.repos {
-            let mut rows: Vec<(bool, String, Retained<WTMItem>)> = Vec::new();
-            for w in &node.worktrees {
-                if searching && !matches(&query, w, &model.home) {
-                    continue;
-                }
-                let slug = w.path.rsplit('/').next().unwrap_or("").to_string();
-                rows.push((
-                    w.is_main,
-                    slug,
-                    item_for(ItemKind::Worktree {
-                        repo_id: node.repo.id.clone(),
-                        path: w.path.clone(),
-                    }),
-                ));
-            }
-            for p in model.pending_for(&node.repo.id) {
-                rows.push((
-                    false,
-                    wtm_core::paths::slugify_branch(&p.branch),
-                    item_for(ItemKind::Pending {
-                        repo_id: node.repo.id.clone(),
-                        id: p.id,
-                    }),
-                ));
-            }
-            if searching && rows.is_empty() && node.error.is_none() {
-                continue;
-            }
-            rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            let repo_item = item_for(ItemKind::Repo {
-                repo_id: node.repo.id.clone(),
-            });
-            tree.children.insert(
-                repo_item.kind().key(),
-                rows.into_iter().map(|r| r.2).collect(),
-            );
-            tree.roots.push(repo_item);
+        for section in &list.sections {
+            let rows = section
+                .rows
+                .iter()
+                .map(|r| {
+                    let kind = match r.content {
+                        RowContent::Worktree(_) => ItemKind::Worktree,
+                        RowContent::Pending(_) => ItemKind::Pending,
+                    };
+                    item_for(kind, &r.key, &section.key)
+                })
+                .collect();
+            tree.children.insert(section.key.clone(), rows);
+            tree.roots
+                .push(item_for(ItemKind::Header, &section.key, &section.key));
         }
+        // Items for rows that are gone: an outline that still holds one
+        // compares it by identity, so it is never handed out again.
+        let live: HashSet<&str> = tree
+            .roots
+            .iter()
+            .chain(tree.children.values().flatten())
+            .map(|i| i.key())
+            .collect();
+        let live: HashSet<String> = live.into_iter().map(str::to_string).collect();
+        items.retain(|k, _| live.contains(k));
         drop(items);
 
         let Some(outline) = iv.outline.borrow().clone() else {
             *iv.tree.borrow_mut() = tree;
-            *iv.shown.borrow_mut() = Some(model);
+            LIST.with(|l| *l.borrow_mut() = list.clone());
             return;
         };
 
-        let previous = iv.shown.borrow().clone();
         // Planned while the old tree is still the data source: the outline
         // may read from it to answer, and must answer about the old rows.
-        let plan = previous
-            .as_ref()
-            .and_then(|_| plan_splice(&outline, &iv.tree.borrow(), &tree));
+        let first = iv.tree.borrow().roots.is_empty() && outline.numberOfRows() == 0;
+        let plan = plan_splice(&outline, &iv.tree.borrow(), &tree);
+        let previous = LIST.with(|l| std::mem::replace(&mut *l.borrow_mut(), list.clone()));
         *iv.tree.borrow_mut() = tree;
-        *iv.shown.borrow_mut() = Some(model.clone());
-
-        // A search opens every card; clearing it closes again the ones that
-        // were closed before it.
-        let was_searching = {
-            let mut before = iv.collapsed_before_search.borrow_mut();
-            let was = before.is_some();
-            if searching {
-                before.get_or_insert_with(|| iv.collapsed.borrow().clone());
-            } else if let Some(saved) = before.take() {
-                *iv.collapsed.borrow_mut() = saved;
-            }
-            was
-        };
+        // What the user sees closed, as the view has it; the outline is
+        // brought in line below.
+        *iv.collapsed.borrow_mut() = list
+            .sections
+            .iter()
+            .filter(|s| !s.expanded)
+            .map(|s| s.key.clone())
+            .collect();
 
         let roots = iv.tree.borrow().roots.clone();
-        let (
-            Some(previous),
-            Some(Plan {
-                roots: root_change,
-                cards,
-            }),
-        ) = (previous, plan)
+        let Some(Plan {
+            roots: root_change,
+            cards,
+        }) = plan.filter(|_| !first)
         else {
             // The first tree, reordered worktree rows, repos reordered as
             // others came or went, or an outline that no longer shows the
             // tree it was last told about: start over.
             outline.reloadData();
-            self.open_or_close(&outline, &roots, searching);
+            self.open_or_close(&outline, list, &roots);
             self.sync_row_styles();
+            self.sync_selection(&outline, list);
             #[cfg(debug_assertions)]
             self.check_outline(&outline);
             return;
@@ -1977,17 +1656,9 @@ impl Controller {
         for card in &cards {
             if matches!(card.rows, CardRows::Reloaded) {
                 unsafe { outline.reloadItem_reloadChildren(Some(&card.root), true) };
-                if !iv.collapsed.borrow().contains(card.root.kind().repo_id()) {
-                    unsafe { outline.expandItem(Some(&card.root)) };
-                }
             }
         }
-        // A search opens every card, and a repo coming, going or moving puts
-        // each one back as the search or the user left it.
-        let roots_changed = !matches!(&root_change, Roots::Spliced(s) if s.is_empty());
-        if query_changed || roots_changed {
-            self.open_or_close(&outline, &roots, searching);
-        }
+        self.open_or_close(&outline, list, &roots);
         // A card moved from the keyboard stays in view.
         if matches!(root_change, Roots::Moved(_)) {
             let row = outline.selectedRow();
@@ -1996,57 +1667,66 @@ impl Controller {
             }
         }
 
-        // What stayed: reload the rows whose data differs.
+        // What stayed: reload the rows whose content differs.
         for card in &cards {
             if matches!(card.rows, CardRows::Reloaded) {
                 continue;
             }
-            let repo_id = card.root.kind().repo_id().to_string();
-            let (old_node, new_node) = (previous.repo(&repo_id), model.repo(&repo_id));
-            // The header counts the rows a search shows.
-            let header_changed = searching != was_searching
-                || (searching && matches!(card.rows, CardRows::Spliced(_)))
-                || match (old_node, new_node) {
-                    (Some(a), Some(b)) => {
-                        a.repo != b.repo
-                            || a.worktrees.len() != b.worktrees.len()
-                            || a.error != b.error
-                            || a.loaded != b.loaded
-                    }
-                    _ => true,
-                };
-            if header_changed {
+            let key = card.root.key();
+            let (old, new) = (previous.section(key), list.section(key));
+            if old.map(|s| &s.header) != new.map(|s| &s.header) {
                 unsafe { outline.reloadItem(Some(&card.root)) };
             }
-            let branches_changed =
-                matches!((old_node, new_node), (Some(a), Some(b)) if a.branches != b.branches);
             let old_ids = identities(&card.old);
             for child in &card.new {
-                // A row just inserted was configured from this model.
+                // A row just inserted was configured from this list.
                 if !old_ids.contains(&Retained::as_ptr(child)) {
                     continue;
                 }
-                let changed = match child.kind() {
-                    ItemKind::Worktree { path, .. } => {
-                        branches_changed
-                            || old_node.and_then(|n| n.worktree(&path))
-                                != new_node.and_then(|n| n.worktree(&path))
-                            || previous.busy_for(&path) != model.busy_for(&path)
-                    }
-                    ItemKind::Pending { id, .. } => {
-                        previous.pending.iter().find(|p| p.id == id)
-                            != model.pending.iter().find(|p| p.id == id)
-                    }
-                    ItemKind::Repo { .. } => false,
-                };
-                if changed {
+                let k = child.key();
+                if previous.row(k).map(|r| &r.content) != list.row(k).map(|r| &r.content) {
                     unsafe { outline.reloadItem(Some(child)) };
                 }
             }
         }
         self.sync_row_styles_noting(&resized);
+        self.sync_selection(&outline, list);
         #[cfg(debug_assertions)]
         self.check_outline(&outline);
+    }
+
+    /// Open the cards the view has open and close the rest. The outline
+    /// keeps an item's expansion across `reloadData`, so a card is closed
+    /// here as well as opened.
+    fn open_or_close(&self, outline: &NSOutlineView, list: &TreeList, roots: &[Retained<WTMItem>]) {
+        for (root, section) in roots.iter().zip(&list.sections) {
+            let open = unsafe { outline.isItemExpanded(Some(root)) };
+            if section.expanded && !open {
+                unsafe { outline.expandItem(Some(root)) };
+            } else if !section.expanded && open {
+                unsafe { outline.collapseItem(Some(root)) };
+            }
+        }
+    }
+
+    /// Select the row the view has selected, if it is not already.
+    fn sync_selection(&self, outline: &NSOutlineView, list: &TreeList) {
+        let want = list
+            .selected
+            .as_deref()
+            .and_then(|k| self.row_of(outline, k))
+            .map(|(_, row)| row);
+        let have = Some(outline.selectedRow()).filter(|&r| r >= 0);
+        if want == have {
+            return;
+        }
+        match want {
+            Some(row) => outline.selectRowIndexes_byExtendingSelection(
+                &NSIndexSet::indexSetWithIndex(row as usize),
+                false,
+            ),
+            None => unsafe { outline.deselectAll(None) },
+        }
     }
 
     /// Debug builds check after every rebuild that the outline shows exactly
@@ -2065,10 +1745,111 @@ impl Controller {
             assert!(
                 (height - want).abs() < 0.01,
                 "row {row} ({}) is {height} high, not {want}",
-                item.kind().key()
+                item.key()
             );
         }
     }
+
+    // MARK: Effects
+
+    pub fn perform(&self, effect: Effect) {
+        let mtm = MainThreadMarker::from(self);
+        match effect {
+            Effect::After(delay, then) => {
+                let then = MainThreadBound::new(then, mtm);
+                let ns = i64::try_from(delay.as_nanos()).unwrap_or(i64::MAX);
+                let _ =
+                    DispatchQueue::main().after(dispatch2::DispatchTime::NOW.time(ns), move || {
+                        let mtm = MainThreadMarker::new().expect("main queue");
+                        then.get(mtm).call(());
+                    });
+            }
+            Effect::Copy(text) => copy_to_pasteboard(&text),
+            Effect::PickFolders(pick) => {
+                let window = match &pick.parent {
+                    Some(key) => crate::settings::window(key, mtm),
+                    None => self.window(),
+                };
+                if let Some(window) = window {
+                    crate::dialogs::pick_folders(
+                        &window,
+                        &pick.title,
+                        pick.multiple,
+                        move |paths| pick.on_done.call(paths),
+                    );
+                } else {
+                    pick.on_done.call(Vec::new());
+                }
+            }
+            Effect::FocusSearch => {
+                if let (Some(w), Some(s)) = (self.window(), self.ivars().search.borrow().as_ref()) {
+                    w.makeFirstResponder(Some(s));
+                }
+            }
+            Effect::FocusList => focus_tree(mtm),
+            // Once the outline has laid out this render's rows: an offset
+            // clamped against a one-row-tall outline would come out at zero.
+            Effect::ScrollTo(offset) => on_next_turn(move |c| c.scroll_to(offset)),
+            Effect::RevealSelection => {
+                if let Some(o) = self.ivars().outline.borrow().as_ref() {
+                    let row = o.selectedRow();
+                    if row >= 0 {
+                        o.scrollRowToVisible(row);
+                    }
+                }
+            }
+            Effect::PresentPanel(key) => crate::settings::present(&key, mtm),
+        }
+    }
+
+    /// Clamped, because the list may be shorter than it was: worktrees
+    /// deleted elsewhere, or a card closed.
+    fn scroll_to(&self, offset: f64) {
+        let Some(scroll) = self.ivars().scroll.borrow().clone() else {
+            return;
+        };
+        let clip = scroll.contentView();
+        let document = scroll.documentView().map_or(0.0, |d| d.frame().size.height);
+        let y = offset.clamp(0.0, (document - clip.bounds().size.height).max(0.0));
+        clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
+        scroll.reflectScrolledClipView(&clip);
+    }
+}
+
+/// Show `element` in `holder`, patching what is there when it has the same
+/// shape and building it afresh when not; hide `holder` for `None`. `pin`
+/// places a newly built view in the holder.
+fn show_in(
+    holder: &NSView,
+    shown: &RefCell<Option<Shown>>,
+    element: Option<&Element>,
+    mtm: MainThreadMarker,
+    pin: impl Fn(&NSView, &NSView),
+) {
+    let Some(element) = element else {
+        holder.setHidden(true);
+        return;
+    };
+    holder.setHidden(false);
+    let mut shown = shown.borrow_mut();
+    if let Some(s) = shown.as_mut() {
+        if same_shape(&s.element, element) {
+            s.built.patch(&s.element, element);
+            s.element = element.clone();
+            return;
+        }
+        s.built.view.removeFromSuperview();
+    }
+    let built = Built::new(element, mtm);
+    built
+        .view
+        .setTranslatesAutoresizingMaskIntoConstraints(false);
+    holder.addSubview(&built.view);
+    pin(&built.view, holder);
+    *shown = Some(Shown {
+        element: element.clone(),
+        built,
+    });
 }
 
 /// How to take the outline from `old` to `new` in place.
@@ -2107,7 +1888,7 @@ fn plan_splice(outline: &NSOutlineView, old: &Tree, new: &Tree) -> Option<Plan> 
         if matches!(&roots, Roots::Spliced(s) if s.inserted.contains(&i)) {
             continue;
         }
-        let key = root.kind().key();
+        let key = root.key().to_string();
         let old = old.children.get(&key).cloned().unwrap_or_default();
         let new = new.children.get(&key).cloned().unwrap_or_default();
         let (old_ids, new_ids) = (identities(&old), identities(&new));
@@ -2137,7 +1918,7 @@ fn tree_rows(outline: &NSOutlineView, tree: &Tree) -> Vec<Retained<WTMItem>> {
         if unsafe { outline.isItemExpanded(Some(root)) } {
             rows.extend(
                 tree.children
-                    .get(&root.kind().key())
+                    .get(&root.key().to_string())
                     .into_iter()
                     .flatten()
                     .cloned(),
@@ -2193,14 +1974,15 @@ fn apply_splice(outline: &NSOutlineView, parent: Option<&AnyObject>, s: &Splice)
     }
 }
 
-/// What a drag of `item` carries: a repo's id, or nothing for any other row,
+/// What a drag of `item` carries: a section's key, or nothing for any other row,
 /// which cannot be dragged.
 fn repo_drag_writer(item: &AnyObject) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
-    let ItemKind::Repo { repo_id } = item.downcast_ref::<WTMItem>()?.kind() else {
+    let item = item.downcast_ref::<WTMItem>()?;
+    if item.kind() != ItemKind::Header || LIST.with(|l| l.borrow().on_reorder.is_none()) {
         return None;
-    };
+    }
     let writer = NSPasteboardItem::new();
-    writer.setString_forType(&ns(&repo_id), &ns(REPO_DRAG_TYPE));
+    writer.setString_forType(&ns(item.key()), &ns(REPO_DRAG_TYPE));
     Some(ProtocolObject::from_retained(writer))
 }
 
@@ -2217,20 +1999,11 @@ fn index_set(indices: &[usize]) -> Retained<NSIndexSet> {
     Retained::into_super(set)
 }
 
-/// Every screen's visible frame (the area outside the menu bar and the Dock),
-/// for deciding whether a remembered window frame can still be used.
-fn screen_frames(mtm: MainThreadMarker) -> Vec<WindowFrame> {
-    NSScreen::screens(mtm)
-        .iter()
-        .map(|s| window_frame(s.visibleFrame()))
-        .collect()
-}
-
-/// The frame versions before `ui-state.json` had AppKit autosave. They
-/// restored its size (their `window.center()` replaced only the position), so
-/// without it the first launch after the update would open at the default
-/// size.
-fn legacy_autosaved_frame() -> Option<WindowFrame> {
+/// The frame versions before `ui-state.json` had AppKit autosave, for the
+/// first launch after the update. They restored its size (their
+/// `window.center()` replaced only the position), so without it that launch
+/// would open at the default size.
+pub fn legacy_autosaved_frame() -> Option<WindowFrame> {
     let saved = NSUserDefaults::standardUserDefaults().stringForKey(&ns(LEGACY_FRAME_KEY))?;
     parse_autosaved_frame(&saved.to_string())
 }
@@ -2248,8 +2021,8 @@ fn parse_autosaved_frame(saved: &str) -> Option<WindowFrame> {
     })
 }
 
-fn window_frame(r: NSRect) -> WindowFrame {
-    WindowFrame {
+fn frame(r: NSRect) -> Frame {
+    Frame {
         x: r.origin.x,
         y: r.origin.y,
         width: r.size.width,
@@ -2257,7 +2030,7 @@ fn window_frame(r: NSRect) -> WindowFrame {
     }
 }
 
-fn ns_rect(f: WindowFrame) -> NSRect {
+fn ns_rect(f: Frame) -> NSRect {
     NSRect::new(NSPoint::new(f.x, f.y), NSSize::new(f.width, f.height))
 }
 
@@ -2271,67 +2044,10 @@ fn on_next_turn(f: impl FnOnce(&Controller) + Send + 'static) {
     });
 }
 
-/// What the notice bar shows of a message: its first two lines, with a count
-/// of what "Details…" holds. Git's file lists can run to hundreds of lines and
-/// must never size the window.
-fn notice_summary(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= 2 {
-        return text.to_string();
-    }
-    format!(
-        "{}\n{} … ({} more lines)",
-        lines[0].trim_end(),
-        lines[1].trim(),
-        lines.len() - 2
-    )
-}
-
-/// Case-insensitive substring match on the branch or the path as the row
-/// shows it (`~` for the home folder). Not the full path: every worktree's
-/// starts with the home folder, so a query like `users` would match them all.
-fn matches(query: &str, w: &wtm_core::WorktreeInfo, home: &str) -> bool {
-    w.branch
-        .as_deref()
-        .is_some_and(|b| b.to_lowercase().contains(query))
-        || wtm_core::paths::tildify(&w.path, home)
-            .to_lowercase()
-            .contains(query)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{matches, notice_summary, parse_autosaved_frame};
-    use wtm_core::{WindowFrame, WorktreeInfo};
-
-    fn worktree(path: &str, branch: Option<&str>) -> WorktreeInfo {
-        WorktreeInfo {
-            path: path.into(),
-            branch: branch.map(Into::into),
-            head: String::new(),
-            is_main: false,
-            locked: false,
-            prunable: false,
-            status: None,
-        }
-    }
-
-    #[test]
-    fn search_matches_the_branch_and_the_path_as_shown() {
-        let home = "/Users/ada";
-        let w = worktree("/Users/ada/code/wt/app/fix-login", Some("Fix/Login"));
-        assert!(matches("fix/login", &w, home));
-        assert!(matches("~/code/wt", &w, home));
-        assert!(matches("app/fix", &w, home));
-        // The home folder is `~` on the row, so its name finds nothing.
-        assert!(!matches("ada", &w, home));
-        assert!(!matches("users", &w, home));
-        assert!(matches(
-            "volumes",
-            &worktree("/Volumes/src/app", None),
-            home
-        ));
-    }
+    use super::parse_autosaved_frame;
+    use wtm_core::WindowFrame;
 
     #[test]
     fn an_autosaved_frame_is_read_up_to_the_screen() {
@@ -2347,15 +2063,5 @@ mod tests {
         assert_eq!(parse_autosaved_frame(""), None);
         assert_eq!(parse_autosaved_frame("256 187 1000"), None);
         assert_eq!(parse_autosaved_frame("256 187 wide 732"), None);
-    }
-
-    #[test]
-    fn summary_keeps_short_notices_and_folds_long_ones() {
-        assert_eq!(notice_summary("Added a"), "Added a");
-        assert_eq!(notice_summary("a\nb"), "a\nb");
-        assert_eq!(
-            notice_summary("error: x:\n  f1\n  f2\n  f3"),
-            "error: x:\nf1 … (2 more lines)"
-        );
     }
 }

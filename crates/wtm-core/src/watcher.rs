@@ -93,7 +93,7 @@ impl Watcher {
 /// lock files, under either a repo's `.git/` or a linked worktree's
 /// `.git/worktrees/<name>/`.
 fn is_noise(path: &Path) -> bool {
-    let s = path.to_string_lossy();
+    let s = crate::paths::normalise(&path.to_string_lossy());
     if s.ends_with(".lock") {
         return true;
     }

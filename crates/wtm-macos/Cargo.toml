@@ -7,6 +7,7 @@ description = "macOS backend: AppKit UI and platform services via objc2"
 
 [dependencies]
 wtm-core = { workspace = true }
+wtm-toolkit = { workspace = true }
 wtm-platform = { workspace = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSArray", "NSString", "NSObject", "NSNotification", "NSDictionary", "NSURL", "NSGeometry", "NSValue", "NSEnumerator", "NSThread", "NSRunLoop", "NSDate", "NSUserDefaults", "NSAttributedString", "NSProcessInfo", "NSBundle", "NSNotification", "NSIndexSet", "NSRange"] }

@@ -161,7 +161,8 @@ impl App {
             .expect("tokio runtime");
         let store = ConfigStore::load(&dirs);
         let ui_state = UiStateStore::load(&dirs);
-        let home = dirs.home.to_string_lossy().into_owned();
+        // As git writes paths, so `tildify` finds it at the start of theirs.
+        let home = crate::paths::normalise(&dirs.home.to_string_lossy());
         let mut model = Model {
             config: store.config().clone(),
             repos: Vec::new(),

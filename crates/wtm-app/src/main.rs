@@ -1,7 +1,8 @@
 //! Worktree Manager executable. This is the only place that knows which
-//! platform backend exists: it builds the backend, hands it to the core, and
-//! starts the backend's event loop.
+//! toolkit exists: it builds the platform services and the updater for the
+//! OS it was compiled for, and runs the shared UI on that OS's toolkit.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 fn main() {
@@ -9,14 +10,26 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     {
-        let dirs = wtm_macos::app_dirs();
-        let app = wtm_core::App::new(Arc::new(wtm_macos::MacPlatform), dirs);
-        wtm_macos::run(app);
+        let app = wtm_core::App::new(Arc::new(wtm_macos::MacPlatform), wtm_macos::app_dirs());
+        // Versions before `ui-state.json` had AppKit keep the window's frame;
+        // the first launch after the update opens it there.
+        let state = app.ui_state();
+        if state.window.is_none() {
+            if let Some(frame) = wtm_macos::legacy_autosaved_frame() {
+                app.store_ui_state(wtm_core::UiState {
+                    window: Some(frame),
+                    ..state
+                });
+            }
+        }
+        let updater = Rc::new(wtm_macos::MacUpdater::new(app.clone()));
+        wtm_ui::run(wtm_macos::AppKit, app, updater);
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        eprintln!("Worktree Manager: no UI backend for this platform yet (see rust/README.md).");
+        let _ = (Rc::new(()), Arc::new(()));
+        eprintln!("Worktree Manager: no UI backend for this platform yet.");
         std::process::exit(1);
     }
 }

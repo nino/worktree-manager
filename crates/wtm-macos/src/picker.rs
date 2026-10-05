@@ -1,8 +1,8 @@
-//! The branch picker: a popover under a row's branch button with a filter
-//! field above a fuzzy-matched, keyboard-navigable list, like the Electron
-//! app's. Typing filters and ranks (`wtm_core::fuzzy`), ↑/↓ move, Return
-//! chooses, Escape or a click outside closes. Works for detached worktrees
-//! too, which the old popup could not offer.
+//! The view's popover (the branch picker): an `NSPopover` under a row's
+//! branch button with a filter field above a keyboard-navigable list. The
+//! filtering, the ranking and the selection are the shared UI's; this shows
+//! them and reports keys and clicks: typing, ↑/↓, Return, Escape, and a
+//! click outside.
 
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
@@ -29,9 +29,9 @@ use objc2_foundation::{
     NSMutableIndexSet, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
     NSRect, NSRectEdge, NSSize, NSString,
 };
-use wtm_core::fuzzy::{fuzzy_filter, Match};
+use wtm_toolkit::{FilterList, Popover};
 
-use crate::branchlabel::branch_label;
+use crate::branchlabel::rich_label;
 use crate::util::{label, ns, SEMIBOLD};
 
 const WIDTH: f64 = 300.0;
@@ -46,19 +46,21 @@ thread_local! {
 }
 
 pub struct BranchPickerIvars {
+    /// The view's id for this popover.
+    id: u64,
     popover: Retained<NSPopover>,
     field: Retained<NSTextField>,
     table: Retained<NSTableView>,
-    all: Vec<String>,
-    current: Option<String>,
-    filtered: RefCell<Vec<(usize, Match)>>,
+    /// As last rendered.
+    list: RefCell<FilterList>,
     /// The row the text was last drawn selected for.
     selected: Cell<NSInteger>,
     /// The button the popover hangs off, and what watches for the clicks
     /// that dismiss it.
     anchor: Retained<NSView>,
     monitor: RefCell<Option<Retained<AnyObject>>>,
-    on_choose: Box<dyn Fn(String)>,
+    /// The view took the popover away: its closing is not the user's.
+    closed_by_view: Cell<bool>,
 }
 
 define_class!(
@@ -89,7 +91,7 @@ define_class!(
     unsafe impl NSTableViewDataSource for BranchPicker {
         #[unsafe(method(numberOfRowsInTableView:))]
         fn number_of_rows(&self, _t: &NSTableView) -> NSInteger {
-            self.ivars().filtered.borrow().len() as NSInteger
+            self.ivars().list.borrow().items.len() as NSInteger
         }
 
     }
@@ -126,7 +128,7 @@ define_class!(
     unsafe impl NSControlTextEditingDelegate for BranchPicker {
         #[unsafe(method(controlTextDidChange:))]
         fn control_text_did_change(&self, _n: &NSNotification) {
-            self.refilter();
+            self.query_changed();
         }
 
         #[unsafe(method(control:textView:doCommandBySelector:))]
@@ -149,6 +151,7 @@ define_class!(
                 }
             });
             self.stop_watching();
+            self.report_dismissal();
             // The popover took the keyboard; hand it back to the tree rather
             // than leaving the window with no first responder.
             if let Some(mtm) = MainThreadMarker::new() {
@@ -174,25 +177,31 @@ define_class!(
     }
 );
 
-/// Open the picker under `anchor`. `on_choose` runs with the chosen branch
-/// unless it is the current one.
-pub fn show(
-    anchor: &NSView,
-    branches: &[String],
-    current: Option<&str>,
-    on_choose: impl Fn(String) + 'static,
-) {
-    let mtm = MainThreadMarker::from(anchor);
-    close();
-    // The current branch stays choosable even if the list is stale.
-    let mut all: Vec<String> = Vec::with_capacity(branches.len() + 1);
-    if let Some(c) = current.filter(|c| !branches.iter().any(|b| b == c)) {
-        all.push(c.to_string());
+/// Bring the popover in line with the view's: open it, update it in place,
+/// or close it.
+pub fn render(popover: Option<&Popover>, mtm: MainThreadMarker) {
+    let current = CURRENT.with(|c| c.borrow().clone());
+    match (current, popover) {
+        (Some(open), Some(p)) if open.ivars().id == p.id => open.update(&p.list),
+        (open, p) => {
+            if let Some(open) = open {
+                open.close_by_view();
+            }
+            if let Some(p) = p {
+                match crate::controller::anchor(&p.anchor.0, p.anchor.1, mtm) {
+                    Some(anchor) => show(p, &anchor, mtm),
+                    // Nothing to hang it from (the row went in the same
+                    // render): as good as dismissed.
+                    None => p.list.on_dismiss.call(()),
+                }
+            }
+        }
     }
-    all.extend(branches.iter().cloned());
+}
 
-    let field = NSTextField::textFieldWithString(&ns(""), mtm);
-    field.setPlaceholderString(Some(&ns("e.g., main")));
+fn show(p: &Popover, anchor: &NSView, mtm: MainThreadMarker) {
+    let field = NSTextField::textFieldWithString(&ns(&p.list.query), mtm);
+    field.setPlaceholderString(Some(&ns(&p.list.placeholder)));
     field.setFont(Some(&NSFont::systemFontOfSize(12.0)));
     // AppKit coordinates: y grows upwards, so the field sits above the list.
     field.setFrame(NSRect::new(
@@ -249,16 +258,15 @@ pub fn show(
     popover.setContentSize(container.frame().size);
 
     let this = mtm.alloc::<BranchPicker>().set_ivars(BranchPickerIvars {
+        id: p.id,
         popover: popover.clone(),
         field: field.clone(),
         table: table.clone(),
-        all,
-        current: current.map(str::to_string),
-        filtered: RefCell::new(Vec::new()),
+        list: RefCell::new(p.list.clone()),
         selected: Cell::new(-1),
         anchor: anchor.retain(),
         monitor: RefCell::new(None),
-        on_choose: Box::new(on_choose),
+        closed_by_view: Cell::new(false),
     });
     let this: Retained<BranchPicker> = unsafe { msg_send![super(this), init] };
     unsafe {
@@ -271,11 +279,8 @@ pub fn show(
     popover.setDelegate(Some(ProtocolObject::from_ref(&*this)));
     CURRENT.with(|c| *c.borrow_mut() = Some(this.clone()));
 
-    this.refilter();
-    // Start on the current branch, as a menu would.
-    if let Some(row) = this.row_of_current() {
-        this.select(row as NSInteger);
-    }
+    table.reloadData();
+    this.sync_selection();
     popover.showRelativeToRect_ofView_preferredEdge(
         anchor.bounds(),
         anchor,
@@ -284,14 +289,6 @@ pub fn show(
     this.watch_for_dismissal();
     if let Some(w) = field.window() {
         w.makeFirstResponder(Some(&field));
-    }
-}
-
-/// Close the open picker, if any.
-pub fn close() {
-    if let Some(p) = CURRENT.with(|c| c.borrow_mut().take()) {
-        p.stop_watching();
-        unsafe { p.ivars().popover.performClose(None) };
     }
 }
 
@@ -395,64 +392,84 @@ impl BranchPicker {
         Some(Retained::into_super(cell))
     }
 
-    fn refilter(&self) {
-        let iv = self.ivars();
-        let query = iv.field.stringValue().to_string();
-        *iv.filtered.borrow_mut() = fuzzy_filter(&query, &iv.all);
-        iv.table.reloadData();
-        if iv.table.numberOfRows() > 0 {
-            self.select(0);
+    fn query_changed(&self) {
+        let query = self.ivars().field.stringValue().to_string();
+        let h = self.ivars().list.borrow().on_query.clone();
+        h.call(query);
+    }
+
+    /// Escape, a click outside, or the app losing focus closed it.
+    fn report_dismissal(&self) {
+        if !self.ivars().closed_by_view.get() {
+            let h = self.ivars().list.borrow().on_dismiss.clone();
+            h.call(());
         }
     }
 
-    fn row_of_current(&self) -> Option<usize> {
-        let iv = self.ivars();
-        let current = iv.current.as_deref()?;
-        iv.filtered
-            .borrow()
-            .iter()
-            .position(|(i, _)| iv.all[*i] == current)
+    fn close_by_view(&self) {
+        self.ivars().closed_by_view.set(true);
+        self.stop_watching();
+        CURRENT.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.as_deref().is_some_and(|p| std::ptr::eq(p, self)) {
+                c.take();
+            }
+        });
+        unsafe { self.ivars().popover.performClose(None) };
     }
 
-    fn select(&self, row: NSInteger) {
-        let table = &self.ivars().table;
-        if row < 0 || row >= table.numberOfRows() {
+    fn update(&self, list: &FilterList) {
+        let iv = self.ivars();
+        let items_changed = iv.list.borrow().items != list.items;
+        *iv.list.borrow_mut() = list.clone();
+        // Only when it differs: setting it moves the insertion point.
+        if iv.field.stringValue().to_string() != list.query {
+            iv.field.setStringValue(&ns(&list.query));
+        }
+        if items_changed {
+            iv.selected.set(-1);
+            iv.table.reloadData();
+        }
+        self.sync_selection();
+    }
+
+    fn sync_selection(&self) {
+        let iv = self.ivars();
+        let want = iv.list.borrow().selected.map_or(-1, |s| s as NSInteger);
+        if iv.table.selectedRow() == want {
             return;
         }
-        table.selectRowIndexes_byExtendingSelection(
-            &NSIndexSet::indexSetWithIndex(row as usize),
-            false,
-        );
-        table.scrollRowToVisible(row);
+        if want < 0 {
+            unsafe { iv.table.deselectAll(None) };
+        } else {
+            iv.table.selectRowIndexes_byExtendingSelection(
+                &NSIndexSet::indexSetWithIndex(want as usize),
+                false,
+            );
+            iv.table.scrollRowToVisible(want);
+        }
     }
 
     fn choose(&self, row: NSInteger) {
-        let iv = self.ivars();
-        let branch = {
-            let filtered = iv.filtered.borrow();
-            if row < 0 || row as usize >= filtered.len() {
-                return;
-            }
-            iv.all[filtered[row as usize].0].clone()
-        };
-        self.stop_watching();
-        unsafe { iv.popover.performClose(None) };
-        if iv.current.as_deref() != Some(branch.as_str()) {
-            (iv.on_choose)(branch);
+        if row < 0 || row as usize >= self.ivars().list.borrow().items.len() {
+            return;
         }
+        let h = self.ivars().list.borrow().on_choose.clone();
+        h.call(row as usize);
     }
 
     fn handle_command(&self, command: Sel) -> bool {
-        let table = &self.ivars().table;
-        let selected = table.selectedRow();
+        let list = self.ivars().list.borrow().clone();
         if command == sel!(moveDown:) {
-            self.select(selected + 1);
+            list.on_move.call(1);
             true
         } else if command == sel!(moveUp:) {
-            self.select((selected - 1).max(0));
+            list.on_move.call(-1);
             true
         } else if command == sel!(insertNewline:) {
-            self.choose(selected);
+            if let Some(i) = list.selected {
+                list.on_choose.call(i);
+            }
             true
         } else if command == sel!(cancelOperation:) {
             self.stop_watching();
@@ -468,11 +485,7 @@ impl BranchPicker {
     /// A selected row's text is white, so it is rebuilt when selection moves.
     fn label_for_row(&self, row: NSInteger) -> Option<Retained<NSAttributedString>> {
         let iv = self.ivars();
-        let (name, matched) = {
-            let filtered = iv.filtered.borrow();
-            let (index, m) = filtered.get(row as usize)?;
-            (iv.all[*index].clone(), m.positions.clone())
-        };
+        let item = iv.list.borrow().items.get(row as usize)?.clone();
         let selected = iv.table.selectedRow() == row;
         let ink = if selected {
             NSColor::alternateSelectedControlTextColor()
@@ -481,12 +494,12 @@ impl BranchPicker {
         };
         let font = crate::util::branch_font();
         let bold = NSFont::monospacedSystemFontOfSize_weight(12.0, SEMIBOLD);
-        let label = branch_label(&name, &font, &ink, Some((&bold, &matched)));
+        let label = rich_label(&item.label, &font, &ink, Some(&bold));
         let text = NSMutableAttributedString::initWithAttributedString(
             NSMutableAttributedString::alloc(),
             &label,
         );
-        let is_current = iv.current.as_deref() == Some(name.as_str());
+        let is_current = item.checked;
         let attrs = unsafe {
             NSDictionary::from_retained_objects::<NSString>(
                 &[NSFontAttributeName, NSForegroundColorAttributeName],
