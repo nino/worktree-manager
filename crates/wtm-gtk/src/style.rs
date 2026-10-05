@@ -58,17 +58,19 @@ const STYLES: &str = r#"
   border: 1px solid alpha(@borders, 0.75);
   box-shadow: 0 1px 3px alpha(black, 0.14);
 }
+/* The band's shading follows what the Mac draws: deepening towards the
+   plates when light, lightest at the bottom when dark. */
 .wtm-header {
   padding: 8px 14px 7px 4px;
   background-image: linear-gradient(to bottom,
-      mix(mix(@view_bg_color, @wtm_band_blue, 0.26), black, 0.06),
-      mix(mix(@view_bg_color, @wtm_band_blue, 0.12), black, 0.02));
+      mix(mix(@view_bg_color, @wtm_band_blue, 0.12), black, 0.02),
+      mix(mix(@view_bg_color, @wtm_band_blue, 0.26), black, 0.06));
   box-shadow: inset 0 1px alpha(white, 0.35);
 }
 .wtm-dark .wtm-header {
   background-image: linear-gradient(to bottom,
-      mix(mix(@view_bg_color, @wtm_band_blue, 0.05), black, 0.02),
-      mix(mix(@view_bg_color, @wtm_band_blue, 0.12), black, 0.05));
+      mix(mix(@view_bg_color, @wtm_band_blue, 0.12), black, 0.05),
+      mix(mix(@view_bg_color, @wtm_band_blue, 0.05), black, 0.02));
   box-shadow: inset 0 1px alpha(white, 0.10);
 }
 .wtm-well {
