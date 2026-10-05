@@ -21,3 +21,6 @@ wtm-macos = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wtm-gtk = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+wtm-windows = { workspace = true }

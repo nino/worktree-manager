@@ -2,6 +2,10 @@
 //! toolkit exists: it builds the platform services and the updater for the
 //! OS it was compiled for, and runs the shared UI on that OS's toolkit.
 
+// A release build on Windows is a GUI program, with no console window of its
+// own; a debug build keeps the console for the log.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -31,6 +35,15 @@ fn main() {
         let app = wtm_core::App::new(Arc::new(wtm_gtk::LinuxPlatform), wtm_gtk::app_dirs());
         // Releases are built for macOS only, so there is nothing to update to.
         wtm_ui::run(wtm_gtk::Gtk, app, Rc::new(wtm_platform::NoUpdater));
+    }
+
+    #[cfg(windows)]
+    {
+        let app = wtm_core::App::new(
+            Arc::new(wtm_windows::WindowsPlatform),
+            wtm_windows::app_dirs(),
+        );
+        wtm_ui::run(wtm_windows::Win32, app, Rc::new(wtm_platform::NoUpdater));
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]

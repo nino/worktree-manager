@@ -53,11 +53,29 @@ impl GitError {
 
 pub type GitResult<T> = Result<T, GitError>;
 
+type Configure = Box<dyn Fn(&mut std::process::Command) + Send + Sync>;
+
+fn configure() -> &'static OnceLock<Configure> {
+    static CONFIGURE: OnceLock<Configure> = OnceLock::new();
+    &CONFIGURE
+}
+
+/// Have every git process pass through `f` before it starts: the platform's
+/// [`Platform::configure_git`](wtm_platform::Platform::configure_git),
+/// installed by `App::new`. Only the first call counts.
+pub fn set_configure(f: impl Fn(&mut std::process::Command) + Send + Sync + 'static) {
+    let _ = configure().set(Box::new(f));
+}
+
 /// Run a git command in `cwd` and return its stdout.
 pub async fn run_git(cwd: impl AsRef<Path>, args: &[&str]) -> GitResult<String> {
     let cwd = cwd.as_ref();
     let _permit = gate().acquire().await.expect("git gate never closes");
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    if let Some(f) = configure().get() {
+        f(command.as_std_mut());
+    }
+    let output = command
         .args(args)
         .current_dir(cwd)
         // Never let a git subprocess block on an interactive editor or prompt.

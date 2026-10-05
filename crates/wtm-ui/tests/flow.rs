@@ -587,7 +587,11 @@ fn the_window_comes_back_as_it_was() {
             height: 600.0
         })
     );
-    assert_eq!(v.window.list.selected, Some(key));
+    // Restored once the cards hold their worktrees: from the snapshot when
+    // it was written in time, else from the first listing.
+    h.wait_for(WAIT, "the focused row back", |v| {
+        v.window.list.selected.as_ref() == Some(&key)
+    });
     assert!(h.effects().contains(&Effect::ScrollTo(40.0)));
     assert!(v.window.list.section(&section).is_some());
 

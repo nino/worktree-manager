@@ -51,6 +51,10 @@ pub trait Platform: Send + Sync + 'static {
     /// Human-readable name of the file manager ("Finder", "Explorer"), for
     /// button captions.
     fn file_manager_name(&self) -> &'static str;
+
+    /// Adjust every git process the core starts before it runs (on
+    /// Windows, so that a GUI app's git calls open no console window).
+    fn configure_git(&self, _command: &mut std::process::Command) {}
 }
 
 /// Quote a string for safe use as one word of a POSIX shell command.

@@ -1886,6 +1886,7 @@ dependencies = [
  "wtm-macos",
  "wtm-platform",
  "wtm-ui",
+ "wtm-windows",
 ]
 
 [[package]]

@@ -106,6 +106,12 @@ impl Platform for WindowsPlatform {
     fn file_manager_name(&self) -> &'static str {
         "File Explorer"
     }
+
+    fn configure_git(&self, command: &mut Command) {
+        // A GUI process has no console, so each console program it starts
+        // would get a window of its own: one flash per git call.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 /// `%APPDATA%\Worktree Manager`, or `WTM_USER_DATA`; see `shell::app_dirs_from`.

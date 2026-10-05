@@ -153,6 +153,10 @@ impl App {
     /// Build the app: load config and the cached snapshot (nothing touches git
     /// yet), start the runtime. Call [`App::start`] once the UI is listening.
     pub fn new(platform: Arc<dyn Platform>, dirs: AppDirs) -> Self {
+        {
+            let platform = platform.clone();
+            crate::git::set_configure(move |c| platform.configure_git(c));
+        }
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .thread_name("wtm-core")
