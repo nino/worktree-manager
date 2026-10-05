@@ -62,6 +62,15 @@ fn fixture(name: &str) -> (PathBuf, PathBuf) {
     isolate_git_config();
     let base = std::env::temp_dir().join(format!("wtm-ui-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    // As git will report it: macOS's temporary directory is under /var,
+    // which is a link to /private/var. (Windows would answer with a
+    // `\\?\` path, which git never reports.)
+    let base = if cfg!(windows) {
+        base
+    } else {
+        base.canonicalize().unwrap()
+    };
     let repo = base.join("app");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
