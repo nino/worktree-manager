@@ -12,8 +12,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gtk::gio;
 use gtk::prelude::*;
+use gtk::{gio, glib};
 
 use wtm_toolkit::{KeyName, Menu, MenuItem, MenuRole, Shortcut, Standard};
 
@@ -41,7 +41,11 @@ pub struct MenuHost {
     installed: RefCell<Vec<String>>,
     shape: RefCell<Vec<(MenuRole, Vec<Shape>)>>,
     quit: Rc<dyn Fn()>,
+    /// What the Edit items act on (see `watch`).
+    edit_target: EditTarget,
 }
+
+type EditTarget = Rc<RefCell<glib::WeakRef<gtk::Widget>>>;
 
 /// The accelerator for a shortcut: Ctrl, plus Shift and Alt as asked.
 pub fn accel(s: &Shortcut) -> String {
@@ -140,7 +144,27 @@ impl MenuHost {
             installed: RefCell::new(Vec::new()),
             shape: RefCell::new(Vec::new()),
             quit,
+            edit_target: Rc::default(),
         }
+    }
+
+    /// Follow the keyboard in `window`, for the Edit items. Chosen from the
+    /// menu, they would otherwise act on the menu's own item, which holds
+    /// the keyboard while the menu is open: they act on what had it before.
+    pub fn watch(&self, window: &gtk::Window) {
+        let (target, button) = (self.edit_target.clone(), self.button.downgrade());
+        window.connect_focus_widget_notify(move |w| {
+            let Some(f) = gtk::prelude::RootExt::focus(w) else {
+                return;
+            };
+            let in_menu = f.ancestor(gtk::Popover::static_type()).is_some()
+                || button
+                    .upgrade()
+                    .is_some_and(|b| &f == b.upcast_ref::<gtk::Widget>() || f.is_ancestor(&b));
+            if !in_menu {
+                target.borrow().set(Some(&f));
+            }
+        });
     }
 
     pub fn render(&self, menus: &[Menu]) {
@@ -275,7 +299,8 @@ impl MenuHost {
         let action = gio::SimpleAction::new(&name, None);
         let app = self.app.clone();
         let quit = self.quit.clone();
-        action.connect_activate(move |_, _| run_standard(&app, s, &quit));
+        let target = self.edit_target.clone();
+        action.connect_activate(move |_, _| run_standard(&app, s, &quit, &target));
         self.install(&action);
         let item = gio::MenuItem::new(Some(label), Some(&format!("app.{name}")));
         if let Some(a) = shown_accel {
@@ -293,14 +318,9 @@ impl MenuHost {
     }
 }
 
-fn focused(app: &gtk::Application) -> Option<gtk::Widget> {
-    app.active_window()
-        .and_then(|w| gtk::prelude::RootExt::focus(&w))
-}
-
-fn run_standard(app: &gtk::Application, s: Standard, quit: &Rc<dyn Fn()>) {
+fn run_standard(app: &gtk::Application, s: Standard, quit: &Rc<dyn Fn()>, target: &EditTarget) {
     let edit = |action: &str| {
-        if let Some(w) = focused(app) {
+        if let Some(w) = target.borrow().upgrade() {
             let _ = w.activate_action(action, None);
         }
     };

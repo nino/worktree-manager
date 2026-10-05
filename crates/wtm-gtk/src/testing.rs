@@ -37,6 +37,19 @@ impl Default for Probe {
 }
 
 impl Probe {
+    /// A backend with an application: it has the menus.
+    pub fn with_app(app: &gtk::Application) -> Probe {
+        Probe {
+            backend: GtkBackend::new(Some(app.clone())),
+        }
+    }
+
+    /// The header bar's menu button, when there is an application.
+    pub fn menu_button(&self) -> Option<gtk::MenuButton> {
+        let menus = self.backend.inner.menus.borrow();
+        menus.as_ref().map(|m| m.button.clone())
+    }
+
     pub fn render(&self, view: &View) {
         self.backend.render(view);
         pump();

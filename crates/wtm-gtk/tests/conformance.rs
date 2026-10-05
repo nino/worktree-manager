@@ -28,8 +28,9 @@ mod linux {
     use wtm_gtk::testing::{self, Probe};
     use wtm_toolkit::{
         Badge, Dialog, DialogButton, DialogStyle, Effect, Element, Emphasis, Field, FilterList,
-        Form, Handler, Hue, Icon, ListItem, Popover, RepoHeader, Rich, Role, Row, RowAction,
-        RowContent, Section, Tint, TreeList, View, WorktreeRow, BRANCH_BUTTON,
+        Form, Handler, Hue, Icon, ListItem, Menu, MenuItem, MenuRole, Popover, RepoHeader, Rich,
+        Role, Row, RowAction, RowContent, Section, Standard, Tint, ToolItem, TreeList, View,
+        WorktreeRow, BRANCH_BUTTON,
     };
 
     type Calls<A> = Rc<RefCell<Vec<A>>>;
@@ -508,6 +509,46 @@ mod linux {
         assert_eq!(p.dialog().as_ref(), Some(&d), "the dialog went away");
     }
 
+    fn edit_items_act_on_what_had_the_keyboard_before_the_menu() {
+        let app = gtk::Application::new(
+            Some("uk.org.plinth.worktree-manager.conformance"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        app.register(gtk::gio::Cancellable::NONE)
+            .expect("register the application");
+        let p = Probe::with_app(&app);
+        let mut v = plain();
+        v.window.toolbar = vec![ToolItem::Search {
+            id: "search",
+            value: "hello".into(),
+            placeholder: "e.g., main".into(),
+            on_change: Handler::none(),
+        }];
+        v.menus = vec![Menu {
+            role: MenuRole::Edit,
+            title: "Edit".into(),
+            items: vec![MenuItem::Standard(Standard::SelectAll)],
+        }];
+        p.render(&v);
+        let search = p.search().expect("search field");
+        search.grab_focus();
+        testing::pump();
+        search.select_region(0, 0);
+        let menu = p.menu_button().expect("menu button");
+        menu.popup();
+        testing::pump();
+        // The item chosen holds the keyboard now; Select All must still
+        // reach the field.
+        app.activate_action("wtm-std-select-all", None);
+        testing::pump();
+        menu.popdown();
+        assert_eq!(
+            search.selection_bounds(),
+            Some((0, 5)),
+            "Select All from the menu did not reach the field"
+        );
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -515,7 +556,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 8] = [
+        let cases: [(&str, fn()); 9] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -545,6 +586,10 @@ mod linux {
                 an_info_dialog_opens_without_icon_message_or_body,
             ),
             ("closing a dialog is Escape", closing_a_dialog_is_escape),
+            (
+                "Edit items act on what had the keyboard before the menu",
+                edit_items_act_on_what_had_the_keyboard_before_the_menu,
+            ),
         ];
         let mut failed = 0;
         for (name, case) in cases {
