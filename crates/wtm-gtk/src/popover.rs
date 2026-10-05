@@ -39,6 +39,9 @@ pub fn just_dismissed_from(w: &impl IsA<gtk::Widget>) -> bool {
 struct PickerW {
     id: u64,
     anchor: gtk::Widget,
+    /// Where the anchor was when the popover was last placed, in the
+    /// window's coordinates.
+    placed_at: Rc<Cell<Option<(f32, f32)>>>,
     popover: gtk::Popover,
     entry: gtk::Entry,
     list: gtk::ListBox,
@@ -73,10 +76,13 @@ impl PickerHost {
             return;
         };
         if self.current.borrow().is_none() {
-            *self.current.borrow_mut() = Some(PickerW::open(p, anchor));
+            let w = PickerW::open(p, anchor);
+            w.popup_when_shown(list);
+            *self.current.borrow_mut() = Some(w);
         }
         if let Some(c) = self.current.borrow().as_ref() {
             c.patch(&p.list);
+            c.follow_anchor();
         }
     }
 
@@ -123,6 +129,7 @@ impl PickerW {
         let w = PickerW {
             id: p.id,
             anchor: anchor.clone(),
+            placed_at: Rc::new(Cell::new(None)),
             popover: popover.clone(),
             entry: entry.clone(),
             list: list.clone(),
@@ -174,9 +181,84 @@ impl PickerW {
         });
 
         w.patch(&p.list);
-        popover.popup();
-        entry.grab_focus();
         w
+    }
+
+    /// Pop up once the anchor is on screen. The anchor is the selected
+    /// row's, which the keyboard can leave scrolled out of view (Ctrl+T),
+    /// and a popover hung from somewhere outside the list's visible part
+    /// is placed off screen, invisible, with the keyboard captured. So the
+    /// row is scrolled into view first, and the popover waits for the
+    /// layout that brings it there. An anchor that never shows (a closed
+    /// card) is given up after about a second, as if the user had
+    /// dismissed it.
+    fn popup_when_shown(&self, list: &ListW) {
+        if list.shows(&self.anchor) {
+            popup(&self.popover, &self.entry, &self.anchor, &self.placed_at);
+            return;
+        }
+        let (anchor, popover, entry) = (
+            self.anchor.downgrade(),
+            self.popover.downgrade(),
+            self.entry.downgrade(),
+        );
+        let (weak_list, dismiss, placed_at) =
+            (list.weak(), self.on_dismiss.clone(), self.placed_at.clone());
+        let frames = Cell::new(0u32);
+        list.scroller.add_tick_callback(move |_, _| {
+            let (Some(list), Some(anchor), Some(popover), Some(entry)) = (
+                weak_list.upgrade(),
+                anchor.upgrade(),
+                popover.upgrade(),
+                entry.upgrade(),
+            ) else {
+                return glib::ControlFlow::Break;
+            };
+            // Closed by the view meanwhile.
+            if popover.parent().as_ref() != Some(&anchor) {
+                return glib::ControlFlow::Break;
+            }
+            if list.shows(&anchor) {
+                popup(&popover, &entry, &anchor, &placed_at);
+                return glib::ControlFlow::Break;
+            }
+            // Outside the render, so the scroll is reported as the user's:
+            // their Ctrl+T asked for it.
+            if frames.get() == 0 {
+                list.reveal_widget(&anchor, 12.0);
+            }
+            frames.set(frames.get() + 1);
+            if frames.get() > 60 {
+                fire(&dismiss, ());
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Place the popover again when a render moved its anchor (a row added
+    /// above it): GTK places a popover when it pops up, and a plain button
+    /// does not move the popovers hung from it. Checked after the render's
+    /// layout, when the anchor is where it will be.
+    fn follow_anchor(&self) {
+        if !self.popover.is_visible() {
+            return;
+        }
+        let (anchor, popover, placed_at) = (
+            self.anchor.downgrade(),
+            self.popover.downgrade(),
+            self.placed_at.clone(),
+        );
+        self.anchor.add_tick_callback(move |_, _| {
+            if let (Some(anchor), Some(popover)) = (anchor.upgrade(), popover.upgrade()) {
+                let at = anchor_position(&anchor);
+                if popover.is_visible() && at.is_some() && at != placed_at.get() {
+                    placed_at.set(at);
+                    popover.present();
+                }
+            }
+            glib::ControlFlow::Break
+        });
     }
 
     fn patch(&self, f: &FilterList) {
@@ -234,4 +316,23 @@ impl PickerW {
             });
         }
     }
+}
+
+/// Pop up with the keyboard in the filter field, noting where the anchor is.
+fn popup(
+    popover: &gtk::Popover,
+    entry: &gtk::Entry,
+    anchor: &gtk::Widget,
+    placed_at: &Cell<Option<(f32, f32)>>,
+) {
+    placed_at.set(anchor_position(anchor));
+    popover.popup();
+    entry.grab_focus();
+}
+
+/// Where `anchor` is in its window.
+fn anchor_position(anchor: &gtk::Widget) -> Option<(f32, f32)> {
+    let root = anchor.root()?;
+    let b = anchor.compute_bounds(&root)?;
+    Some((b.x(), b.y()))
 }

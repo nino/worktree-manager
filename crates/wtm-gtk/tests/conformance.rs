@@ -28,8 +28,9 @@ mod linux {
     use wtm_gtk::testing::{self, Probe};
     use wtm_toolkit::{
         Badge, Dialog, DialogButton, DialogStyle, Effect, Element, Emphasis, Field, FilterList,
-        Form, Handler, Hue, Icon, ListItem, Popover, RepoHeader, Rich, Role, Row, RowAction,
-        RowContent, Section, Tint, TreeList, View, WorktreeRow, BRANCH_BUTTON,
+        Form, Handler, Hue, Icon, ListItem, Menu, MenuItem, MenuRole, Popover, RepoHeader, Rich,
+        Role, Row, RowAction, RowContent, Section, Standard, Tint, ToolItem, TreeList, View,
+        WorktreeRow, BRANCH_BUTTON,
     };
 
     type Calls<A> = Rc<RefCell<Vec<A>>>;
@@ -396,6 +397,377 @@ mod linux {
         assert_eq!(dismissed.borrow().len(), 1);
     }
 
+    /// The first descendant of `root` with the CSS class `class`.
+    fn find_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+        if root.has_css_class(class) {
+            return Some(root.clone());
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(hit) = find_class(&c, class) {
+                return Some(hit);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    fn alert(id: u64, style: DialogStyle, buttons: Vec<DialogButton>) -> View {
+        let mut v = plain();
+        v.dialogs = vec![Dialog {
+            id,
+            title: "Something happened".into(),
+            message: String::new(),
+            style,
+            body: None,
+            buttons,
+            focus: None,
+        }];
+        v
+    }
+
+    fn button(label: &str, role: Role, on_press: Handler) -> DialogButton {
+        DialogButton {
+            label: label.into(),
+            role,
+            enabled: true,
+            on_press,
+        }
+    }
+
+    fn an_info_dialog_opens_without_icon_message_or_body() {
+        let p = Probe::default();
+        p.render(&alert(
+            20,
+            DialogStyle::Info,
+            vec![button("OK", Role::Default, Handler::none())],
+        ));
+        let d = p.dialog().expect("dialog shown");
+        let root: gtk::Widget = d.clone().upcast();
+        let icon = find_class(&root, "wtm-dialog-icon").expect("icon");
+        // Hidden before the window was first shown, not on a later render.
+        assert!(!icon.get_visible(), "an Info dialog shows an icon column");
+        let title = find_class(&root, "wtm-dialog-title").expect("title");
+        let text = title.parent().unwrap();
+        let mut child = text.first_child();
+        let mut shown = Vec::new();
+        while let Some(c) = child {
+            if c.get_visible() {
+                shown.push(c.clone());
+            }
+            child = c.next_sibling();
+        }
+        assert_eq!(shown, [title], "an empty message or body is shown");
+    }
+
+    fn closing_a_dialog_is_escape() {
+        let p = Probe::default();
+        // One button: closing presses it.
+        let (ok, oked) = rec::<()>();
+        p.render(&alert(
+            30,
+            DialogStyle::Warning,
+            vec![button("OK", Role::Default, ok)],
+        ));
+        p.dialog().expect("dialog shown").close();
+        testing::pump();
+        assert_eq!(
+            oked.borrow().len(),
+            1,
+            "close did not press the only button"
+        );
+        assert!(p.dialog().is_none());
+        // Cancel and another: closing is Cancel.
+        let (cancel, cancelled) = rec::<()>();
+        let (go, went) = rec::<()>();
+        p.render(&alert(
+            31,
+            DialogStyle::Warning,
+            vec![
+                button("Go", Role::Default, go.clone()),
+                button("Cancel", Role::Cancel, cancel),
+            ],
+        ));
+        p.dialog().expect("dialog shown").close();
+        testing::pump();
+        assert_eq!(cancelled.borrow().len(), 1);
+        assert!(went.borrow().is_empty());
+        // Two answers and no Cancel: closing picks neither.
+        let (other, othered) = rec::<()>();
+        p.render(&alert(
+            32,
+            DialogStyle::Warning,
+            vec![
+                button("Go", Role::Default, go),
+                button("Other", Role::Normal, other),
+            ],
+        ));
+        let d = p.dialog().expect("dialog shown");
+        d.close();
+        testing::pump();
+        assert!(went.borrow().is_empty() && othered.borrow().is_empty());
+        assert_eq!(p.dialog().as_ref(), Some(&d), "the dialog went away");
+    }
+
+    fn edit_items_act_on_what_had_the_keyboard_before_the_menu() {
+        let app = gtk::Application::new(
+            Some("uk.org.plinth.worktree-manager.conformance"),
+            gtk::gio::ApplicationFlags::NON_UNIQUE,
+        );
+        app.register(gtk::gio::Cancellable::NONE)
+            .expect("register the application");
+        let p = Probe::with_app(&app);
+        let mut v = plain();
+        v.window.toolbar = vec![ToolItem::Search {
+            id: "search",
+            value: "hello".into(),
+            placeholder: "e.g., main".into(),
+            on_change: Handler::none(),
+        }];
+        v.menus = vec![Menu {
+            role: MenuRole::Edit,
+            title: "Edit".into(),
+            items: vec![MenuItem::Standard(Standard::SelectAll)],
+        }];
+        p.render(&v);
+        let search = p.search().expect("search field");
+        search.grab_focus();
+        testing::pump();
+        search.select_region(0, 0);
+        let menu = p.menu_button().expect("menu button");
+        menu.popup();
+        testing::pump();
+        // The item chosen holds the keyboard now; Select All must still
+        // reach the field.
+        app.activate_action("wtm-std-select-all", None);
+        testing::pump();
+        menu.popdown();
+        assert_eq!(
+            search.selection_bounds(),
+            Some((0, 5)),
+            "Select All from the menu did not reach the field"
+        );
+    }
+
+    /// Run the main loop until `done`, for at most a few seconds.
+    fn pump_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            testing::pump();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    const PORTAL_XML: &str = r#"<node>
+      <interface name="org.freedesktop.portal.Settings">
+        <method name="Read">
+          <arg type="s" name="namespace" direction="in"/>
+          <arg type="s" name="key" direction="in"/>
+          <arg type="v" name="value" direction="out"/>
+        </method>
+        <signal name="SettingChanged">
+          <arg type="s" name="namespace"/>
+          <arg type="s" name="key"/>
+          <arg type="v" name="value"/>
+        </signal>
+      </interface>
+    </node>"#;
+
+    /// A settings portal on the session bus, played by this process. Needs a
+    /// bus (`dbus-run-session -- xvfb-run -a cargo test …`); skipped without.
+    fn the_appearance_follows_the_desktop_portal() {
+        use gtk::{gio, glib};
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            println!("     (no session bus: skipped)");
+            return;
+        }
+        if std::env::var_os("WTM_APPEARANCE").is_some() {
+            println!("     (WTM_APPEARANCE set: skipped)");
+            return;
+        }
+        let path = "/org/freedesktop/portal/desktop";
+        let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
+        let node = gio::DBusNodeInfo::for_xml(PORTAL_XML).unwrap();
+        let iface = node
+            .lookup_interface("org.freedesktop.portal.Settings")
+            .unwrap();
+        let scheme = Rc::new(std::cell::Cell::new(1u32));
+        let s = scheme.clone();
+        let _registration = conn
+            .register_object(path, &iface)
+            .method_call(move |_, _, _, _, _, _, call| {
+                // `Read` wraps the value twice.
+                let v = glib::Variant::from_variant(&glib::Variant::from_variant(
+                    &s.get().to_variant(),
+                ));
+                call.return_value(Some(&glib::Variant::tuple_from_iter([v])));
+            })
+            .build()
+            .unwrap();
+        conn.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName",
+            Some(&("org.freedesktop.portal.Desktop", 4u32).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+            gio::Cancellable::NONE,
+        )
+        .unwrap();
+        let settings = gtk::Settings::default().unwrap();
+        settings.set_gtk_application_prefer_dark_theme(false);
+        let dark = || settings.is_gtk_application_prefer_dark_theme();
+        // Read at launch: the desktop prefers dark.
+        testing::follow_desktop_appearance();
+        pump_until("dark at launch", dark);
+        let change = |value: u32| {
+            scheme.set(value);
+            conn.emit_signal(
+                None,
+                path,
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                Some(
+                    &(
+                        "org.freedesktop.appearance",
+                        "color-scheme",
+                        glib::Variant::from_variant(&value.to_variant()),
+                    )
+                        .to_variant(),
+                ),
+            )
+            .unwrap();
+        };
+        // Then followed live, both ways.
+        change(2);
+        pump_until("light after the desktop turned light", || !dark());
+        change(1);
+        pump_until("dark again", dark);
+        // No preference: back to GTK's own setting, which was light.
+        change(0);
+        pump_until("GTK's own setting with no preference", || !dark());
+    }
+
+    /// `n` cards of three worktrees each (`w:/<card>/<row>`), in a window of
+    /// 900×600 that shows about two of them.
+    fn tall(n: usize) -> View {
+        let mut v = plain();
+        v.window.frame = Some(wtm_toolkit::Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 900.0,
+            height: 600.0,
+        });
+        v.window.list.sections = (0..n)
+            .map(|i| Section {
+                key: format!("r:{i}"),
+                header: header(&format!("repo{i}")),
+                expanded: true,
+                rows: (0..3)
+                    .map(|j| Row {
+                        key: format!("w:/{i}/{j}"),
+                        content: RowContent::Worktree(worktree(
+                            &format!("branch-{i}-{j}"),
+                            vec![badge("✓", Hue::Green)],
+                            Handler::none(),
+                        )),
+                    })
+                    .collect(),
+            })
+            .collect();
+        v
+    }
+
+    fn a_saved_offset_is_restored_at_launch() {
+        let p = Probe::default();
+        let mut v = tall(8);
+        // The row restored with the keyboard is above the restored offset:
+        // giving it the keyboard must not scroll to it.
+        v.window.list.selected = Some("w:/0/0".into());
+        // As at launch: the effects come with the render that makes the
+        // window, before it has been laid out.
+        p.render_then(&v, vec![Effect::ScrollTo(362.0), Effect::FocusList]);
+        pump_until("the offset restored", || {
+            (p.scroll_value() - 362.0).abs() < 0.5
+        });
+        // And it stays there once everything has settled.
+        let settle = std::time::Instant::now();
+        while settle.elapsed() < std::time::Duration::from_millis(300) {
+            testing::pump();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            (p.scroll_value() - 362.0).abs() < 0.5,
+            "moved to {}",
+            p.scroll_value()
+        );
+        assert_eq!(p.reported_scroll(), None, "the restore was reported");
+        // The keyboard moving to a row out of view scrolls to it, and that
+        // is the user's scroll.
+        let far = p.row("w:/7/2").expect("last row");
+        assert!(!p.shows(&far));
+        far.grab_focus();
+        pump_until("the focused row in view", || p.shows(&far));
+        assert!(p.reported_scroll().is_some_and(|y| y > 362.0));
+    }
+
+    fn a_longer_offset_than_the_list_settles_for_its_end() {
+        let p = Probe::default();
+        p.render_then(&tall(3), vec![Effect::ScrollTo(100_000.0)]);
+        pump_until("scrolled to the end", || {
+            p.scroll_value() > 0.0 && (p.scroll_value() - p.scroll_max()).abs() < 0.5
+        });
+        assert_eq!(p.reported_scroll(), None);
+    }
+
+    fn the_picker_on_a_row_out_of_view_waits_for_it() {
+        let p = Probe::default();
+        let mut v = tall(8);
+        v.window.list.selected = Some("w:/7/2".into());
+        p.render(&v);
+        pump_until("laid out", || p.scroll_max() > 0.0);
+        let anchor = p.element("w:/7/2", BRANCH_BUTTON).expect("branch button");
+        assert!(!p.shows(&anchor), "the row starts out of view");
+        // Ctrl+T on it: the picker opens from a row scrolled out of view.
+        let mut picker_view = picker(5, Handler::none(), Handler::none());
+        picker_view.anchor = ("w:/7/2".into(), BRANCH_BUTTON);
+        v.popover = Some(picker_view);
+        p.render(&v);
+        let entry = p.picker_entry().expect("picker");
+        let popover = entry
+            .ancestor(gtk::Popover::static_type())
+            .and_downcast::<gtk::Popover>()
+            .unwrap();
+        pump_until("the popover shown", || popover.is_visible());
+        assert!(p.shows(&anchor), "popped up from an anchor out of view");
+        assert!(
+            testing_has_focus(&p, &entry),
+            "the field did not get the keyboard"
+        );
+    }
+
+    fn rows_are_items_of_a_tree() {
+        let p = Probe::default();
+        let mut v = plain();
+        v.window.list.selected = Some("w:/a".into());
+        p.render(&v);
+        let header = p.row("r:1").expect("header");
+        let row = p.row("w:/a").expect("row");
+        assert_eq!(header.accessible_role(), gtk::AccessibleRole::TreeItem);
+        assert_eq!(row.accessible_role(), gtk::AccessibleRole::TreeItem);
+        let mut up = row.parent();
+        while let Some(w) = up.clone() {
+            if w.accessible_role() == gtk::AccessibleRole::Tree {
+                break;
+            }
+            up = w.parent();
+        }
+        assert!(up.is_some(), "no tree around the rows");
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -403,7 +775,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 6] = [
+        let cases: [(&str, fn()); 14] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -428,6 +800,32 @@ mod linux {
                 "only the user's dismissal of the popover is reported",
                 only_the_users_dismissal_of_the_popover_is_reported,
             ),
+            (
+                "an Info dialog opens without icon, message or body",
+                an_info_dialog_opens_without_icon_message_or_body,
+            ),
+            ("closing a dialog is Escape", closing_a_dialog_is_escape),
+            (
+                "Edit items act on what had the keyboard before the menu",
+                edit_items_act_on_what_had_the_keyboard_before_the_menu,
+            ),
+            (
+                "the appearance follows the desktop's portal",
+                the_appearance_follows_the_desktop_portal,
+            ),
+            (
+                "a saved offset is restored at launch",
+                a_saved_offset_is_restored_at_launch,
+            ),
+            (
+                "a longer offset than the list settles for its end",
+                a_longer_offset_than_the_list_settles_for_its_end,
+            ),
+            (
+                "the picker on a row out of view waits for it",
+                the_picker_on_a_row_out_of_view_waits_for_it,
+            ),
+            ("rows are items of a tree", rows_are_items_of_a_tree),
         ];
         let mut failed = 0;
         for (name, case) in cases {
@@ -446,7 +844,7 @@ mod linux {
             }
             testing::pump();
         }
-        println!("{} passed, {failed} failed", 6 - failed);
+        println!("{} passed, {failed} failed", cases.len() - failed);
         if failed > 0 {
             std::process::exit(1);
         }

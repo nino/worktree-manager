@@ -39,7 +39,7 @@ pub(crate) struct Inner {
     pub dialogs: DialogHost,
     pub picker: PickerHost,
     pub panels: PanelHost,
-    menus: RefCell<Option<MenuHost>>,
+    pub menus: RefCell<Option<MenuHost>>,
     /// The last view rendered, for the screenshot driver.
     pub last: RefCell<Option<View>>,
     pub shot: Option<Shot>,
@@ -170,6 +170,9 @@ impl Inner {
         style::adopt(&window);
 
         let main = MainW::new(view, self.menus.borrow().as_ref());
+        if let Some(m) = self.menus.borrow().as_ref() {
+            m.watch(&window);
+        }
         window.set_titlebar(Some(&main.header));
         window.set_child(Some(&main.root));
 

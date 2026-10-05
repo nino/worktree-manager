@@ -8,7 +8,7 @@
 //! older ones, at the lowest priority: a theme that has them wins.
 
 use gtk::prelude::*;
-use gtk::{gdk, gio};
+use gtk::{gdk, gio, glib};
 
 use wtm_toolkit::{Emphasis, Hue, Ink, TextStyle};
 
@@ -267,9 +267,9 @@ pub fn swap_classes(w: &impl IsA<gtk::Widget>, old: &[&str], new: &[&str]) {
 // MARK: Appearance
 
 /// Apply `WTM_APPEARANCE=dark|light` if set, else follow the desktop's
-/// preference as the settings portal reports it: GTK 4.14 reads only its own
-/// `prefer-dark` setting, and nothing sets that from the desktop without
-/// libadwaita.
+/// preference as the settings portal reports it, now and as it changes:
+/// GTK 4.14 reads only its own `prefer-dark` setting, and nothing sets that
+/// from the desktop without libadwaita.
 pub fn init_appearance() {
     let Some(settings) = gtk::Settings::default() else {
         return;
@@ -285,37 +285,88 @@ pub fn init_appearance() {
                 settings.set_gtk_theme_name(Some(light));
             }
         }
-        _ => read_portal_scheme(),
+        _ => follow_portal_scheme(settings.is_gtk_application_prefer_dark_theme()),
     }
     settings.connect_gtk_application_prefer_dark_theme_notify(|_| sync_dark());
     settings.connect_gtk_theme_name_notify(|_| sync_dark());
 }
 
-/// `org.freedesktop.appearance color-scheme`: 1 prefers dark. Asked without
-/// waiting; no session bus or no portal (a bare X server) leaves the theme
-/// as it is.
-fn read_portal_scheme() {
-    gio::bus_get(gio::BusType::Session, gio::Cancellable::NONE, |conn| {
+/// What `prefer-dark` should be for the portal's `color-scheme`: 1 prefers
+/// dark, 2 light, and 0 (no preference) or anything else leaves GTK's own
+/// setting, `own`, as it was before the portal was heard.
+pub fn prefer_dark_for(scheme: u32, own: bool) -> bool {
+    match scheme {
+        1 => true,
+        2 => false,
+        _ => own,
+    }
+}
+
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+const PORTAL_SETTINGS: &str = "org.freedesktop.portal.Settings";
+const APPEARANCE: &str = "org.freedesktop.appearance";
+
+thread_local! {
+    /// The portal subscription, kept for as long as the app runs.
+    static SCHEME_CHANGES: std::cell::RefCell<Option<gio::SignalSubscription>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// `org.freedesktop.appearance color-scheme`, read once and then followed
+/// through `SettingChanged`, so the app turns dark or light with the
+/// desktop. Asked without waiting; no session bus or no portal (a bare X
+/// server) leaves the theme as it is. `own` is GTK's setting beforehand.
+fn follow_portal_scheme(own: bool) {
+    let apply = move |v: &glib::Variant| {
+        // The value comes wrapped in a variant, twice from `Read`.
+        let mut v = v.clone();
+        // Checked first: `as_variant` on anything else is a GLib critical.
+        while v.is_type(glib::VariantTy::VARIANT) {
+            match v.as_variant() {
+                Some(inner) => v = inner,
+                None => return,
+            }
+        }
+        if let (Some(scheme), Some(settings)) = (v.get::<u32>(), gtk::Settings::default()) {
+            let dark = prefer_dark_for(scheme, own);
+            if settings.is_gtk_application_prefer_dark_theme() != dark {
+                settings.set_gtk_application_prefer_dark_theme(dark);
+            }
+        }
+    };
+    gio::bus_get(gio::BusType::Session, gio::Cancellable::NONE, move |conn| {
         let Ok(conn) = conn else { return };
+        // Subscribed before the read, so a change between the two is not
+        // missed.
+        let subscription = conn.subscribe_to_signal(
+            Some(PORTAL),
+            Some(PORTAL_SETTINGS),
+            Some("SettingChanged"),
+            Some(PORTAL_PATH),
+            Some(APPEARANCE),
+            gio::DBusSignalFlags::NONE,
+            move |signal| {
+                let p = signal.parameters;
+                if p.n_children() == 3 && p.child_value(1).str() == Some("color-scheme") {
+                    apply(&p.child_value(2));
+                }
+            },
+        );
+        SCHEME_CHANGES.with(|s| *s.borrow_mut() = Some(subscription));
         conn.call(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Settings",
+            Some(PORTAL),
+            PORTAL_PATH,
+            PORTAL_SETTINGS,
             "Read",
-            Some(&("org.freedesktop.appearance", "color-scheme").to_variant()),
+            Some(&(APPEARANCE, "color-scheme").to_variant()),
             None,
             gio::DBusCallFlags::NONE,
             1000,
             gio::Cancellable::NONE,
-            |reply| {
-                let Ok(reply) = reply else { return };
-                // `Read` wraps the value in a variant twice.
-                let mut v = reply.child_value(0);
-                while let Some(inner) = v.as_variant() {
-                    v = inner;
-                }
-                if let (Some(scheme), Some(settings)) = (v.get::<u32>(), gtk::Settings::default()) {
-                    settings.set_gtk_application_prefer_dark_theme(scheme == 1);
+            move |reply| {
+                if let Ok(reply) = reply {
+                    apply(&reply.child_value(0));
                 }
             },
         );
@@ -353,4 +404,19 @@ pub fn mark_dark(w: &impl IsA<gtk::Widget>, dark: bool) {
 /// For a window made after the appearance was set.
 pub fn adopt(w: &impl IsA<gtk::Widget>) {
     mark_dark(w, is_dark());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_portal_scheme_overrides_gtk_only_when_it_has_a_preference() {
+        assert!(prefer_dark_for(1, false));
+        assert!(!prefer_dark_for(2, true));
+        // No preference: GTK's own setting stands, whichever it was.
+        assert!(prefer_dark_for(0, true));
+        assert!(!prefer_dark_for(0, false));
+        assert!(prefer_dark_for(7, true));
+    }
 }

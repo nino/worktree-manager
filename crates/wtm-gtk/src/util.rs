@@ -115,15 +115,18 @@ pub fn on_click(b: &gtk::Button, s: &Slot<()>) {
     b.connect_clicked(move |_| fire(&s, ()));
 }
 
-/// Set a widget's visibility only when it changes.
+/// Set a widget's visibility only when it changes. Compared with the
+/// property, not `is_visible`: that also asks the ancestors, so in a window
+/// not yet shown every widget reads as hidden and hiding one would be skipped.
 pub fn show(w: &impl IsA<gtk::Widget>, visible: bool) {
-    if w.is_visible() != visible {
+    if w.get_visible() != visible {
         w.set_visible(visible);
     }
 }
 
+/// The same for sensitivity: `is_sensitive` folds in the ancestors' too.
 pub fn set_sensitive(w: &impl IsA<gtk::Widget>, on: bool) {
-    if w.is_sensitive() != on {
+    if w.get_sensitive() != on {
         w.set_sensitive(on);
     }
 }
