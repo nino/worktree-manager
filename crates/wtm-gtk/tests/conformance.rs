@@ -396,6 +396,118 @@ mod linux {
         assert_eq!(dismissed.borrow().len(), 1);
     }
 
+    /// The first descendant of `root` with the CSS class `class`.
+    fn find_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+        if root.has_css_class(class) {
+            return Some(root.clone());
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            if let Some(hit) = find_class(&c, class) {
+                return Some(hit);
+            }
+            child = c.next_sibling();
+        }
+        None
+    }
+
+    fn alert(id: u64, style: DialogStyle, buttons: Vec<DialogButton>) -> View {
+        let mut v = plain();
+        v.dialogs = vec![Dialog {
+            id,
+            title: "Something happened".into(),
+            message: String::new(),
+            style,
+            body: None,
+            buttons,
+            focus: None,
+        }];
+        v
+    }
+
+    fn button(label: &str, role: Role, on_press: Handler) -> DialogButton {
+        DialogButton {
+            label: label.into(),
+            role,
+            enabled: true,
+            on_press,
+        }
+    }
+
+    fn an_info_dialog_opens_without_icon_message_or_body() {
+        let p = Probe::default();
+        p.render(&alert(
+            20,
+            DialogStyle::Info,
+            vec![button("OK", Role::Default, Handler::none())],
+        ));
+        let d = p.dialog().expect("dialog shown");
+        let root: gtk::Widget = d.clone().upcast();
+        let icon = find_class(&root, "wtm-dialog-icon").expect("icon");
+        // Hidden before the window was first shown, not on a later render.
+        assert!(!icon.get_visible(), "an Info dialog shows an icon column");
+        let title = find_class(&root, "wtm-dialog-title").expect("title");
+        let text = title.parent().unwrap();
+        let mut child = text.first_child();
+        let mut shown = Vec::new();
+        while let Some(c) = child {
+            if c.get_visible() {
+                shown.push(c.clone());
+            }
+            child = c.next_sibling();
+        }
+        assert_eq!(shown, [title], "an empty message or body is shown");
+    }
+
+    fn closing_a_dialog_is_escape() {
+        let p = Probe::default();
+        // One button: closing presses it.
+        let (ok, oked) = rec::<()>();
+        p.render(&alert(
+            30,
+            DialogStyle::Warning,
+            vec![button("OK", Role::Default, ok)],
+        ));
+        p.dialog().expect("dialog shown").close();
+        testing::pump();
+        assert_eq!(
+            oked.borrow().len(),
+            1,
+            "close did not press the only button"
+        );
+        assert!(p.dialog().is_none());
+        // Cancel and another: closing is Cancel.
+        let (cancel, cancelled) = rec::<()>();
+        let (go, went) = rec::<()>();
+        p.render(&alert(
+            31,
+            DialogStyle::Warning,
+            vec![
+                button("Go", Role::Default, go.clone()),
+                button("Cancel", Role::Cancel, cancel),
+            ],
+        ));
+        p.dialog().expect("dialog shown").close();
+        testing::pump();
+        assert_eq!(cancelled.borrow().len(), 1);
+        assert!(went.borrow().is_empty());
+        // Two answers and no Cancel: closing picks neither.
+        let (other, othered) = rec::<()>();
+        p.render(&alert(
+            32,
+            DialogStyle::Warning,
+            vec![
+                button("Go", Role::Default, go),
+                button("Other", Role::Normal, other),
+            ],
+        ));
+        let d = p.dialog().expect("dialog shown");
+        d.close();
+        testing::pump();
+        assert!(went.borrow().is_empty() && othered.borrow().is_empty());
+        assert_eq!(p.dialog().as_ref(), Some(&d), "the dialog went away");
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -403,7 +515,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 6] = [
+        let cases: [(&str, fn()); 8] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -428,6 +540,11 @@ mod linux {
                 "only the user's dismissal of the popover is reported",
                 only_the_users_dismissal_of_the_popover_is_reported,
             ),
+            (
+                "an Info dialog opens without icon, message or body",
+                an_info_dialog_opens_without_icon_message_or_body,
+            ),
+            ("closing a dialog is Escape", closing_a_dialog_is_escape),
         ];
         let mut failed = 0;
         for (name, case) in cases {
@@ -446,7 +563,7 @@ mod linux {
             }
             testing::pump();
         }
-        println!("{} passed, {failed} failed", 6 - failed);
+        println!("{} passed, {failed} failed", cases.len() - failed);
         if failed > 0 {
             std::process::exit(1);
         }

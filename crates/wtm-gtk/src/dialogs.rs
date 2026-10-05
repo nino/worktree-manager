@@ -146,6 +146,13 @@ fn button_count(state: &Weak<State>) -> usize {
         .unwrap_or(0)
 }
 
+/// What dismissing the dialog presses: Cancel, or the only button of a
+/// dialog that just says something. A dialog with neither stays open: which
+/// of its answers dismissing means is not this backend's to guess.
+fn dismiss_index(state: &Weak<State>) -> Option<usize> {
+    role_index(state, Role::Cancel).or_else(|| (button_count(state) == 1).then_some(0))
+}
+
 impl DialogW {
     fn new(d: &Dialog, parent: &gtk::Window, state: Weak<State>) -> DialogW {
         let window = gtk::Window::new();
@@ -203,11 +210,7 @@ impl DialogW {
             }
             match key {
                 gdk::Key::Escape => {
-                    // Cancel, or the only button of a dialog that just says
-                    // something.
-                    let i = role_index(&s, Role::Cancel)
-                        .or_else(|| (button_count(&s) == 1).then_some(0));
-                    if let Some(i) = i {
+                    if let Some(i) = dismiss_index(&s) {
                         press(&s, i);
                     }
                     glib::Propagation::Stop
@@ -231,8 +234,9 @@ impl DialogW {
         });
         window.add_controller(keys);
         let s = state.clone();
+        // The window manager's close (Alt+F4) is the same as Escape.
         window.connect_close_request(move |_| {
-            if let Some(i) = role_index(&s, Role::Cancel) {
+            if let Some(i) = dismiss_index(&s) {
                 press(&s, i);
             }
             glib::Propagation::Stop
