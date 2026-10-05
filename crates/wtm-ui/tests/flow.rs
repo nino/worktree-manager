@@ -58,19 +58,20 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A repo `app` with a commit on `main` and a branch `dev`, in a fresh
 /// folder that also holds the config and the worktrees root.
+/// `path` as git writes it, which is how the UI shows and keys it.
+fn shown(path: &std::path::Path) -> String {
+    wtm_core::paths::normalise(&path.to_string_lossy())
+}
+
 fn fixture(name: &str) -> (PathBuf, PathBuf) {
     isolate_git_config();
     let base = std::env::temp_dir().join(format!("wtm-ui-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    // As git will report it: macOS's temporary directory is under /var,
-    // which is a link to /private/var. (Windows would answer with a
-    // `\\?\` path, which git never reports.)
-    let base = if cfg!(windows) {
-        base
-    } else {
-        base.canonicalize().unwrap()
-    };
+    // macOS's temporary directory is under /var, a link to /private/var,
+    // and git reports the resolved path; `shown` turns it into git's
+    // spelling on Windows too.
+    let base = base.canonicalize().unwrap();
     let repo = base.join("app");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -198,7 +199,7 @@ fn lists_a_repo_and_searches_it() {
         "the primary tree has no delete"
     );
     assert_eq!(w.action("reveal").unwrap().hint, "Reveal in Files");
-    assert_eq!(s.header.path_full, repo.to_string_lossy());
+    assert_eq!(s.header.path_full, shown(&repo));
 
     // A search keeps the repos with a match, and counts what it shows.
     h.send(Msg::Query("mai".into()));
@@ -322,13 +323,10 @@ fn a_dirty_worktree_is_deleted_only_after_a_second_question() {
     h.wait_for(WAIT, "the worktree to delete", |v| {
         v.window
             .list
-            .worktree(&format!(
-                "w:{}",
-                base.join("wts/app/doomed").to_string_lossy()
-            ))
+            .worktree(&format!("w:{}", shown(&base.join("wts/app/doomed"))))
             .is_some()
     });
-    let key = format!("w:{}", base.join("wts/app/doomed").to_string_lossy());
+    let key = format!("w:{}", shown(&base.join("wts/app/doomed")));
     std::fs::write(base.join("wts/app/doomed/scratch.txt"), "x").unwrap();
     h.send(Msg::Refresh);
     let v = h.wait_for(WAIT, "the untracked file to show", |v| {

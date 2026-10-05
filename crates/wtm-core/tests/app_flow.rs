@@ -143,7 +143,11 @@ fn add_repo_create_and_delete_worktree() {
     });
     let model = app.model();
     let node = &model.repos[0];
-    assert_eq!(node.repo.path, repo.to_string_lossy());
+    // As git writes it, which on Windows is not what canonicalising gives.
+    assert_eq!(
+        node.repo.path,
+        wtm_core::paths::normalise(&repo.to_string_lossy())
+    );
     assert_eq!(node.repo.main_branch, "main");
     assert_eq!(node.worktrees.len(), 1);
     assert!(node.worktrees[0].is_main);
