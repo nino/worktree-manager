@@ -1,0 +1,13 @@
+[package]
+name = "wtm-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The app's UI, written once against wtm-toolkit"
+
+[dependencies]
+wtm-core = { workspace = true }
+wtm-platform = { workspace = true }
+wtm-toolkit = { workspace = true }
+log = { workspace = true }
+

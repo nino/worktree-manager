@@ -26,7 +26,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::runtime::Runtime;
 use wtm_platform::{AppDirs, Platform};
 
-use crate::command::build_command;
+use crate::command::build_command_with;
 use crate::config::ConfigStore;
 use crate::fetcher::{fetch_all, FETCH_INTERVAL};
 use crate::git::{
@@ -347,11 +347,10 @@ impl App {
                 } else {
                     cmd
                 };
-                if let Err(e) = self
-                    .inner
-                    .platform
-                    .spawn_detached(&build_command(&cmd, &path))
-                {
+                if let Err(e) = self.inner.platform.spawn_detached(
+                    &build_command_with(&cmd, &path, |p| self.inner.platform.quote(p)),
+                    None,
+                ) {
                     self.notify(Tone::Error, format!("Could not open editor: {e}"));
                 }
             }
@@ -711,8 +710,8 @@ impl App {
                     if !init.is_empty() {
                         // Fire and forget in the worktree, through the login
                         // shell so the user's PATH applies.
-                        let line = format!("cd {} && {init}", crate::command::shell_quote(&path));
-                        if let Err(e) = app.inner.platform.spawn_detached(&line) {
+                        let cwd = std::path::Path::new(&path);
+                        if let Err(e) = app.inner.platform.spawn_detached(&init, Some(cwd)) {
                             warn!("init command failed to start: {e}");
                         }
                     }

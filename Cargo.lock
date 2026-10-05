@@ -1312,6 +1312,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wtm-toolkit"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "wtm-ui"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "wtm-core",
+ "wtm-platform",
+ "wtm-toolkit",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"

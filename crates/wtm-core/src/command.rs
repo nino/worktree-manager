@@ -2,7 +2,7 @@
 
 /// Quote a string for safe use inside a POSIX shell command.
 pub fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    wtm_platform::posix_quote(value)
 }
 
 /// Combine a configured command with a target path.
@@ -11,7 +11,16 @@ pub fn shell_quote(value: &str) -> String {
 /// quoted path (e.g. `open -na Ghostty --args --working-directory={path}`).
 /// Otherwise the quoted path is appended as a final argument (e.g. `code`).
 pub fn build_command(command: &str, target_path: &str) -> String {
-    let quoted = shell_quote(target_path);
+    build_command_with(command, target_path, shell_quote)
+}
+
+/// [`build_command`], quoting with `quote` (the platform's shell's rules).
+pub fn build_command_with(
+    command: &str,
+    target_path: &str,
+    quote: impl Fn(&str) -> String,
+) -> String {
+    let quoted = quote(target_path);
     if command.contains("{path}") {
         command.replace("{path}", &quoted)
     } else {

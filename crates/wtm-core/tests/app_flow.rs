@@ -17,7 +17,7 @@ use wtm_platform::{AppDirs, Platform};
 struct StubPlatform;
 
 impl Platform for StubPlatform {
-    fn spawn_detached(&self, _: &str) -> std::io::Result<()> {
+    fn spawn_detached(&self, _: &str, _: Option<&Path>) -> std::io::Result<()> {
         Ok(())
     }
     fn open_in_terminal(&self, _: &Path) -> std::io::Result<()> {
