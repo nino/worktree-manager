@@ -18,6 +18,11 @@ pub fn init() -> bool {
     true
 }
 
+/// Follow the desktop's light or dark preference, as the app does.
+pub fn follow_desktop_appearance() {
+    crate::style::init_appearance();
+}
+
 /// Run the main loop until nothing is pending.
 pub fn pump() {
     let ctx = glib::MainContext::default();

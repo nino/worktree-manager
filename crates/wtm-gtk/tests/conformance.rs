@@ -549,6 +549,108 @@ mod linux {
         );
     }
 
+    /// Run the main loop until `done`, for at most a few seconds.
+    fn pump_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            testing::pump();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    const PORTAL_XML: &str = r#"<node>
+      <interface name="org.freedesktop.portal.Settings">
+        <method name="Read">
+          <arg type="s" name="namespace" direction="in"/>
+          <arg type="s" name="key" direction="in"/>
+          <arg type="v" name="value" direction="out"/>
+        </method>
+        <signal name="SettingChanged">
+          <arg type="s" name="namespace"/>
+          <arg type="s" name="key"/>
+          <arg type="v" name="value"/>
+        </signal>
+      </interface>
+    </node>"#;
+
+    /// A settings portal on the session bus, played by this process. Needs a
+    /// bus (`dbus-run-session -- xvfb-run -a cargo test …`); skipped without.
+    fn the_appearance_follows_the_desktop_portal() {
+        use gtk::{gio, glib};
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            println!("     (no session bus: skipped)");
+            return;
+        }
+        if std::env::var_os("WTM_APPEARANCE").is_some() {
+            println!("     (WTM_APPEARANCE set: skipped)");
+            return;
+        }
+        let path = "/org/freedesktop/portal/desktop";
+        let conn = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).unwrap();
+        let node = gio::DBusNodeInfo::for_xml(PORTAL_XML).unwrap();
+        let iface = node
+            .lookup_interface("org.freedesktop.portal.Settings")
+            .unwrap();
+        let scheme = Rc::new(std::cell::Cell::new(1u32));
+        let s = scheme.clone();
+        let _registration = conn
+            .register_object(path, &iface)
+            .method_call(move |_, _, _, _, _, _, call| {
+                // `Read` wraps the value twice.
+                let v = glib::Variant::from_variant(&glib::Variant::from_variant(
+                    &s.get().to_variant(),
+                ));
+                call.return_value(Some(&glib::Variant::tuple_from_iter([v])));
+            })
+            .build()
+            .unwrap();
+        conn.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName",
+            Some(&("org.freedesktop.portal.Desktop", 4u32).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+            gio::Cancellable::NONE,
+        )
+        .unwrap();
+        let settings = gtk::Settings::default().unwrap();
+        settings.set_gtk_application_prefer_dark_theme(false);
+        let dark = || settings.is_gtk_application_prefer_dark_theme();
+        // Read at launch: the desktop prefers dark.
+        testing::follow_desktop_appearance();
+        pump_until("dark at launch", dark);
+        let change = |value: u32| {
+            scheme.set(value);
+            conn.emit_signal(
+                None,
+                path,
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                Some(
+                    &(
+                        "org.freedesktop.appearance",
+                        "color-scheme",
+                        glib::Variant::from_variant(&value.to_variant()),
+                    )
+                        .to_variant(),
+                ),
+            )
+            .unwrap();
+        };
+        // Then followed live, both ways.
+        change(2);
+        pump_until("light after the desktop turned light", || !dark());
+        change(1);
+        pump_until("dark again", dark);
+        // No preference: back to GTK's own setting, which was light.
+        change(0);
+        pump_until("GTK's own setting with no preference", || !dark());
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -556,7 +658,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 9] = [
+        let cases: [(&str, fn()); 10] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -589,6 +691,10 @@ mod linux {
             (
                 "Edit items act on what had the keyboard before the menu",
                 edit_items_act_on_what_had_the_keyboard_before_the_menu,
+            ),
+            (
+                "the appearance follows the desktop's portal",
+                the_appearance_follows_the_desktop_portal,
             ),
         ];
         let mut failed = 0;
