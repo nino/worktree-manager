@@ -42,18 +42,44 @@ pub fn quote(value: &str) -> String {
     out
 }
 
-/// The arguments after `cmd.exe` that run `command_line` as typed. `/S`
-/// makes `cmd` strip exactly the outer pair of quotes and keep the rest
-/// verbatim, whatever quotes the line itself holds; without it, a line that
-/// starts with a quoted program name loses its first and last quote.
-pub fn cmd_args(command_line: &str) -> String {
-    format!("/D /S /C \"{command_line}\"")
+/// The arguments after `cmd.exe` that run `command_line` as typed, in
+/// `unc_dir` when that is a UNC folder (see [`unc_dir`]). `/S` makes `cmd`
+/// strip exactly the outer pair of quotes and keep the rest verbatim,
+/// whatever quotes the line itself holds; without it, a line that starts
+/// with a quoted program name loses its first and last quote. `/V:OFF`:
+/// delayed expansion, if the user's registry turns it on, would read a
+/// `!` in a path as the start of a variable.
+///
+/// `cmd` cannot run in a UNC folder: started in one it warns and runs in
+/// the Windows folder instead. `pushd` maps a drive letter to the folder
+/// and goes there, and `popd` gives the letter back afterwards, whatever
+/// the command did.
+pub fn cmd_args(command_line: &str, unc_dir: Option<&str>) -> String {
+    match unc_dir {
+        Some(dir) => format!("/D /V:OFF /S /C \"pushd \"{dir}\" && {command_line} & popd\""),
+        None => format!("/D /V:OFF /S /C \"{command_line}\""),
+    }
+}
+
+/// `path` as a UNC folder (`\\server\share\…`), or `None` for a folder on
+/// a drive, which `cmd` can start in.
+pub fn unc_dir(path: &Path) -> Option<String> {
+    let p = native_path(path);
+    (p.starts_with("\\\\") && !p.starts_with("\\\\?\\")).then_some(p)
 }
 
 /// A path as Windows programs expect it: git prints `C:/x/y`, and Explorer
 /// takes a forward slash for a switch.
 pub fn native_path(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\")
+}
+
+/// Explorer's arguments to open the folder holding `path` with `path`
+/// selected, as Finder's reveal does. The path is quoted (a comma would
+/// otherwise end it), and given raw: Explorer reads its own command line,
+/// not the C runtime's way.
+pub fn explorer_args(path: &Path) -> String {
+    format!("/select,\"{}\"", native_path(path))
 }
 
 /// Arguments for Windows Terminal to open a tab in `path`. Its command line
@@ -147,8 +173,30 @@ mod tests {
     #[test]
     fn cmd_keeps_the_line_verbatim_inside_its_outer_quotes() {
         assert_eq!(
-            cmd_args("\"C:\\Program Files\\x.exe\" \"a b\""),
-            "/D /S /C \"\"C:\\Program Files\\x.exe\" \"a b\"\""
+            cmd_args("\"C:\\Program Files\\x.exe\" \"a b\"", None),
+            "/D /V:OFF /S /C \"\"C:\\Program Files\\x.exe\" \"a b\"\""
+        );
+    }
+
+    #[test]
+    fn a_unc_folder_is_entered_with_pushd() {
+        assert_eq!(
+            cmd_args("code .", Some("\\\\srv\\share\\wt")),
+            "/D /V:OFF /S /C \"pushd \"\\\\srv\\share\\wt\" && code . & popd\""
+        );
+        assert_eq!(
+            unc_dir(Path::new("//srv/share/wt")).as_deref(),
+            Some("\\\\srv\\share\\wt")
+        );
+        assert_eq!(unc_dir(Path::new("C:/src/app")), None);
+        assert_eq!(unc_dir(Path::new("\\\\?\\C:\\src")), None);
+    }
+
+    #[test]
+    fn explorer_selects_the_path_quoted() {
+        assert_eq!(
+            explorer_args(Path::new("C:/src/a,b")),
+            "/select,\"C:\\src\\a,b\""
         );
     }
 
