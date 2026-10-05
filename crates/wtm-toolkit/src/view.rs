@@ -530,6 +530,7 @@ impl Text {
         self
     }
 
+    /// Wrap, with no limit on the lines: a limit goes after this.
     pub fn wrap(mut self) -> Self {
         self.wrap = true;
         self.lines = 0;

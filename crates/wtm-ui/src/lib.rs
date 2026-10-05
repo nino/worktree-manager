@@ -674,8 +674,8 @@ impl Ui {
             .tooltip(n.text.clone())
             // A notice must never resize the window: git output can run to
             // hundreds of lines. Two here; the rest behind "Details…".
-            .lines(2)
             .wrap()
+            .lines(2)
             .selectable()
             .grow();
         Some(
