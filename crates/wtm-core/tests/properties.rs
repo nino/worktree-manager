@@ -18,6 +18,7 @@ use proptest::prelude::*;
 use serde_json::json;
 use wtm_core::branch_name;
 use wtm_core::branch_tool::split_tool_prefix;
+#[cfg(unix)]
 use wtm_core::command::build_command;
 use wtm_core::config::ConfigStore;
 use wtm_core::fuzzy::{fuzzy_filter, fuzzy_match};
@@ -602,6 +603,8 @@ proptest! {
     }
 }
 
+// `/bin/sh` is the shell here; Windows quotes for cmd, in its own crate.
+#[cfg(unix)]
 proptest! {
     // Each case starts a shell, so fewer of them by default. PROPTEST_CASES
     // wins over this, so the deep run in the header above starts one shell

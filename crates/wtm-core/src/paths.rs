@@ -83,6 +83,17 @@ pub fn worktree_path_for(worktrees_root: &str, repo_name: &str, branch: &str) ->
 /// Repo display names double as a directory segment under the worktrees root,
 /// so they must never contain path separators or traversal sequences.
 pub fn sanitize_repo_name(name: &str) -> String {
+    sanitize_repo_name_for(name, cfg!(windows))
+}
+
+/// [`sanitize_repo_name`], for Windows or not. On Windows a colon is out
+/// too: `a:` joined onto the worktrees root is a drive of its own.
+pub fn sanitize_repo_name_for(name: &str, windows: bool) -> String {
+    let name = if windows {
+        name.replace(':', "-")
+    } else {
+        name.to_string()
+    };
     // Dots and whitespace are trimmed together: trimming one and then the
     // other leaves `. x` as ` x`, which the next save would trim again.
     let cleaned: String = name
@@ -169,6 +180,13 @@ mod tests {
         assert_eq!(sanitize_repo_name("../etc"), "--etc");
         assert_eq!(sanitize_repo_name("a/b"), "a-b");
         assert_eq!(sanitize_repo_name("  "), "repo");
+    }
+
+    #[test]
+    fn sanitize_repo_name_keeps_off_other_drives_on_windows() {
+        assert_eq!(sanitize_repo_name_for("a:", true), "a-");
+        assert_eq!(sanitize_repo_name_for("C:x", true), "C-x");
+        assert_eq!(sanitize_repo_name_for("a:", false), "a:");
     }
 
     #[test]
