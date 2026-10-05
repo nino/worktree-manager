@@ -6,6 +6,8 @@
 //! `wtm-platform`; nothing in them depends on it. The executable runs the
 //! shared UI with [`AppKit`].
 
+#![cfg(target_os = "macos")]
+
 pub mod badge;
 pub mod branchlabel;
 pub mod button;

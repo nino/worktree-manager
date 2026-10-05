@@ -1778,6 +1778,7 @@ dependencies = [
  "env_logger",
  "log",
  "wtm-core",
+ "wtm-gtk",
  "wtm-macos",
  "wtm-platform",
  "wtm-ui",

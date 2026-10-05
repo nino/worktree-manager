@@ -26,5 +26,3 @@ env_logger = { workspace = true }
 name = "conformance"
 harness = false
 
-[[example]]
-name = "run"

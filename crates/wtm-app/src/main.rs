@@ -26,7 +26,14 @@ fn main() {
         wtm_ui::run(wtm_macos::AppKit, app, updater);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let app = wtm_core::App::new(Arc::new(wtm_gtk::LinuxPlatform), wtm_gtk::app_dirs());
+        // Releases are built for macOS only, so there is nothing to update to.
+        wtm_ui::run(wtm_gtk::Gtk, app, Rc::new(wtm_platform::NoUpdater));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (Rc::new(()), Arc::new(()));
         eprintln!("Worktree Manager: no UI backend for this platform yet.");
