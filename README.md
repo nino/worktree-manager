@@ -35,8 +35,9 @@ underneath — each with branch, path, live git status, and one-click actions.
 - **Follows what you do elsewhere** — each worktree is watched for changes, so a
   `git switch` or a commit in your terminal updates that row within a moment.
 - **Open in editor / terminal / file manager** — the editor command is configurable and
-  takes a `{path}` placeholder (e.g. `code {path}`); the terminal is whichever one
-  you have set as the system default.
+  takes a `{path}` placeholder (e.g. `code {path}`); the terminal is the system default
+  on macOS, `$TERMINAL` or the desktop's default on Linux, and Windows Terminal
+  on Windows.
 - **Keyboard throughout** — arrow keys move a selection through the tree, ⌘N
   creates a worktree in the selected repo, space or ⌘T opens the branch switcher,
   ⌘F searches, and Tab reaches every button in every row (Ctrl in place of ⌘

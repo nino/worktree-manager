@@ -175,8 +175,9 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
   and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then
-  `x-terminal-emulator`, then a list of known terminals, each with its own
-  working-directory flag. The editor command is configurable and takes a
+  `xdg-terminal-exec`, then `x-terminal-emulator`, then a list of known
+  terminals, each with its own working-directory flag; on Windows, Windows
+  Terminal (`wt -d`), else `cmd`. The editor command is configurable and takes a
   `{path}` placeholder.
 - **Branch labels**: a `claude/` or `cursor/` prefix is drawn as that agent's
   mark. The full name is what gets matched, dispatched, and read out by
