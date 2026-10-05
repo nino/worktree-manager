@@ -723,6 +723,32 @@ mod linux {
         assert_eq!(p.reported_scroll(), None);
     }
 
+    fn the_picker_on_a_row_out_of_view_waits_for_it() {
+        let p = Probe::default();
+        let mut v = tall(8);
+        v.window.list.selected = Some("w:/7/2".into());
+        p.render(&v);
+        pump_until("laid out", || p.scroll_max() > 0.0);
+        let anchor = p.element("w:/7/2", BRANCH_BUTTON).expect("branch button");
+        assert!(!p.shows(&anchor), "the row starts out of view");
+        // Ctrl+T on it: the picker opens from a row scrolled out of view.
+        let mut picker_view = picker(5, Handler::none(), Handler::none());
+        picker_view.anchor = ("w:/7/2".into(), BRANCH_BUTTON);
+        v.popover = Some(picker_view);
+        p.render(&v);
+        let entry = p.picker_entry().expect("picker");
+        let popover = entry
+            .ancestor(gtk::Popover::static_type())
+            .and_downcast::<gtk::Popover>()
+            .unwrap();
+        pump_until("the popover shown", || popover.is_visible());
+        assert!(p.shows(&anchor), "popped up from an anchor out of view");
+        assert!(
+            testing_has_focus(&p, &entry),
+            "the field did not get the keyboard"
+        );
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -730,7 +756,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 12] = [
+        let cases: [(&str, fn()); 13] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -775,6 +801,10 @@ mod linux {
             (
                 "a longer offset than the list settles for its end",
                 a_longer_offset_than_the_list_settles_for_its_end,
+            ),
+            (
+                "the picker on a row out of view waits for it",
+                the_picker_on_a_row_out_of_view_waits_for_it,
             ),
         ];
         let mut failed = 0;

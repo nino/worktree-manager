@@ -632,6 +632,10 @@ impl ListW {
         true
     }
 
+    pub fn weak(&self) -> Weak<ListW> {
+        self.me.clone()
+    }
+
     /// Whether `w` is laid out and wholly inside the list's visible part.
     pub fn shows(&self, w: &gtk::Widget) -> bool {
         let Some(b) = w.compute_bounds(&self.content) else {
