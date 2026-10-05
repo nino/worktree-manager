@@ -23,6 +23,7 @@ const PAD: f64 = 20.0;
 pub struct Panel {
     pub key: Key,
     pub hwnd: HWND,
+    tip: HWND,
     pane: Pane,
     size: (i32, i32),
 }
@@ -59,6 +60,7 @@ impl Panel {
         let mut panel = Panel {
             key: p.key.clone(),
             hwnd,
+            tip,
             pane,
             size: (0, 0),
         };
@@ -78,14 +80,40 @@ impl Panel {
             let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
-        let target = p.focus.and_then(|id| panel.pane.control(id));
+        panel.focus_first(p);
+        panel
+    }
+
+    fn focus_first(&self, p: &wtm_toolkit::Panel) {
+        let target = p.focus.and_then(|id| self.pane.control(id));
         if let Some(h) = target {
             unsafe {
                 let _ = SetFocus(Some(h));
             }
             send(h, EM_SETSEL, 0, -1);
         }
-        panel
+    }
+
+    /// The fonts and colours changed (DPI, system colours): new controls
+    /// in the same window, which stays where the user put it.
+    pub fn restyle(&mut self, p: &wtm_toolkit::Panel, reg: &mut Reg) {
+        let pal = look::palette();
+        look::set_paint(
+            key(self.hwnd),
+            Paint::Plain {
+                ground: pal.window,
+                ink: pal.text,
+            },
+        );
+        let had_focus = has_focus(self.hwnd);
+        let old = std::mem::replace(&mut self.pane, Pane::new(self.hwnd, self.tip, pal.window));
+        old.destroy(reg);
+        self.size = (0, 0);
+        self.patch(p, reg);
+        invalidate(self.hwnd);
+        if had_focus {
+            self.focus_first(p);
+        }
     }
 
     pub fn patch(&mut self, p: &wtm_toolkit::Panel, reg: &mut Reg) {

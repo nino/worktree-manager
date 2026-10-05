@@ -56,6 +56,9 @@ static POSTED: Posted = Mutex::new(VecDeque::new());
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static LATER: RefCell<VecDeque<Box<dyn FnOnce()>>> = RefCell::new(VecDeque::new());
+    /// The owners of the modal loops running now (the About box, the
+    /// folder picker), innermost last.
+    static NESTED: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn main_window() -> HWND {
@@ -93,6 +96,38 @@ pub fn later(f: impl FnOnce() + 'static) {
     LATER.with(|l| l.borrow_mut().push_back(Box::new(f)));
     unsafe {
         let _ = PostMessageW(Some(main_window()), WM_APP_LATER, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Run `f`, which runs a modal loop of its own owned by `owner` (a message
+/// box, the folder picker).
+///
+/// The program keeps running inside that loop: a dialog may open, which
+/// disables the main window and the panels, and the loop re-enables its
+/// owner when it ends; a panel that owns the loop may be dropped by the
+/// view. So while it runs, a closing dialog leaves the owner disabled and
+/// a dropped owner stays open, and afterwards both are put right.
+pub fn nested<R>(owner: HWND, f: impl FnOnce() -> R) -> R {
+    NESTED.with(|n| n.borrow_mut().push(key(owner)));
+    let r = f();
+    NESTED.with(|n| {
+        let mut v = n.borrow_mut();
+        if let Some(i) = v.iter().rposition(|h| *h == key(owner)) {
+            v.remove(i);
+        }
+    });
+    with_state(|s| s.after_nested());
+    r
+}
+
+/// `h` owns a modal loop that is running now.
+pub fn owns_nested(h: HWND) -> bool {
+    NESTED.with(|n| n.borrow().contains(&key(h)))
+}
+
+fn post(msg: u32) {
+    unsafe {
+        let _ = PostMessageW(Some(main_window()), msg, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -196,6 +231,10 @@ pub struct State {
     /// own press must not open it again.
     pub swallow: Option<(isize, Instant)>,
     pub panels: Vec<Panel>,
+    /// Panels the view dropped while they own a modal loop (the folder
+    /// picker): destroying them would pull the loop's window down from
+    /// under it, so they go when it ends.
+    dying: Vec<Panel>,
     pub menus: Menus,
     timers: HashMap<usize, Handler>,
     next_timer: usize,
@@ -244,6 +283,7 @@ impl State {
             popover: None,
             swallow: None,
             panels: Vec::new(),
+            dying: Vec::new(),
             menus: Menus::default(),
             timers: HashMap::new(),
             next_timer: 100,
@@ -283,6 +323,7 @@ impl State {
         self.render_dialog(v);
         self.render_popover(v);
         self.render_panels(v);
+        self.sync_modal();
         self.view = v.clone();
         self.layout();
         if !self.shown {
@@ -370,7 +411,7 @@ impl State {
                     ..
                 } => {
                     let Some(t) = tools.next() else { break };
-                    set_text_if(t.hwnd, value);
+                    set_field_text(t.hwnd, value);
                     if self.cues.get(&key(t.hwnd)) != Some(placeholder) {
                         let cue = wide(placeholder);
                         // `1`: the cue stays while the field has the keyboard
@@ -415,7 +456,10 @@ impl State {
         let Some(want) = want else { return };
         match &mut self.dialog {
             Some(d) => d.patch(want, &mut self.reg),
-            None => self.dialog = Some(Dialog::open(self.main, want, &mut self.reg)),
+            None => {
+                self.remember_focus();
+                self.dialog = Some(Dialog::open(self.main, want, &mut self.reg));
+            }
         }
     }
 
@@ -442,6 +486,10 @@ impl State {
                 let Some(anchor) = self.list.anchor(&want.anchor.0, want.anchor.1) else {
                     return;
                 };
+                // The row may be scrolled out of sight (the shortcut works
+                // on the selection); the picker hangs from where it shows.
+                self.list.reveal_control(anchor);
+                self.remember_focus();
                 self.popover = Some(Popover::open(self.main, anchor, want, &mut self.reg));
             }
         }
@@ -452,6 +500,8 @@ impl State {
         for p in std::mem::take(&mut self.panels) {
             if v.panels.iter().any(|q| q.key == p.key) {
                 keep.push(p);
+            } else if owns_nested(p.hwnd) {
+                self.dying.push(p);
             } else {
                 p.close(&mut self.reg);
             }
@@ -459,10 +509,95 @@ impl State {
         for want in &v.panels {
             match keep.iter_mut().find(|p| p.key == want.key) {
                 Some(p) => p.patch(want, &mut self.reg),
-                None => keep.push(Panel::open(self.main, want, &mut self.reg)),
+                None => {
+                    self.remember_focus();
+                    keep.push(Panel::open(self.main, want, &mut self.reg));
+                }
             }
         }
         self.panels = keep;
+    }
+
+    /// While a dialog is open nothing else takes input: not the main
+    /// window (the dialog disabled it when it opened) and not the panels.
+    /// A window that owns a running modal loop is left to that loop.
+    pub fn sync_modal(&self) {
+        let modal = self.dialog.is_some();
+        for p in self.panels.iter().chain(&self.dying) {
+            if !owns_nested(p.hwnd) {
+                enable(p.hwnd, !modal);
+            }
+        }
+        if modal {
+            enable(self.main, false);
+        }
+    }
+
+    /// A modal loop ended: its owner was enabled again whatever else is
+    /// open, and a panel dropped while it ran can go now.
+    fn after_nested(&mut self) {
+        for p in std::mem::take(&mut self.dying) {
+            if owns_nested(p.hwnd) {
+                self.dying.push(p);
+            } else {
+                p.close(&mut self.reg);
+            }
+        }
+        self.sync_modal();
+        // A loop that ran inside another (the folder picker over the About
+        // box) enabled a window the outer one still holds.
+        let outer: Vec<HWND> = NESTED.with(|n| n.borrow().iter().map(|k| hwnd(*k)).collect());
+        for h in outer {
+            enable(h, false);
+        }
+    }
+
+    // MARK: Focus
+
+    /// Note where the keyboard is before a window that takes activation
+    /// opens. Opening and closing happen during a render, when the main
+    /// window's own activation messages find the state borrowed.
+    fn remember_focus(&mut self) {
+        let f = unsafe { GetFocus() };
+        if !f.is_invalid() && unsafe { IsChild(self.main, f) }.as_bool() {
+            self.saved_focus = Some(f);
+        }
+    }
+
+    /// Give the keyboard back to the control that had it, if it is still
+    /// there to take it.
+    fn restore_focus(&mut self) -> bool {
+        let Some(f) = self.saved_focus.take() else {
+            return false;
+        };
+        let usable = unsafe {
+            IsWindow(Some(f)).as_bool()
+                && IsChild(self.main, f).as_bool()
+                && IsWindowEnabled(f).as_bool()
+        } && visible(f);
+        if usable {
+            unsafe {
+                let _ = SetFocus(Some(f));
+            }
+        }
+        usable
+    }
+
+    /// The main window is active but none of its controls has the
+    /// keyboard (it came back while the state was borrowed): the one that
+    /// had it before, or the list.
+    fn settle_focus(&mut self) {
+        if unsafe { GetActiveWindow() } != self.main {
+            return;
+        }
+        let f = unsafe { GetFocus() };
+        let lost = f.is_invalid() || f == self.main || !visible(f);
+        if lost && !self.restore_focus() {
+            let to = self.home_focus();
+            unsafe {
+                let _ = SetFocus(Some(to));
+            }
+        }
     }
 
     /// The first render: the window goes where the view says, or centred at
@@ -506,6 +641,10 @@ impl State {
             let _ = SetForegroundWindow(self.main);
         }
         self.placing = false;
+        // The fonts were made for the DPI of the monitor the window was
+        // created on; the saved frame may be on another. The DPI change
+        // that moving there sends found the state borrowed.
+        self.check_dpi();
         self.layout();
         let to = self.home_focus();
         unsafe {
@@ -680,14 +819,19 @@ impl State {
             }
             Effect::Copy(text) => copy_text(self.main, &text),
             Effect::PickFolders(p) => {
-                let owner = p
-                    .parent
-                    .as_ref()
-                    .and_then(|k| self.panels.iter().find(|x| &x.key == k))
-                    .map(|x| x.hwnd)
-                    .unwrap_or(self.main);
                 later(move || {
-                    let chosen = crate::dialog::pick_folders(owner, &p.title, p.multiple);
+                    // Looked up now: the panel may have gone since.
+                    let owner = with_state(|s| {
+                        p.parent
+                            .as_ref()
+                            .and_then(|k| s.panels.iter().find(|x| &x.key == k))
+                            .map(|x| x.hwnd)
+                    })
+                    .flatten()
+                    .unwrap_or_else(main_window);
+                    let chosen = nested(owner, || {
+                        crate::dialog::pick_folders(owner, &p.title, p.multiple)
+                    });
                     p.on_done.call(chosen);
                 });
             }
@@ -759,9 +903,13 @@ impl State {
             return;
         }
         let f = unsafe { GetFocus() };
-        let at = stops
-            .iter()
-            .position(|h| *h == f || (!f.is_invalid() && unsafe { IsChild(*h, f).as_bool() }));
+        // A pane or a combo box holds the control with the keyboard, so a
+        // stop matches its children too; the list's frame holds every row's
+        // buttons, which are stops of their own, so it matches only itself.
+        let at = stops.iter().position(|h| {
+            *h == f
+                || (*h != self.list.frame && !f.is_invalid() && unsafe { IsChild(*h, f).as_bool() })
+        });
         let n = stops.len();
         let next = match (at, back) {
             (None, false) => 0,
@@ -792,20 +940,20 @@ impl State {
     }
 
     /// Keys for the main window, before they reach the focused control.
-    fn main_key(&mut self, m: &MSG) -> bool {
+    fn main_key(&mut self, m: &MSG) -> KeyOutcome {
         let vk = VIRTUAL_KEY(m.wParam.0 as u16);
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
         let alt = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
         if m.message != WM_KEYDOWN {
-            return false;
+            return KeyOutcome::Pass;
         }
         if vk == VK_TAB && !ctrl && !alt {
             let back = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
             self.tab(back);
-            return true;
+            return KeyOutcome::Done;
         }
         if ctrl || alt {
-            return false;
+            return KeyOutcome::Pass;
         }
         // Arrow keys on a row's button move the list's selection, as they
         // would from the list itself.
@@ -813,25 +961,26 @@ impl State {
             unsafe {
                 let _ = SetFocus(Some(self.list.frame));
             }
-            return self.list_key(vk);
+            return KeyOutcome::from(self.list_key(vk));
         }
         if vk == VK_ESCAPE {
             if self.list.dragging() {
                 let tree = self.view.window.list.clone();
                 self.list.end_drag(&tree, false);
-                return true;
+                return KeyOutcome::Done;
             }
-            // Escape in the search field clears it, as on macOS.
-            // The field's own change notification would arrive while the
-            // state is borrowed, and be taken for one the backend made, so
-            // the program is told directly and the render empties the field.
-            if self.tools.iter().any(|t| t.search && t.hwnd == m.hwnd) {
+            // Escape in the search field clears it, as on macOS. A render
+            // never writes a field that has the keyboard, so it is emptied
+            // here; its change notification arrives while the state is
+            // borrowed and is dropped, so the program is told directly.
+            if let Some(t) = self.tools.iter().find(|t| t.search && t.hwnd == m.hwnd) {
                 if let Some((value, on_change)) = self.view.search() {
                     if !value.is_empty() {
+                        set_text(t.hwnd, "");
                         on_change.call(String::new());
                     }
                 }
-                return true;
+                return KeyOutcome::Done;
             }
         }
         // Return presses the focused button, as in a dialog.
@@ -841,10 +990,9 @@ impl State {
                 Some(Bind::Press(_) | Bind::Branch(_) | Bind::Toggle(..))
             )
         {
-            send(m.hwnd, BM_CLICK, 0, 0);
-            return true;
+            return KeyOutcome::Click(m.hwnd);
         }
-        false
+        KeyOutcome::Pass
     }
 
     fn timer(&mut self, id: usize) -> Option<Handler> {
@@ -879,21 +1027,33 @@ impl State {
         }));
     }
 
+    /// Rescale if the main window's DPI is not the one the fonts are for.
+    fn check_dpi(&mut self) {
+        let dpi = unsafe { GetDpiForWindow(self.main) };
+        if dpi != 0 && dpi != (look::scale() * 96.0).round() as u32 {
+            self.rescale(dpi);
+        }
+    }
+
     /// The DPI changed: fonts, metrics and every control's size with it.
     fn rescale(&mut self, dpi: u32) {
         look::reset(dpi);
-        // Every window's controls hold the old fonts. The dialog, the
-        // picker and the panels are closed quietly and the render below
-        // opens them again from the view, which still has them and what
-        // was typed into them.
+        // Every window's controls hold the old fonts. The dialog and the
+        // picker are closed quietly and the render below opens them again
+        // from the view, which still has them and what was typed into
+        // them. Panels keep their windows (and where the user put them)
+        // and get new controls.
         if let Some(d) = self.dialog.take() {
             d.close(self.main, &mut self.reg);
         }
         if let Some(p) = self.popover.take() {
             p.close(&mut self.reg);
         }
-        for p in std::mem::take(&mut self.panels) {
-            p.close(&mut self.reg);
+        let view = self.view.clone();
+        for p in &mut self.panels {
+            if let Some(want) = view.panel(&p.key) {
+                p.restyle(want, &mut self.reg);
+            }
         }
         self.list.clear(&mut self.reg);
         for t in self.tools.drain(..) {
@@ -1139,7 +1299,35 @@ pub fn pre_translate(m: &MSG) -> bool {
     if accelerate(m) {
         return true;
     }
-    with_state(|s| s.main_key(m)).unwrap_or(false)
+    match with_state(|s| s.main_key(m)) {
+        Some(KeyOutcome::Done) => true,
+        Some(KeyOutcome::Click(h)) => {
+            // Sent only now: the click's `WM_COMMAND` comes back inside
+            // this call, and would find the state still borrowed.
+            send(h, BM_CLICK, 0, 0);
+            true
+        }
+        Some(KeyOutcome::Pass) | None => false,
+    }
+}
+
+/// What the main window made of a key.
+enum KeyOutcome {
+    /// Not the main window's: it goes on to the focused control.
+    Pass,
+    Done,
+    /// Return on a button: press it once the state is free.
+    Click(HWND),
+}
+
+impl From<bool> for KeyOutcome {
+    fn from(handled: bool) -> Self {
+        if handled {
+            KeyOutcome::Done
+        } else {
+            KeyOutcome::Pass
+        }
+    }
 }
 
 fn accelerate(m: &MSG) -> bool {
@@ -1184,6 +1372,27 @@ pub unsafe extern "system" fn main_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM)
             if let Some(Some(then)) = with_state(|s| s.timer(w.0)) {
                 then.call(());
             }
+            LRESULT(0)
+        }
+        WM_ENTERMENULOOP => {
+            crate::menu::set_tracking(true);
+            LRESULT(0)
+        }
+        WM_EXITMENULOOP => {
+            crate::menu::set_tracking(false);
+            // Posted: the menu is still being taken down.
+            unsafe {
+                let _ = PostMessageW(Some(h), WM_APP_MENU, WPARAM(0), LPARAM(0));
+            }
+            LRESULT(0)
+        }
+        WM_APP_MENU => {
+            with_state(|s| {
+                if s.menus.stale() {
+                    let menus = s.view.menus.clone();
+                    s.menus.render(s.main, &menus);
+                }
+            });
             LRESULT(0)
         }
         WM_INITMENUPOPUP => {
@@ -1264,7 +1473,7 @@ pub unsafe extern "system" fn main_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM)
         }
         WM_DPICHANGED => {
             let r = unsafe { &*(l.0 as *const RECT) };
-            with_state(|s| {
+            let done = with_state(|s| {
                 s.placing = true;
                 unsafe {
                     let _ = SetWindowPos(
@@ -1280,6 +1489,25 @@ pub unsafe extern "system" fn main_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM)
                 s.placing = false;
                 s.rescale(hiword(w.0) as u32);
             });
+            if done.is_none() {
+                post(WM_APP_DPI);
+            }
+            LRESULT(0)
+        }
+        WM_APP_DPI => {
+            with_state(|s| s.check_dpi());
+            LRESULT(0)
+        }
+        WM_APP_FOCUS => {
+            with_state(|s| s.settle_focus());
+            LRESULT(0)
+        }
+        WM_APP_FOLLOW => {
+            with_state(|s| {
+                if let Some(p) = &mut s.popover {
+                    p.follow();
+                }
+            });
             LRESULT(0)
         }
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
@@ -1293,23 +1521,19 @@ pub unsafe extern "system" fn main_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM)
         }
         WM_ACTIVATE => {
             let active = loword(w.0) as u32 != WA_INACTIVE;
-            with_state(|s| {
-                if active {
-                    if let Some(f) = s.saved_focus.take() {
-                        if unsafe { IsWindow(Some(f)) }.as_bool() && visible(f) {
-                            unsafe {
-                                let _ = SetFocus(Some(f));
-                            }
-                        }
-                    }
-                } else {
-                    let f = unsafe { GetFocus() };
-                    if !f.is_invalid() && unsafe { IsChild(h, f) }.as_bool() {
-                        s.saved_focus = Some(f);
-                    }
-                }
-            });
-            LRESULT(0)
+            if !active {
+                with_state(|s| s.remember_focus());
+                return LRESULT(0);
+            }
+            if with_state(|s| s.restore_focus()) == Some(true) {
+                return LRESULT(0);
+            }
+            // Nothing to give the keyboard back to, or the state is
+            // borrowed (a dialog or the picker closed during a render).
+            // The default puts the keyboard on the window itself, so it is
+            // not left nowhere, and a later turn hands it on to a control.
+            post(WM_APP_FOCUS);
+            unsafe { DefWindowProcW(h, msg, w, l) }
         }
         WM_ACTIVATEAPP => {
             if w.0 != 0 {

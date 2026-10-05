@@ -21,6 +21,7 @@ use wtm_toolkit::{
     WorktreeRow, BRANCH_BUTTON,
 };
 
+use crate::access;
 use crate::app::{with_state, Bind, Reg};
 use crate::controls::*;
 use crate::look::{self, Card, Font, Paint};
@@ -166,6 +167,11 @@ pub struct List {
     placed: HashMap<isize, (RECT, bool)>,
     /// Every row on screen with its top and bottom, in order.
     extents: Vec<(Key, i32, i32)>,
+    /// What assistive technology is told each row is called, by key.
+    names: HashMap<Key, String>,
+    /// Every row on screen as an outline item: its card-wide rectangle,
+    /// whether it is a header, and whether that is open.
+    items: Vec<(Key, RECT, bool, bool)>,
     height: i32,
     scroll: i32,
     pub selected: Option<Key>,
@@ -198,6 +204,8 @@ impl List {
             owner: HashMap::new(),
             placed: HashMap::new(),
             extents: Vec::new(),
+            names: HashMap::new(),
+            items: Vec::new(),
             height: 0,
             scroll: 0,
             selected: None,
@@ -292,6 +300,7 @@ impl List {
             }
         }
         self.sections = sections;
+        self.names = access_names(tree);
         // The view's selection is shown, never reported back.
         if self.selected != tree.selected {
             self.selected = tree.selected.clone();
@@ -652,6 +661,7 @@ impl List {
         let mut batch = Batch::new(&mut placed);
         let mut cards = Vec::with_capacity(self.sections.len());
         let mut extents = Vec::new();
+        let mut items = Vec::new();
         let x = p(CARD_MARGIN);
         let cw = (width - 2 * x).max(p(200.0));
         let mut y = 0;
@@ -661,6 +671,7 @@ impl List {
             let band = rect(x, top, cw, p(HEADER_HEIGHT));
             place_header(&mut batch, &sec.header, band);
             extents.push((sec.key.clone(), top, band.bottom));
+            items.push((sec.key.clone(), band, true, sec.expanded));
             y = band.bottom;
             let mut plates = Vec::new();
             let open = sec.expanded && !sec.rows.is_empty();
@@ -690,6 +701,7 @@ impl List {
                     RowCtl::Pending(c) => place_pending(&mut batch, c, plate),
                 }
                 extents.push((rk.clone(), plate.top, plate.bottom));
+                items.push((rk.clone(), plate, false, false));
                 plates.push((rk.clone(), plate));
                 y += h;
             }
@@ -713,6 +725,7 @@ impl List {
         batch.apply();
         self.placed = placed;
         self.extents = extents;
+        self.items = items;
         self.height = y;
         let selected = self.selected.clone();
         let dragging = self.dragging.clone();
@@ -722,6 +735,26 @@ impl List {
             l.list.dragging = dragging;
         });
         self.sync_scroll(width);
+        self.publish_access();
+    }
+
+    /// Hand assistive technology the rows as they now stand.
+    fn publish_access(&self) {
+        let items = self
+            .items
+            .iter()
+            .map(|(k, rect, header, expanded)| access::Item {
+                name: self.names.get(k).cloned().unwrap_or_else(|| k.clone()),
+                rect: *rect,
+                header: *header,
+                expanded: *expanded,
+            })
+            .collect();
+        let selected = self
+            .selected
+            .as_ref()
+            .and_then(|s| self.items.iter().position(|i| &i.0 == s));
+        access::publish(self.frame, self.content, items, selected);
     }
 
     fn view_height(&self) -> i32 {
@@ -785,6 +818,18 @@ impl List {
         }
         if report {
             host_event(HostEvent::Scrolled(y as f64 / look::scale()));
+        }
+        // The picker hangs from a row's button, which just moved. The
+        // state is borrowed here; the picker follows on the next turn.
+        if crate::popover::is_open() {
+            unsafe {
+                let _ = PostMessageW(
+                    Some(crate::app::main_window()),
+                    WM_APP_FOLLOW,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
         }
     }
 
@@ -864,6 +909,7 @@ impl List {
         look::with(|l| l.list.selected = shown);
         invalidate(self.content);
         self.reveal_selected();
+        self.publish_access();
         tree.on_select.call(k);
     }
 
@@ -1449,6 +1495,45 @@ fn draw_cards(dc: HDC, area: RECT) {
     }
 }
 
+/// What each row is called for assistive technology: what a sighted user
+/// reads off it, in the order they would.
+fn access_names(tree: &TreeList) -> HashMap<Key, String> {
+    let mut out = HashMap::new();
+    for s in &tree.sections {
+        let h = &s.header;
+        let mut name = format!("{}, {}", h.name, h.meta);
+        if let Some(e) = &h.error {
+            name.push_str(", ");
+            name.push_str(e);
+        }
+        out.insert(s.key.clone(), name);
+        for r in &s.rows {
+            let name = match &r.content {
+                RowContent::Worktree(w) => {
+                    let mut parts = vec![w.branch_name.clone()];
+                    // A badge that is only a symbol (the clean tick) is read
+                    // by what its tooltip says.
+                    parts.extend(w.badges.iter().map(|b| {
+                        if b.text.chars().any(char::is_alphanumeric) {
+                            b.text.clone()
+                        } else {
+                            b.tooltip.clone()
+                        }
+                    }));
+                    parts.extend(w.busy.clone());
+                    parts.join(", ")
+                }
+                RowContent::Pending(p) => match &p.error {
+                    Some(e) => format!("{}, {e}", p.branch),
+                    None => format!("{}, creating", p.branch),
+                },
+            };
+            out.insert(r.key.clone(), name);
+        }
+    }
+    out
+}
+
 // MARK: Window procedures
 
 pub unsafe extern "system" fn frame_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -1460,8 +1545,17 @@ pub unsafe extern "system" fn frame_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM
             if let Ok(c) = unsafe { GetWindow(h, GW_CHILD) } {
                 invalidate(c);
             }
+            if focused {
+                // The keyboard is on the list: a screen reader reads the
+                // selected row, not just "Repositories".
+                access::announce(true);
+            }
             LRESULT(0)
         }
+        WM_GETOBJECT => match access::get_object(h, w, l) {
+            Some(r) => r,
+            None => unsafe { DefWindowProcW(h, msg, w, l) },
+        },
         WM_KEYDOWN => {
             let vk = VIRTUAL_KEY(w.0 as u16);
             let handled = with_state(|s| s.list_key(vk)).unwrap_or(false);

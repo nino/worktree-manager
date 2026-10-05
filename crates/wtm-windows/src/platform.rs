@@ -48,12 +48,13 @@ impl Platform for WindowsPlatform {
             return Ok(());
         }
         let mut c = quiet(Command::new("cmd.exe"));
+        let unc = cwd.and_then(shell::unc_dir);
         // `raw_arg`: the line goes to `cmd` exactly as `cmd_args` built it;
         // Rust's own quoting follows the C runtime's rules, which `cmd`
         // does not.
-        c.raw_arg(shell::cmd_args(command_line))
+        c.raw_arg(shell::cmd_args(command_line, unc.as_deref()))
             .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS_GROUP);
-        if let Some(dir) = cwd {
+        if let (Some(dir), None) = (cwd, &unc) {
             c.current_dir(dir);
         }
         // The child is not waited for; dropping the handle leaves it running.
@@ -81,9 +82,17 @@ impl Platform for WindowsPlatform {
             }
         }
         let mut c = Command::new("cmd.exe");
-        c.arg("/K")
-            .current_dir(path)
-            .creation_flags(CREATE_NEW_CONSOLE | DETACHED_PROCESS_GROUP);
+        match shell::unc_dir(path) {
+            // `cmd` cannot start in a UNC folder; `pushd` maps a drive
+            // letter to it, which the console keeps until it closes.
+            Some(dir) => {
+                c.raw_arg(format!("/K pushd \"{dir}\""));
+            }
+            None => {
+                c.arg("/K").current_dir(path);
+            }
+        }
+        c.creation_flags(CREATE_NEW_CONSOLE | DETACHED_PROCESS_GROUP);
         c.spawn().map(|_| ())
     }
 
@@ -94,7 +103,7 @@ impl Platform for WindowsPlatform {
         // Explorer exits non-zero even when it opened the folder, so its
         // status says nothing; it is not waited for.
         quiet(Command::new("explorer.exe"))
-            .arg(shell::native_path(path))
+            .raw_arg(shell::explorer_args(path))
             .spawn()
             .map(|_| ())
     }

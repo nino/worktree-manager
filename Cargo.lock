@@ -1966,6 +1966,7 @@ dependencies = [
  "env_logger",
  "log",
  "windows",
+ "windows-core",
  "wtm-core",
  "wtm-platform",
  "wtm-toolkit",

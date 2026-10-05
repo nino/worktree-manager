@@ -12,12 +12,14 @@
 //!
 //! See `docs/architecture.md` in the repository for how a render reaches
 //! the screen. Module by module: `app` (the main window, the state, the
-//! message loop's hooks), `list` (the repo cards), `pane` (an element tree
+//! message loop's hooks), `list` (the repo cards), `access` (the cards for
+//! assistive technology), `pane` (an element tree
 //! as controls), `dialog`, `popover`, `panel`, `menu`, `controls` (making
 //! and placing controls), `look` (fonts, colours, GDI and GDI+ drawing).
 
 #![cfg(windows)]
 
+mod access;
 mod app;
 mod controls;
 mod dialog;

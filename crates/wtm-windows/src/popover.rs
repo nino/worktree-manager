@@ -101,6 +101,9 @@ impl Popover {
             hwnd,
         );
         send(list, LB_SETITEMHEIGHT, 0, look::px(ROW) as isize);
+        unsafe {
+            let _ = SetWindowSubclass(list, Some(list_proc), 4, 0);
+        }
         let mut pop = Popover {
             id: p.id,
             hwnd,
@@ -122,7 +125,7 @@ impl Popover {
 
     pub fn patch(&mut self, p: &wtm_toolkit::Popover, reg: &mut Reg) {
         let f = &p.list;
-        set_text_if(self.edit, &f.query);
+        set_field_text(self.edit, &f.query);
         repaint_with(
             self.list,
             Paint::List {
@@ -247,12 +250,19 @@ fn pointer_on_anchor() -> bool {
     .unwrap_or(false)
 }
 
-fn key_action(vk: VIRTUAL_KEY) -> bool {
+/// A key for the picker, from its field or its list. `in_list`: Home and
+/// End are the list's too (in the field they move the caret).
+fn key_action(vk: VIRTUAL_KEY, in_list: bool) -> bool {
     let f = with_state(|s| s.popover.as_ref().map(|p| p.filter.clone())).flatten();
     let Some(f) = f else { return false };
+    let page = VISIBLE_ROWS as i32 - 1;
     match vk {
         VK_UP => f.on_move.call(-1),
         VK_DOWN => f.on_move.call(1),
+        VK_PRIOR => f.on_move.call(-page),
+        VK_NEXT => f.on_move.call(page),
+        VK_HOME if in_list => f.on_move.call(i32::MIN / 2),
+        VK_END if in_list => f.on_move.call(i32::MAX / 2),
         VK_RETURN => {
             if let Some(i) = f.selected {
                 f.on_choose.call(i);
@@ -275,7 +285,7 @@ unsafe extern "system" fn edit_proc(
     match msg {
         WM_GETDLGCODE => LRESULT((DLGC_WANTALLKEYS | DLGC_HASSETSEL | DLGC_WANTCHARS) as isize),
         WM_KEYDOWN => {
-            if key_action(VIRTUAL_KEY(w.0 as u16)) {
+            if key_action(VIRTUAL_KEY(w.0 as u16), false) {
                 LRESULT(0)
             } else {
                 unsafe { DefSubclassProc(h, msg, w, l) }
@@ -285,6 +295,43 @@ unsafe extern "system" fn edit_proc(
         WM_CHAR if w.0 == 0x0D || w.0 == 0x1B => LRESULT(0),
         WM_NCDESTROY => unsafe {
             let _ = RemoveWindowSubclass(h, Some(edit_proc), id);
+            DefSubclassProc(h, msg, w, l)
+        },
+        _ => unsafe { DefSubclassProc(h, msg, w, l) },
+    }
+}
+
+/// The list box moves its own selection with the keys, and each move would
+/// come back as `LBN_SELCHANGE`, which chooses. Keys here move the view's
+/// selection instead, as in the field; only a click or Return chooses.
+unsafe extern "system" fn list_proc(
+    h: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    id: usize,
+    _: usize,
+) -> LRESULT {
+    match msg {
+        WM_KEYDOWN => {
+            key_action(VIRTUAL_KEY(w.0 as u16), true);
+            LRESULT(0)
+        }
+        // Typing goes to the filter field.
+        WM_CHAR => {
+            let edit = with_state(|s| s.popover.as_ref().map(|p| p.edit)).flatten();
+            if let Some(edit) = edit {
+                if w.0 != 0x0D && w.0 != 0x1B {
+                    unsafe {
+                        let _ = SetFocus(Some(edit));
+                    }
+                    send(edit, WM_CHAR, w.0, l.0);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_NCDESTROY => unsafe {
+            let _ = RemoveWindowSubclass(h, Some(list_proc), id);
             DefSubclassProc(h, msg, w, l)
         },
         _ => unsafe { DefSubclassProc(h, msg, w, l) },
