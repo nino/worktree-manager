@@ -202,8 +202,7 @@ define_class!(
         /// the arrow acts on the row the arrow went to.
         #[unsafe(method(validateMenuItem:))]
         fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
-            flush();
-            crate::menu::enabled(item.tag())
+            crate::menu::validate(item.tag(), flush)
         }
     }
 

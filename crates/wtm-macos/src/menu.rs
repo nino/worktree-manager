@@ -6,7 +6,9 @@
 //! The bar is rebuilt only when the menus change shape. An item's enabled
 //! state is read when AppKit validates it, so it is never rebuilt for that.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+use dispatch2::DispatchQueue;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
@@ -23,6 +25,21 @@ thread_local! {
     static SHAPE: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Each action item's handler and enabled state, by tag.
     static ACTIONS: RefCell<Vec<(Handler, bool)>> = const { RefCell::new(Vec::new()) };
+    /// AppKit is validating the bar: a new one waits for the next turn.
+    static VALIDATING: Cell<bool> = const { Cell::new(false) };
+    /// The latest menus that waited for validation to finish.
+    static DEFERRED: RefCell<Option<Vec<Menu>>> = const { RefCell::new(None) };
+}
+
+/// Whether the item with `tag` is enabled, after running whatever the
+/// program still has queued. That can render, and a render that changes the
+/// menus' shape would replace the bar AppKit is in the middle of tracking;
+/// the new one is put up on the next turn instead.
+pub fn validate(tag: NSInteger, flush: impl FnOnce()) -> bool {
+    VALIDATING.with(|v| v.set(true));
+    flush();
+    VALIDATING.with(|v| v.set(false));
+    enabled(tag)
 }
 
 /// Whether the item with `tag` is enabled, as last rendered.
@@ -73,6 +90,22 @@ pub fn render(menus: &[Menu], controller: &AnyObject, mtm: MainThreadMarker) {
     if SHAPE.with(|s| s.borrow().as_deref() == Some(shape.as_str())) {
         return;
     }
+    if VALIDATING.with(Cell::get) {
+        if DEFERRED.with(|d| d.replace(Some(menus.to_vec()))).is_none() {
+            DispatchQueue::main().exec_async(|| {
+                let Some(menus) = DEFERRED.with(|d| d.take()) else {
+                    return;
+                };
+                let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+                let app = NSApplication::sharedApplication(mtm);
+                if let Some(controller) = app.delegate() {
+                    render(&menus, controller.as_ref(), mtm);
+                }
+            });
+        }
+        return;
+    }
+    DEFERRED.with(|d| d.borrow_mut().take());
     SHAPE.with(|s| *s.borrow_mut() = Some(shape));
     install(menus, controller, mtm);
 }

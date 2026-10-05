@@ -767,7 +767,13 @@ pub fn restart(mtm: MainThreadMarker) {
         app = shell_quote(&install.bundle.to_string_lossy()),
     );
     let _ = Command::new("/bin/sh").args(["-c", &script]).spawn();
-    objc2_app_kit::NSApplication::sharedApplication(mtm).terminate(None);
+    // On the next turn: this runs from the program's update, and quitting
+    // there would leave `applicationWillTerminate:` unable to drain the
+    // window state into the program before the process exits.
+    DispatchQueue::main().exec_async(|| {
+        let mtm = MainThreadMarker::new().expect("the main queue runs on the main thread");
+        objc2_app_kit::NSApplication::sharedApplication(mtm).terminate(None);
+    });
 }
 
 fn shell_quote(s: &str) -> String {

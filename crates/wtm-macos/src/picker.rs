@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 
 use block2::RcBlock;
-use dispatch2::MainThreadBound;
+use dispatch2::{DispatchQueue, MainThreadBound};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -43,6 +43,10 @@ thread_local! {
     /// The open picker, if any: the popover keeps no strong reference to
     /// its delegate and data source.
     static CURRENT: RefCell<Option<Retained<BranchPicker>>> = const { RefCell::new(None) };
+    /// Pickers the view closed, kept until their popover has finished
+    /// closing and said so: until then it still calls their delegate and
+    /// data source methods.
+    static CLOSING: RefCell<Vec<Retained<BranchPicker>>> = const { RefCell::new(Vec::new()) };
 }
 
 pub struct BranchPickerIvars {
@@ -144,12 +148,27 @@ define_class!(
         fn popover_did_close(&self, _n: &NSNotification) {
             // Only if this is still the current picker: a click that closes
             // one and opens another arrives before this notification.
-            CURRENT.with(|c| {
-                let mut c = c.borrow_mut();
-                if c.as_deref().is_some_and(|p| std::ptr::eq(p, self)) {
-                    c.take();
-                }
-            });
+            let mine = CURRENT
+                .with(|c| {
+                    let mut c = c.borrow_mut();
+                    if c.as_deref().is_some_and(|p| std::ptr::eq(p, self)) {
+                        c.take()
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    CLOSING.with(|c| {
+                        let mut c = c.borrow_mut();
+                        let i = c.iter().position(|p| std::ptr::eq(&**p, self))?;
+                        Some(c.remove(i))
+                    })
+                });
+            // Released on the next turn, not inside its own method.
+            if let (Some(p), Some(mtm)) = (mine, MainThreadMarker::new()) {
+                let p = MainThreadBound::new(p, mtm);
+                DispatchQueue::main().exec_async(move || drop(p));
+            }
             self.stop_watching();
             self.report_dismissal();
             // The popover took the keyboard; hand it back to the tree rather
@@ -409,12 +428,17 @@ impl BranchPicker {
     fn close_by_view(&self) {
         self.ivars().closed_by_view.set(true);
         self.stop_watching();
-        CURRENT.with(|c| {
+        let mine = CURRENT.with(|c| {
             let mut c = c.borrow_mut();
             if c.as_deref().is_some_and(|p| std::ptr::eq(p, self)) {
-                c.take();
+                c.take()
+            } else {
+                None
             }
         });
+        if let Some(p) = mine {
+            CLOSING.with(|c| c.borrow_mut().push(p));
+        }
         unsafe { self.ivars().popover.performClose(None) };
     }
 

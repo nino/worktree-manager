@@ -44,9 +44,15 @@ pub fn render(dialogs: &[Dialog], window: &NSWindow, mtm: MainThreadMarker) {
     let first = dialogs
         .iter()
         .find(|d| !CLOSED.with(|c| c.borrow().contains(&d.id)));
-    let open_id = OPEN.with(|o| o.borrow().as_ref().map(|o| o.id));
-    match (open_id, first) {
-        (Some(id), Some(d)) if id == d.id => patch(d),
+    // A sheet's buttons cannot be relabelled or added to once it is up: a
+    // dialog whose buttons change is shown again.
+    let open = OPEN.with(|o| {
+        o.borrow()
+            .as_ref()
+            .map(|o| (o.id, first.is_some_and(|d| same_buttons(&o.dialog, d))))
+    });
+    match (open, first) {
+        (Some((id, true)), Some(d)) if id == d.id => patch(d),
         (open, first) => {
             if open.is_some() {
                 close_by_view(window);
@@ -56,6 +62,14 @@ pub fn render(dialogs: &[Dialog], window: &NSWindow, mtm: MainThreadMarker) {
             }
         }
     }
+}
+
+fn same_buttons(a: &Dialog, b: &Dialog) -> bool {
+    a.buttons.len() == b.buttons.len()
+        && a.buttons
+            .iter()
+            .zip(&b.buttons)
+            .all(|(x, y)| x.label == y.label && x.role == y.role)
 }
 
 /// The view took the dialog away (its repo was removed, say): close the

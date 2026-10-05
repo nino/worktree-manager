@@ -652,9 +652,8 @@ fn patch_button(button: &NSButton, target: &Callback, b: &ButtonEl) {
     }
     button.setEnabled(b.enabled);
     button.setHidden(b.hidden);
-    if b.tint == Tint::Danger {
-        button.setContentTintColor(Some(&NSColor::systemRedColor()));
-    }
+    let red = (b.tint == Tint::Danger).then(NSColor::systemRedColor);
+    button.setContentTintColor(red.as_deref());
     sizing(button, false, b.shrink);
     let h = b.on_press.clone();
     target.set(move || h.call(()));
