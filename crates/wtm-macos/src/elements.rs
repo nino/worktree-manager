@@ -647,7 +647,9 @@ fn patch_button(button: &NSButton, target: &Callback, b: &ButtonEl) {
         button.setToolTip(b.hint.as_deref().map(ns).as_deref());
         button.setAccessibilityHelp(b.hint.as_deref().map(ns).as_deref());
     }
-    button.setAccessibilityLabel(b.a11y_label.as_deref().map(ns).as_deref());
+    if let Some(label) = &b.a11y_label {
+        button.setAccessibilityLabel(Some(&ns(label)));
+    }
     button.setEnabled(b.enabled);
     button.setHidden(b.hidden);
     if b.tint == Tint::Danger {

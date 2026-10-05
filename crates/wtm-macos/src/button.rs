@@ -125,12 +125,15 @@ impl IconButton {
         this
     }
 
-    /// The tooltip text, which is also the button's accessibility help — the
-    /// system tooltip used to provide that, and these buttons no longer set
-    /// one. (Their name comes from the symbol's accessibility description.)
+    /// The tooltip text, which is also the button's accessibility name and
+    /// help — the system tooltip used to provide the help, and these buttons
+    /// no longer set one. A recycled row's button says what it does in the
+    /// row it now shows ("Pull main into this branch").
     pub fn set_hint(&self, hint: &str) {
         *self.ivars().hint.borrow_mut() = hint.to_string();
-        self.setAccessibilityHelp(Some(&crate::util::ns(hint)));
+        let hint = crate::util::ns(hint);
+        self.setAccessibilityLabel(Some(&hint));
+        self.setAccessibilityHelp(Some(&hint));
     }
 }
 
