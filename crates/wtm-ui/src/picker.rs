@@ -13,8 +13,18 @@ use crate::list::branch_rich;
 pub enum PickerMsg {
     Query(String),
     Move(i32),
-    Choose(usize),
+    Choose(Chosen),
     Dismiss,
+}
+
+/// A row chosen, as the picker showed it. The handler is built at render
+/// time, and keys pressed just before Return reach the program first, in
+/// the same batch; so Return on the row shown selected means the program's
+/// own selection, and a click on another row means the branch drawn there.
+#[derive(Debug, Clone)]
+pub enum Chosen {
+    Selection,
+    Branch(String),
 }
 
 pub struct Picker {
@@ -96,8 +106,19 @@ impl Picker {
     /// The branch on row `row`, unless it is the one already checked out.
     pub fn choice(&self, row: usize) -> Option<String> {
         let (i, _) = self.filtered.get(row)?;
-        let branch = &self.all[*i];
-        (self.current.as_deref() != Some(branch.as_str())).then(|| branch.clone())
+        self.unless_current(&self.all[*i])
+    }
+
+    /// The branch `chosen` names, unless it is the one already checked out.
+    pub fn chosen(&self, chosen: Chosen) -> Option<String> {
+        match chosen {
+            Chosen::Selection => self.choice(self.selected?),
+            Chosen::Branch(b) => self.unless_current(&b),
+        }
+    }
+
+    fn unless_current(&self, branch: &str) -> Option<String> {
+        (self.current.as_deref() != Some(branch)).then(|| branch.to_string())
     }
 
     /// The selected row, for Return.
@@ -128,7 +149,24 @@ impl Picker {
                 selected: self.selected,
                 on_query: v.map(move |q| msg(PickerMsg::Query(q))),
                 on_move: v.map(move |d| msg(PickerMsg::Move(d))),
-                on_choose: v.map(move |r| msg(PickerMsg::Choose(r))),
+                on_choose: {
+                    let shown: Vec<String> = self
+                        .filtered
+                        .iter()
+                        .map(|(i, _)| self.all[*i].clone())
+                        .collect();
+                    let selected = self.selected;
+                    v.map(move |r| {
+                        msg(PickerMsg::Choose(if Some(r) == selected {
+                            Chosen::Selection
+                        } else {
+                            match shown.get(r) {
+                                Some(b) => Chosen::Branch(b.clone()),
+                                None => Chosen::Selection,
+                            }
+                        }))
+                    })
+                },
                 on_dismiss: v.on(msg(PickerMsg::Dismiss)),
             },
         }
@@ -186,6 +224,22 @@ mod tests {
         let p = picker(&["main"], Some("gone"));
         assert_eq!(p.all, ["gone", "main"]);
         assert_eq!(p.selected(), Some(0));
+    }
+
+    #[test]
+    fn return_chooses_the_selection_as_handled_not_as_rendered() {
+        let mut p = picker(&["dev", "feature-a", "feature-b", "main"], Some("main"));
+        // ↑ and Return in one batch: Return's handler was built while
+        // `main` was selected.
+        p.move_by(-1);
+        assert_eq!(p.chosen(Chosen::Selection), Some("feature-b".into()));
+        p.set_query("feat".into());
+        assert_eq!(
+            p.chosen(Chosen::Branch("dev".into())),
+            Some("dev".into()),
+            "a click names the branch drawn on the row"
+        );
+        assert_eq!(p.chosen(Chosen::Branch("main".into())), None);
     }
 
     #[test]

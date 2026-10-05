@@ -261,8 +261,14 @@ impl<P: Program> Runtime<P> {
         loop {
             rounds += 1;
             // A program that answers every render with another message
-            // would spin here forever; that is a bug in the program.
-            debug_assert!(rounds < 1000, "the program keeps sending itself messages");
+            // would spin here forever; that is a bug in the program. A
+            // release build hands the main loop back instead: whatever is
+            // still queued has a drain posted for it already.
+            if rounds > 1000 {
+                debug_assert!(false, "the program keeps sending itself messages");
+                log::error!("the program keeps sending itself messages");
+                break;
+            }
             let items: Vec<_> = self.queue.borrow_mut().drain(..).collect();
             if items.is_empty() {
                 break;

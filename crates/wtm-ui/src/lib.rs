@@ -462,7 +462,7 @@ impl Ui {
         let Some(at) = self.dialogs.iter().position(|d| d.id == id) else {
             return;
         };
-        self.dialogs.remove(at);
+        let open = self.dialogs.remove(at);
         self.dialog_gate = true;
         cx.effect(Effect::After(Duration::ZERO, cx.on(Msg::DialogGate)));
         // Every prefix typed left an entry; the next sheet looks afresh.
@@ -475,8 +475,18 @@ impl Ui {
         }
         match outcome {
             Outcome::Close => {}
-            Outcome::Create(params) => self.app.dispatch(Action::CreateWorktree(params)),
-            Outcome::SaveRepo(repo) => self.app.dispatch(Action::UpdateRepo(repo)),
+            Outcome::Create { shown, params } => {
+                if let Kind::NewWorktree(sheet) = &open.kind {
+                    if let Some(params) = sheet.create(shown, params) {
+                        self.app.dispatch(Action::CreateWorktree(params));
+                    }
+                }
+            }
+            Outcome::SaveRepo => {
+                if let Kind::RepoSettings(s) = &open.kind {
+                    self.app.dispatch(Action::UpdateRepo(s.saved()));
+                }
+            }
             Outcome::AskRemove { repo_id, name } => {
                 self.ask(Kind::ConfirmRemove { repo_id, name });
             }
@@ -568,10 +578,6 @@ impl Ui {
         let Some(p) = self.picker.as_mut().filter(|p| p.id == id) else {
             return;
         };
-        let choose = |p: &Picker, row: usize| {
-            p.choice(row)
-                .map(|branch| (p.repo_id.clone(), p.path.clone(), branch))
-        };
         let chosen = match msg {
             PickerMsg::Query(q) => {
                 p.set_query(q);
@@ -581,7 +587,9 @@ impl Ui {
                 p.move_by(by);
                 return;
             }
-            PickerMsg::Choose(row) => choose(p, row),
+            PickerMsg::Choose(c) => p
+                .chosen(c)
+                .map(|branch| (p.repo_id.clone(), p.path.clone(), branch)),
             PickerMsg::Dismiss => None,
         };
         self.picker = None;
@@ -625,12 +633,16 @@ impl Ui {
                 return;
             }
         }
-        let Some(changed) = s.changed(&self.model.config) else {
+        // Against the config as it is now, not as last shown: an edit
+        // undone before the first one's model change arrived is still a
+        // change.
+        let config = self.app.model().config.clone();
+        let Some(changed) = s.changed(&config) else {
             return;
         };
         // Switching the channel takes effect at once: the new channel's feed
         // is read straight away rather than at the next periodic check.
-        let channel = changed.update_channel != self.model.config.update_channel;
+        let channel = changed.update_channel != config.update_channel;
         self.app.dispatch(Action::SetSettings(changed));
         if channel {
             self.updater.channel_changed();
@@ -772,18 +784,18 @@ impl Program for Ui {
 
             Msg::Query(q) => {
                 if q == self.query {
+                    cx.unchanged();
                     return;
                 }
                 let was = self.searching();
                 self.query = q;
                 let now = self.searching();
-                // A search opens every card; clearing it closes again the
-                // ones that were closed before it.
-                if now {
-                    self.collapsed_before_search
-                        .get_or_insert_with(|| self.collapsed.clone());
-                    self.collapsed.clear();
-                } else if was {
+                // A search opens every card, which can then be closed as
+                // usual; clearing it closes again the ones that were closed
+                // before it.
+                if now && !was {
+                    self.collapsed_before_search = Some(std::mem::take(&mut self.collapsed));
+                } else if was && !now {
                     if let Some(saved) = self.collapsed_before_search.take() {
                         self.collapsed = saved;
                     }
@@ -793,10 +805,12 @@ impl Program for Ui {
             // Rendered, though the list already shows it: the menus' enabled
             // items follow the selection.
             Msg::Select(key) => {
-                if self.selected != key {
-                    self.selected = key;
-                    self.remember();
+                if self.selected == key {
+                    cx.unchanged();
+                    return;
                 }
+                self.selected = key;
+                self.remember();
             }
             Msg::Toggle(key, open) => {
                 if let Some(Item::Repo { repo_id }) = Item::find(&key, &self.model) {
@@ -813,10 +827,13 @@ impl Program for Ui {
                 let Some(Item::Repo { repo_id }) = Item::find(&key, &self.model) else {
                     return;
                 };
-                let before = before.and_then(|b| match Item::find(&b, &self.model) {
-                    Some(Item::Repo { repo_id }) => Some(repo_id),
-                    _ => None,
-                });
+                // A card gone since the drag began is no place to drop: it
+                // is not "last".
+                let before = match before.map(|b| Item::find(&b, &self.model)) {
+                    None => None,
+                    Some(Some(Item::Repo { repo_id })) => Some(repo_id),
+                    Some(_) => return,
+                };
                 if let Some(before) = self.repo_move(&repo_id, before.as_deref()) {
                     self.app.dispatch(Action::MoveRepo { repo_id, before });
                 }

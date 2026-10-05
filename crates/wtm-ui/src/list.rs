@@ -240,8 +240,7 @@ pub fn sections(cx: &Context, open: impl Fn(&str) -> bool, v: &ViewCx<Msg>) -> V
             }
             .key(),
             header,
-            // A search opens every card.
-            expanded: searching || open(&node.repo.id),
+            expanded: open(&node.repo.id),
             rows,
         });
     }

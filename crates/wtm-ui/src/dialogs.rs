@@ -21,8 +21,14 @@ use crate::Msg;
 #[derive(Debug, Clone)]
 pub enum Outcome {
     Close,
-    Create(CreateWorktreeParams),
-    SaveRepo(RepoConfig),
+    /// Create, as the sheet showed it: the fields it was rendered with and
+    /// what that render would have sent.
+    Create {
+        shown: Draft,
+        params: CreateWorktreeParams,
+    },
+    /// Save what the fields hold when the message is handled.
+    SaveRepo,
     /// Ask whether to remove the repo.
     AskRemove {
         repo_id: String,
@@ -68,6 +74,14 @@ pub struct Open {
 
 // MARK: New Worktree
 
+/// The New Worktree sheet's fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draft {
+    name: String,
+    new_branch: bool,
+    base: String,
+}
+
 pub struct NewWorktree {
     pub repo_id: String,
     repo_name: String,
@@ -99,6 +113,36 @@ impl NewWorktree {
         let node = model.repo(&self.repo_id)?;
         let path = model.worktree_path(&node.repo, &self.name);
         Some(path.to_string_lossy().into_owned())
+    }
+
+    fn draft(&self) -> Draft {
+        Draft {
+            name: self.name.clone(),
+            new_branch: self.new_branch,
+            base: self.base.clone(),
+        }
+    }
+
+    /// What Create sends, given what it showed. A button's message is built
+    /// when the sheet is rendered, and keys typed just before the click
+    /// reach the program in the same batch, ahead of it: when the fields
+    /// moved on since, the fields win, and are sent only if they pass.
+    /// Unchanged fields send what was shown, so a listing that lands between
+    /// the render and the click does not turn the branch into another one.
+    pub fn create(
+        &self,
+        shown: Draft,
+        params: CreateWorktreeParams,
+    ) -> Option<CreateWorktreeParams> {
+        if shown == self.draft() {
+            return Some(params);
+        }
+        let source = self.check.create.clone().ok()?;
+        Some(CreateWorktreeParams {
+            repo_id: self.repo_id.clone(),
+            branch: self.name.trim().to_string(),
+            source,
+        })
     }
 
     /// Check the fields again: against the latest listing, and `taken`, the
@@ -185,7 +229,13 @@ impl NewWorktree {
                     role: Role::Default,
                     enabled: create.is_some(),
                     on_press: match create {
-                        Some(p) => v.on(Msg::DialogDone(id, Outcome::Create(p))),
+                        Some(params) => v.on(Msg::DialogDone(
+                            id,
+                            Outcome::Create {
+                                shown: self.draft(),
+                                params,
+                            },
+                        )),
                         None => v.on(Msg::DialogDone(id, Outcome::Close)),
                     },
                 },
@@ -219,7 +269,7 @@ impl RepoSettings {
     }
 
     /// The repo as Save would leave it.
-    fn saved(&self) -> RepoConfig {
+    pub fn saved(&self) -> RepoConfig {
         let mut updated = self.repo.clone();
         updated.name = match self.name.trim() {
             "" => self.repo.name.clone(),
@@ -259,7 +309,7 @@ impl RepoSettings {
                     label: "Save".into(),
                     role: Role::Default,
                     enabled: true,
-                    on_press: v.on(Msg::DialogDone(id, Outcome::SaveRepo(self.saved()))),
+                    on_press: v.on(Msg::DialogDone(id, Outcome::SaveRepo)),
                 },
                 cancel(id, v),
                 DialogButton {

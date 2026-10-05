@@ -215,6 +215,22 @@ fn a_search_opens_closed_cards_and_clearing_it_closes_them_again() {
 }
 
 #[test]
+fn a_card_closed_mid_search_stays_closed_while_typing() {
+    let (_base, _repo, _app, h) = listed("search-close");
+    let key = section_key(&h.view());
+    h.send(Msg::Query("m".into()));
+    h.send(Msg::Toggle(key.clone(), false));
+    assert!(!h.view().window.list.sections[0].expanded);
+    h.send(Msg::Query("ma".into()));
+    assert!(!h.view().window.list.sections[0].expanded);
+    h.send(Msg::Query(String::new()));
+    assert!(
+        h.view().window.list.sections[0].expanded,
+        "open before the search, so open after it"
+    );
+}
+
+#[test]
 fn creates_a_worktree_from_the_sheet() {
     let (_base, _repo, app, h) = listed("create");
     let v = h.view();
@@ -265,25 +281,26 @@ fn creates_a_worktree_from_the_sheet() {
 }
 
 #[test]
-fn create_sends_what_the_sheet_showed() {
-    let (_base, _repo, app, h) = listed("as-shown");
+fn create_sends_what_was_typed_before_the_click() {
+    let (_base, _repo, app, h) = listed("typed");
     let v = h.view();
     h.fire(&v.window.list.sections[0].header.on_new_worktree, ());
-    type_into(&h, "branch", "shown-name");
+    type_into(&h, "branch", "fo");
     let create = dialog(&h.view()).button("Create").unwrap().on_press.clone();
-    // The name changes after the click was made against what was on screen.
-    type_into(&h, "branch", "dev");
+    // The last key and the click land in one batch, so the button pressed
+    // is the one rendered before that key.
+    type_into(&h, "branch", "foo");
     h.fire(&create, ());
-    h.wait_for(WAIT, "the worktree named as shown", |v| {
+    h.wait_for(WAIT, "the worktree named as typed", |v| {
         v.window.list.sections[0]
             .rows
             .iter()
-            .any(|r| matches!(&r.content, RowContent::Worktree(w) if w.branch_name == "shown-name"))
+            .any(|r| matches!(&r.content, RowContent::Worktree(w) if w.branch_name == "foo"))
     });
     assert!(app.model().repos[0]
         .worktrees
         .iter()
-        .all(|w| w.branch.as_deref() != Some("dev")));
+        .all(|w| w.branch.as_deref() != Some("fo")));
 }
 
 #[test]
