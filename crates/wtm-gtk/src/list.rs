@@ -38,6 +38,12 @@ pub struct ListW {
     on_activate: Slot<Key>,
     /// A scroll offset waiting for the rows to be laid out (see `scroll_to`).
     pending_scroll: Cell<Option<f64>>,
+    /// The give-up timer for `pending_scroll` has started.
+    pending_timer: Cell<bool>,
+    /// An `apply_pending_scroll` is queued for after this layout.
+    apply_queued: Cell<bool>,
+    /// The last offset reported as the user's (tests).
+    reported: Cell<Option<f64>>,
     dragging: RefCell<Option<Key>>,
     drop_mark: RefCell<Option<gtk::Widget>>,
     me: Weak<ListW>,
@@ -81,8 +87,16 @@ impl ListW {
             // With nothing selected the list itself holds the keyboard, so
             // the arrow keys work straight away.
             content.set_focusable(true);
+            // An explicit viewport, to turn off its scroll-to-focus: that
+            // scrolled on every focus change, the backend's own included
+            // (the restored row at launch would undo the restored offset).
+            // A row the user moves the keyboard to is scrolled into view by
+            // `wire_row` instead.
+            let viewport = gtk::Viewport::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
+            viewport.set_scroll_to_focus(false);
+            viewport.set_child(Some(&content));
             let scroller = gtk::ScrolledWindow::new();
-            scroller.set_child(Some(&content));
+            scroller.set_child(Some(&viewport));
             scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
             scroller.set_vexpand(true);
             scroller.set_hexpand(true);
@@ -97,6 +111,9 @@ impl ListW {
                 on_reorder: RefCell::new(None),
                 on_activate: slot(&Handler::none()),
                 pending_scroll: Cell::new(None),
+                pending_timer: Cell::new(false),
+                apply_queued: Cell::new(false),
+                reported: Cell::new(None),
                 dragging: RefCell::new(None),
                 drop_mark: RefCell::new(None),
                 me: me.clone(),
@@ -114,28 +131,61 @@ impl ListW {
         });
         self.scroller.add_controller(keys);
 
+        // What the user does in the list before a restored offset lands
+        // makes it theirs: a wheel or touchpad, a press (the scrollbar, a
+        // row, a touchscreen), a key. Seen in the capture phase, before the
+        // scrolled window acts on it.
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let me = self.me.clone();
+        wheel.connect_scroll(move |_, _, _| {
+            if let Some(list) = me.upgrade() {
+                list.user_input();
+            }
+            glib::Propagation::Proceed
+        });
+        self.scroller.add_controller(wheel);
+        let press = gtk::GestureClick::new();
+        press.set_button(0);
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let me = self.me.clone();
+        press.connect_pressed(move |_, _, _, _| {
+            if let Some(list) = me.upgrade() {
+                list.user_input();
+            }
+        });
+        self.scroller.add_controller(press);
+        let any_key = gtk::EventControllerKey::new();
+        any_key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let me = self.me.clone();
+        any_key.connect_key_pressed(move |_, _, _, _| {
+            if let Some(list) = me.upgrade() {
+                list.user_input();
+            }
+            glib::Propagation::Proceed
+        });
+        self.scroller.add_controller(any_key);
+
         let adj = self.scroller.vadjustment();
         let me = self.me.clone();
         adj.connect_value_changed(move |a| {
             if rendering() {
                 return;
             }
-            if let Some(list) = me.upgrade() {
-                // The user scrolled before the restore landed: theirs wins.
-                if list
-                    .pending_scroll
-                    .get()
-                    .is_some_and(|p| (p - a.value()).abs() > 0.5)
-                {
-                    list.pending_scroll.set(None);
-                }
+            let Some(list) = me.upgrade() else { return };
+            // Until a restored offset lands, a move is GTK's own: the range
+            // clamping the value while the rows are laid out. Reported, it
+            // would be remembered in place of the offset being restored.
+            if list.pending_scroll.get().is_some() {
+                return;
             }
+            list.reported.set(Some(a.value()));
             host_event(HostEvent::Scrolled(a.value()));
         });
         let me = self.me.clone();
         adj.connect_changed(move |_| {
             if let Some(list) = me.upgrade() {
-                list.apply_pending_scroll();
+                list.queue_pending_scroll();
             }
         });
 
@@ -478,16 +528,34 @@ impl ListW {
 
     // MARK: Effects
 
-    /// Scroll to `offset` once the rows are laid out: the adjustment's range
-    /// is only known after layout, so the offset waits for it (clamped) and
-    /// gives up after a moment.
+    /// Scroll to `offset` once the rows are laid out. It usually comes with
+    /// the render that made the window, before any layout: the adjustment's
+    /// range is only known after it, so the offset waits for the range to
+    /// reach it, and settles for the clamped value a moment after the first
+    /// layout when the list has become shorter than it was.
     pub fn scroll_to(&self, offset: f64) {
         self.pending_scroll.set(Some(offset));
+        self.pending_timer.set(false);
         self.apply_pending_scroll();
+    }
+
+    /// The user scrolled, pressed or typed in the list: a restore not yet
+    /// landed is dropped, and moves are theirs again.
+    fn user_input(&self) {
+        self.pending_scroll.set(None);
+    }
+
+    /// The range changed, which it does in the middle of a layout: apply
+    /// the offset once that layout is done.
+    fn queue_pending_scroll(&self) {
+        if self.pending_scroll.get().is_none() || self.apply_queued.replace(true) {
+            return;
+        }
         let me = self.me.clone();
-        glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+        glib::idle_add_local_once(move || {
             if let Some(list) = me.upgrade() {
-                list.pending_scroll.set(None);
+                list.apply_queued.set(false);
+                list.apply_pending_scroll();
             }
         });
     }
@@ -497,12 +565,30 @@ impl ListW {
             return;
         };
         let adj = self.scroller.vadjustment();
+        // Not laid out yet: nothing to clamp against.
+        if adj.page_size() <= 0.0 {
+            return;
+        }
         let max = (adj.upper() - adj.page_size()).max(0.0);
         let v = offset.clamp(0.0, max);
-        quietly(|| adj.set_value(v));
+        if (adj.value() - v).abs() > 0.5 {
+            quietly(|| adj.set_value(v));
+        }
         if max >= offset {
             self.pending_scroll.set(None);
+        } else if !self.pending_timer.replace(true) {
+            let me = self.me.clone();
+            glib::timeout_add_local_once(Duration::from_millis(1500), move || {
+                if let Some(list) = me.upgrade() {
+                    list.pending_scroll.set(None);
+                }
+            });
         }
+    }
+
+    /// The offset last reported as the user's scroll (tests).
+    pub fn reported_scroll(&self) -> Option<f64> {
+        self.reported.get()
     }
 
     /// Scroll the selected row into view, after this render's layout.
@@ -527,16 +613,34 @@ impl ListW {
         } else {
             w
         };
-        let Some(b) = target.compute_bounds(&self.content) else {
-            return;
+        self.reveal_widget(&target, 12.0);
+    }
+
+    /// Scroll the least that shows `w` (a row, or something in one) with
+    /// `margin` around it. `false` when it is not laid out in the list.
+    pub fn reveal_widget(&self, w: &gtk::Widget, margin: f64) -> bool {
+        let Some(b) = w.compute_bounds(&self.content) else {
+            return false;
         };
         let adj = self.scroller.vadjustment();
-        let (top, bottom) = (b.y() as f64 - 12.0, (b.y() + b.height()) as f64 + 12.0);
+        let (top, bottom) = (b.y() as f64 - margin, (b.y() + b.height()) as f64 + margin);
         if top < adj.value() {
             adj.set_value(top.max(0.0));
         } else if bottom > adj.value() + adj.page_size() {
             adj.set_value(bottom - adj.page_size());
         }
+        true
+    }
+
+    /// Whether `w` is laid out and wholly inside the list's visible part.
+    pub fn shows(&self, w: &gtk::Widget) -> bool {
+        let Some(b) = w.compute_bounds(&self.content) else {
+            return false;
+        };
+        let adj = self.scroller.vadjustment();
+        w.is_mapped()
+            && b.y() as f64 >= adj.value() - 0.5
+            && (b.y() + b.height()) as f64 <= adj.value() + adj.page_size() + 0.5
     }
 
     /// Put the keyboard on the list: on the selected row, else the list.
@@ -556,12 +660,17 @@ impl ListW {
 // MARK: Sections and rows
 
 /// Selection on click and on focus, and the header's drag, for a row's root.
+/// A row the keyboard enters by the user's hand (arrows, Tab, a click) is
+/// scrolled into view, which the viewport no longer does by itself.
 fn wire_row(root: &gtk::Widget, key: &str, list: &Weak<ListW>) {
     let focus = gtk::EventControllerFocus::new();
-    let (k, l) = (key.to_string(), list.clone());
+    let (k, l, r) = (key.to_string(), list.clone(), root.downgrade());
     focus.connect_enter(move |_| {
         if let Some(list) = l.upgrade() {
             list.user_select(&k);
+            if let (false, Some(root)) = (rendering(), r.upgrade()) {
+                list.reveal_widget(&root, 0.0);
+            }
         }
     });
     root.add_controller(focus);

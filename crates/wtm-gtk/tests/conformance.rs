@@ -651,6 +651,78 @@ mod linux {
         pump_until("GTK's own setting with no preference", || !dark());
     }
 
+    /// `n` cards of three worktrees each (`w:/<card>/<row>`), in a window of
+    /// 900×600 that shows about two of them.
+    fn tall(n: usize) -> View {
+        let mut v = plain();
+        v.window.frame = Some(wtm_toolkit::Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 900.0,
+            height: 600.0,
+        });
+        v.window.list.sections = (0..n)
+            .map(|i| Section {
+                key: format!("r:{i}"),
+                header: header(&format!("repo{i}")),
+                expanded: true,
+                rows: (0..3)
+                    .map(|j| Row {
+                        key: format!("w:/{i}/{j}"),
+                        content: RowContent::Worktree(worktree(
+                            &format!("branch-{i}-{j}"),
+                            vec![badge("✓", Hue::Green)],
+                            Handler::none(),
+                        )),
+                    })
+                    .collect(),
+            })
+            .collect();
+        v
+    }
+
+    fn a_saved_offset_is_restored_at_launch() {
+        let p = Probe::default();
+        let mut v = tall(8);
+        // The row restored with the keyboard is above the restored offset:
+        // giving it the keyboard must not scroll to it.
+        v.window.list.selected = Some("w:/0/0".into());
+        // As at launch: the effects come with the render that makes the
+        // window, before it has been laid out.
+        p.render_then(&v, vec![Effect::ScrollTo(362.0), Effect::FocusList]);
+        pump_until("the offset restored", || {
+            (p.scroll_value() - 362.0).abs() < 0.5
+        });
+        // And it stays there once everything has settled.
+        let settle = std::time::Instant::now();
+        while settle.elapsed() < std::time::Duration::from_millis(300) {
+            testing::pump();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            (p.scroll_value() - 362.0).abs() < 0.5,
+            "moved to {}",
+            p.scroll_value()
+        );
+        assert_eq!(p.reported_scroll(), None, "the restore was reported");
+        // The keyboard moving to a row out of view scrolls to it, and that
+        // is the user's scroll.
+        let far = p.row("w:/7/2").expect("last row");
+        assert!(!p.shows(&far));
+        far.grab_focus();
+        pump_until("the focused row in view", || p.shows(&far));
+        assert!(p.reported_scroll().is_some_and(|y| y > 362.0));
+    }
+
+    fn a_longer_offset_than_the_list_settles_for_its_end() {
+        let p = Probe::default();
+        p.render_then(&tall(3), vec![Effect::ScrollTo(100_000.0)]);
+        pump_until("scrolled to the end", || {
+            p.scroll_value() > 0.0 && (p.scroll_value() - p.scroll_max()).abs() < 0.5
+        });
+        assert_eq!(p.reported_scroll(), None);
+    }
+
     pub fn main() {
         let display = std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty());
@@ -658,7 +730,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 10] = [
+        let cases: [(&str, fn()); 12] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -695,6 +767,14 @@ mod linux {
             (
                 "the appearance follows the desktop's portal",
                 the_appearance_follows_the_desktop_portal,
+            ),
+            (
+                "a saved offset is restored at launch",
+                a_saved_offset_is_restored_at_launch,
+            ),
+            (
+                "a longer offset than the list settles for its end",
+                a_longer_offset_than_the_list_settles_for_its_end,
             ),
         ];
         let mut failed = 0;
