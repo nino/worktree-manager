@@ -13,7 +13,7 @@ log = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # For `#[implement]`, whose expansion names this crate directly.
-windows-core = "0.62"
+windows-core = "0.100"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
