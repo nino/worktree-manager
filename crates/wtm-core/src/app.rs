@@ -39,6 +39,7 @@ use crate::repos::{describe_add_failure, inspect_repo};
 use crate::types::*;
 use crate::ui_state::{UiState, UiStateStore};
 use crate::watcher::{linked_gitdir, WatchKey, Watcher};
+use crate::worktree_include;
 use crate::worktrees;
 
 /// Something the UI wants done.
@@ -700,11 +701,36 @@ impl App {
         self.inner.rt.spawn(async move {
             let model = app.model();
             let root = model.config.worktrees_root.clone();
+            let copy_include = model.config.copy_worktree_include;
             let target = model.worktree_path(&repo, &params.branch);
             let lock = app.lock_for(&target.to_string_lossy());
             let outcome = {
                 let _g = lock.lock().await;
-                worktrees::create_worktree(&repo, &root, &params).await
+                let created = worktrees::create_worktree(&repo, &root, &params).await;
+                // Still under the lock, so a delete of the new row cannot
+                // remove the folder while files are being copied into it,
+                // and before the init command, which may need the `.env`.
+                match created {
+                    Ok((path, warning)) if copy_include => {
+                        let copied = worktree_include::apply(&repo.path, &path).await;
+                        let problem = match copied {
+                            Ok(0) => None,
+                            Ok(n) => {
+                                info!("copied {n} files from .worktreeinclude into {path}");
+                                None
+                            }
+                            Err(e) => Some(e),
+                        };
+                        // One notice at a time, so a stale-fetch warning is
+                        // kept beside a copy that went wrong.
+                        let warning = match (warning, problem) {
+                            (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                            (a, b) => a.or(b),
+                        };
+                        Ok((path, warning))
+                    }
+                    other => other,
+                }
             };
             match outcome {
                 Ok((path, warning)) => {

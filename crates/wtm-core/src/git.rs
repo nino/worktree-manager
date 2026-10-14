@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
@@ -69,22 +71,54 @@ pub fn set_configure(f: impl Fn(&mut std::process::Command) + Send + Sync + 'sta
 
 /// Run a git command in `cwd` and return its stdout.
 pub async fn run_git(cwd: impl AsRef<Path>, args: &[&str]) -> GitResult<String> {
+    run_git_bytes(cwd, args, None, &[])
+        .await
+        .map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// [`run_git`] for stdout as git wrote it (paths need not be UTF-8), with
+/// `input` written to git's stdin, and with the exit statuses in `also_ok`
+/// counted as success: `check-ignore` exits 1 for "nothing is ignored".
+pub async fn run_git_bytes(
+    cwd: impl AsRef<Path>,
+    args: &[&str],
+    input: Option<Vec<u8>>,
+    also_ok: &[i32],
+) -> GitResult<Vec<u8>> {
     let cwd = cwd.as_ref();
     let _permit = gate().acquire().await.expect("git gate never closes");
     let mut command = Command::new("git");
     if let Some(f) = configure().get() {
         f(command.as_std_mut());
     }
-    let output = command
+    command
         .args(args)
         .current_dir(cwd)
         // Never let a git subprocess block on an interactive editor or prompt.
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .kill_on_drop(true)
-        .output()
-        .await;
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = match command.spawn() {
+        Ok(mut child) => {
+            // Written alongside the read, not before it: git answers as it
+            // reads, and would stop once a full stdout pipe went unread.
+            if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+                tokio::spawn(async move {
+                    let _ = stdin.write_all(&input).await;
+                });
+            }
+            child.wait_with_output().await
+        }
+        Err(e) => Err(e),
+    };
     let mk = |message: String, stderr: String| GitError {
         message,
         cwd: cwd.to_string_lossy().into_owned(),
@@ -92,7 +126,11 @@ pub async fn run_git(cwd: impl AsRef<Path>, args: &[&str]) -> GitResult<String> 
         stderr,
     };
     match output {
-        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out)
+            if out.status.success() || out.status.code().is_some_and(|c| also_ok.contains(&c)) =>
+        {
+            Ok(out.stdout)
+        }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
             let why = if stderr.trim().is_empty() {

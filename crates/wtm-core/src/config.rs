@@ -61,6 +61,7 @@ impl ConfigStore {
         self.config.worktrees_root = settings.worktrees_root;
         self.config.editor_command = settings.editor_command;
         self.config.update_channel = settings.update_channel;
+        self.config.copy_worktree_include = settings.copy_worktree_include;
         self.save();
     }
 
@@ -163,6 +164,7 @@ pub(crate) fn defaults(home: &Path) -> AppConfig {
             .into_owned(),
         editor_command: "code".to_string(),
         update_channel: UpdateChannel::default(),
+        copy_worktree_include: false,
         repos: Vec::new(),
     }
 }
@@ -246,6 +248,7 @@ mod tests {
         assert!(c.repos.is_empty());
         // An Electron-era file, and every existing install, follows stable.
         assert_eq!(c.update_channel, UpdateChannel::Stable);
+        assert!(!c.copy_worktree_include, "off unless chosen");
     }
 
     #[test]

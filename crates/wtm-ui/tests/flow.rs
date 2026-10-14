@@ -106,6 +106,7 @@ fn app_in(base: &Path) -> App {
         worktrees_root: base.join("wts").to_string_lossy().into_owned(),
         editor_command: "true".into(),
         update_channel: Default::default(),
+        copy_worktree_include: false,
     }));
     app
 }
@@ -500,6 +501,23 @@ fn settings_keep_what_was_typed() {
         .clone();
     h.fire(&root, String::new());
     assert!(!app.model().config.worktrees_root.is_empty());
+}
+
+#[test]
+fn the_worktreeinclude_popup_turns_copying_on() {
+    let (_base, _repo, app, h) = listed("include-setting");
+    h.send(Msg::OpenSettings);
+    let v = h.view();
+    let choice = v.panel("settings").unwrap().body.choice("include").unwrap();
+    assert_eq!(choice.selected, 0, "off by default");
+    let select = choice.on_select.clone();
+    h.fire(&select, 1);
+    h.wait_for(WAIT, "copying turned on", |_| {
+        app.model().config.copy_worktree_include
+    });
+    let v = h.view();
+    let choice = v.panel("settings").unwrap().body.choice("include").unwrap();
+    assert_eq!(choice.selected, 1);
 }
 
 #[test]
