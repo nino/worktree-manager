@@ -106,6 +106,7 @@ fn app_in(base: &Path) -> App {
         worktrees_root: base.join("wts").to_string_lossy().into_owned(),
         editor_command: "true".into(),
         update_channel: Default::default(),
+        copy_worktree_include: false,
     }));
     app
 }

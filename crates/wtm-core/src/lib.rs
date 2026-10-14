@@ -4,7 +4,8 @@
 //!   Electron app's store so a config file can be imported unchanged.
 //! - [`git`]: a git command runner plus pure, unit-tested porcelain parsers.
 //! - [`worktrees`], [`repos`]: orchestration (create/delete safety ladder,
-//!   push/pull/switch, adding repositories).
+//!   push/pull/switch, adding repositories), and [`worktree_include`], the
+//!   files Claude Code's `.worktreeinclude` copies into a new worktree.
 //! - [`config`]: load/save of the configuration file.
 //! - [`ui_state`]: the window frame, scroll offset and focused row that a
 //!   backend restores at the next launch.
@@ -31,6 +32,7 @@ pub mod types;
 pub mod ui_state;
 pub mod update;
 pub mod watcher;
+pub mod worktree_include;
 pub mod worktrees;
 
 pub use app::{Action, App, Event, Reply};

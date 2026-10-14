@@ -49,6 +49,10 @@ pub struct AppConfig {
     /// Which releases an installed copy updates itself to.
     #[serde(default)]
     pub update_channel: UpdateChannel,
+    /// Copy the gitignored files a repo's `.worktreeinclude` names from its
+    /// main checkout into each new worktree, as Claude Code does.
+    #[serde(default)]
+    pub copy_worktree_include: bool,
     /// Configured repositories.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
@@ -60,6 +64,7 @@ pub struct AppSettings {
     pub worktrees_root: String,
     pub editor_command: String,
     pub update_channel: UpdateChannel,
+    pub copy_worktree_include: bool,
 }
 
 /// A path that could not be added as a repository, with the reason why.

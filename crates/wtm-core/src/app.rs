@@ -39,6 +39,7 @@ use crate::repos::{describe_add_failure, inspect_repo};
 use crate::types::*;
 use crate::ui_state::{UiState, UiStateStore};
 use crate::watcher::{linked_gitdir, WatchKey, Watcher};
+use crate::worktree_include;
 use crate::worktrees;
 
 /// Something the UI wants done.
@@ -700,6 +701,7 @@ impl App {
         self.inner.rt.spawn(async move {
             let model = app.model();
             let root = model.config.worktrees_root.clone();
+            let copy_include = model.config.copy_worktree_include;
             let target = model.worktree_path(&repo, &params.branch);
             let lock = app.lock_for(&target.to_string_lossy());
             let outcome = {
@@ -710,6 +712,15 @@ impl App {
                 Ok((path, warning)) => {
                     if let Some(warning) = warning {
                         app.notify(Tone::Error, warning);
+                    }
+                    // Before the init command, which may well need the
+                    // `.env` this brings over.
+                    if copy_include {
+                        match worktree_include::apply(&repo.path, &path).await {
+                            Ok(0) => {}
+                            Ok(n) => info!("copied {n} files from .worktreeinclude into {path}"),
+                            Err(e) => app.notify(Tone::Error, e),
+                        }
                     }
                     let init = repo.init_command.trim().to_string();
                     if !init.is_empty() {

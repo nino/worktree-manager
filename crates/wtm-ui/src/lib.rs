@@ -619,6 +619,7 @@ impl Ui {
             SettingsMsg::Root(v) => s.root = v,
             SettingsMsg::Editor(v) => s.editor = v,
             SettingsMsg::Channel(i) => s.channel = i,
+            SettingsMsg::Include(i) => s.include = i,
             SettingsMsg::Browse => {
                 cx.effect(Effect::PickFolders(PickFolders {
                     title: "Choose worktrees root folder".into(),

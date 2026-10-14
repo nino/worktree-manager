@@ -22,6 +22,7 @@ pub enum SettingsMsg {
     Root(String),
     Editor(String),
     Channel(usize),
+    Include(usize),
     Browse,
     Picked(Vec<std::path::PathBuf>),
     Closed,
@@ -31,7 +32,12 @@ pub struct Settings {
     pub root: String,
     pub editor: String,
     pub channel: usize,
+    /// Whether `.worktreeinclude` is followed: 1 for yes, as in [`INCLUDE`].
+    pub include: usize,
 }
+
+/// What the `.worktreeinclude` popup offers, off first.
+pub const INCLUDE: [&str; 2] = ["Ignore", "Copy listed files"];
 
 impl Settings {
     pub fn new(config: &AppConfig) -> Self {
@@ -42,6 +48,7 @@ impl Settings {
                 .iter()
                 .position(|(c, _)| *c == config.update_channel)
                 .unwrap_or(0),
+            include: usize::from(config.copy_worktree_include),
         }
     }
 
@@ -58,13 +65,15 @@ impl Settings {
             worktrees_root: self.root.trim().to_string(),
             editor_command: self.editor.trim().to_string(),
             update_channel: self.channel(),
+            copy_worktree_include: self.include == 1,
         };
         if settings.worktrees_root.is_empty() {
             return None;
         }
         (config.worktrees_root != settings.worktrees_root
             || config.editor_command != settings.editor_command
-            || config.update_channel != settings.update_channel)
+            || config.update_channel != settings.update_channel
+            || config.copy_worktree_include != settings.copy_worktree_include)
             .then_some(settings)
     }
 
@@ -104,6 +113,17 @@ impl Settings {
             .hint("Used by “Open in editor”. The worktree path is appended, or substituted for {path} if present.")
             .hint(terminal_note)
             .row(
+                ".worktreeinclude:",
+                Choice {
+                    id: "include",
+                    options: INCLUDE.iter().map(|t| t.to_string()).collect(),
+                    selected: self.include,
+                    a11y_label: Some(".worktreeinclude".into()),
+                    on_select: v.map(|i| Msg::Settings(SettingsMsg::Include(i))),
+                },
+            )
+            .hint("A repo’s .worktreeinclude, as Claude Code reads it, names ignored files such as .env in .gitignore syntax. When copying, new worktrees get the matching files from the repo’s main folder.")
+            .row(
                 "Software updates:",
                 Choice {
                     id: "channel",
@@ -135,6 +155,7 @@ mod tests {
             worktrees_root: "/wt".into(),
             editor_command: "code".into(),
             update_channel: UpdateChannel::Stable,
+            copy_worktree_include: false,
             repos: Vec::new(),
         }
     }
@@ -150,5 +171,14 @@ mod tests {
         assert_eq!(s.changed(&c).unwrap().editor_command, "code -w");
         s.root = "  ".into();
         assert_eq!(s.changed(&c), None);
+    }
+
+    #[test]
+    fn the_worktreeinclude_choice_is_a_change() {
+        let c = config();
+        let mut s = Settings::new(&c);
+        assert_eq!(s.include, 0, "off by default");
+        s.include = 1;
+        assert!(s.changed(&c).unwrap().copy_worktree_include);
     }
 }

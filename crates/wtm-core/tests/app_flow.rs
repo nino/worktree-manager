@@ -81,6 +81,7 @@ fn app_in(base: &Path) -> (App, mpsc::Receiver<Event>) {
         worktrees_root: base.join("wts").to_string_lossy().into_owned(),
         editor_command: "true".into(),
         update_channel: Default::default(),
+        copy_worktree_include: false,
     }));
     (app, rx)
 }
@@ -533,5 +534,74 @@ fn moving_a_repo_reorders_the_list_and_keeps_its_listing() {
     drop(app);
     let (again, _rx) = app_in(&base);
     assert_eq!(names(&again.model()), ["second", "first"]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
+    isolate_git_config();
+    let base = temp_dir("include");
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let write = |rel: &str, text: &str| {
+        let path = repo.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(".gitignore", ".env\nsecrets/\n");
+    write(".worktreeinclude", ".env\nsecrets/key\nREADME\n");
+    write("README", "committed\n");
+    git(&repo, &["add", "."]);
+    commit(&repo, "init");
+    write(".env", "TOKEN=1\n");
+    write("app/.env", "TOKEN=2\n");
+    write("secrets/key", "k\n");
+    write("secrets/other", "not listed\n");
+    // Tracked, so never copied, even though the include file names it.
+    write("README", "edited in the main checkout\n");
+    let repo = std::fs::canonicalize(&repo).unwrap();
+
+    let (app, rx) = app_in(&base);
+    app.dispatch(Action::AddRepos(vec![repo.clone()]));
+    wait_for(&app, &rx, "repo listed", |m| {
+        m.repos.len() == 1 && m.repos[0].loaded
+    });
+    let repo_id = app.model().repos[0].repo.id.clone();
+    let create = |branch: &str| {
+        app.dispatch(Action::CreateWorktree(CreateWorktreeParams {
+            repo_id: repo_id.clone(),
+            branch: branch.into(),
+            source: BranchSource::New { base_ref: None },
+        }));
+        let count = app.model().repos[0].worktrees.len() + 1;
+        wait_for(&app, &rx, "worktree created", |m| {
+            m.pending.is_empty() && m.repos[0].worktrees.len() == count
+        });
+        base.join("wts").join("repo").join(branch)
+    };
+
+    let off = create("off");
+    assert!(!off.join(".env").exists(), "off by default");
+
+    app.dispatch(Action::SetSettings(wtm_core::AppSettings {
+        worktrees_root: base.join("wts").to_string_lossy().into_owned(),
+        editor_command: "true".into(),
+        update_channel: Default::default(),
+        copy_worktree_include: true,
+    }));
+    let on = create("on");
+    let read = |rel: &str| std::fs::read_to_string(on.join(rel)).ok();
+    assert_eq!(read(".env").as_deref(), Some("TOKEN=1\n"));
+    // `.env` without a slash matches at any depth, as in a .gitignore.
+    assert_eq!(read("app/.env").as_deref(), Some("TOKEN=2\n"));
+    assert_eq!(read("secrets/key").as_deref(), Some("k\n"));
+    assert_eq!(read("secrets/other"), None);
+    assert_eq!(read("README").as_deref(), Some("committed\n"));
+    assert!(app
+        .model()
+        .notice
+        .as_ref()
+        .map_or(true, |n| !n.text.contains("worktreeinclude")));
     let _ = std::fs::remove_dir_all(&base);
 }
