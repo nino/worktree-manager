@@ -549,8 +549,14 @@ fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     };
-    write(".gitignore", ".env\nsecrets/\n");
-    write(".worktreeinclude", ".env\nsecrets/key\nREADME\n");
+    write(
+        ".gitignore",
+        ".env\nsecrets/\nnode_modules/\n.claude/\nvendor/\ncache/\n",
+    );
+    write(
+        ".worktreeinclude",
+        ".env\nsecrets/key\nREADME\n**/.claude/skills/*.md\nvendor/**/config.json\ncache/\n",
+    );
     write("README", "committed\n");
     git(&repo, &["add", "."]);
     commit(&repo, "init");
@@ -558,6 +564,17 @@ fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
     write("app/.env", "TOKEN=2\n");
     write("secrets/key", "k\n");
     write("secrets/other", "not listed\n");
+    // Inside folders git ignores as a whole, reached by Claude Code's rule.
+    write("node_modules/pkg/.env", "a package's own\n");
+    write(".claude/skills/a.md", "skill\n");
+    write(".claude/notes.txt", "not listed\n");
+    write("vendor/lib/config.json", "{}\n");
+    write("vendor/lib/config.yml", "not listed\n");
+    write("cache/a", "a\n");
+    write("cache/deep/b", "b\n");
+    // Another repository inside an included folder is not copied.
+    write("cache/clone/file", "not ours\n");
+    git(&repo.join("cache/clone"), &["init", "-q"]);
     // Tracked, so never copied, even though the include file names it.
     write("README", "edited in the main checkout\n");
     let repo = std::fs::canonicalize(&repo).unwrap();
@@ -598,6 +615,15 @@ fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
     assert_eq!(read("secrets/key").as_deref(), Some("k\n"));
     assert_eq!(read("secrets/other"), None);
     assert_eq!(read("README").as_deref(), Some("committed\n"));
+    // A bare `.env` is `**/.env`, which does not reach into node_modules/.
+    assert_eq!(read("node_modules/pkg/.env"), None);
+    assert_eq!(read(".claude/skills/a.md").as_deref(), Some("skill\n"));
+    assert_eq!(read(".claude/notes.txt"), None);
+    assert_eq!(read("vendor/lib/config.json").as_deref(), Some("{}\n"));
+    assert_eq!(read("vendor/lib/config.yml"), None);
+    assert_eq!(read("cache/a").as_deref(), Some("a\n"));
+    assert_eq!(read("cache/deep/b").as_deref(), Some("b\n"));
+    assert!(!on.join("cache/clone").exists());
     assert!(app
         .model()
         .notice

@@ -71,15 +71,20 @@ pub fn set_configure(f: impl Fn(&mut std::process::Command) + Send + Sync + 'sta
 
 /// Run a git command in `cwd` and return its stdout.
 pub async fn run_git(cwd: impl AsRef<Path>, args: &[&str]) -> GitResult<String> {
-    run_git_with_input(cwd, args, None).await
+    run_git_bytes(cwd, args, None, &[])
+        .await
+        .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-/// [`run_git`], with `input` written to git's stdin.
-pub async fn run_git_with_input(
+/// [`run_git`] for stdout as git wrote it (paths need not be UTF-8), with
+/// `input` written to git's stdin, and with the exit statuses in `also_ok`
+/// counted as success: `check-ignore` exits 1 for "nothing is ignored".
+pub async fn run_git_bytes(
     cwd: impl AsRef<Path>,
     args: &[&str],
     input: Option<Vec<u8>>,
-) -> GitResult<String> {
+    also_ok: &[i32],
+) -> GitResult<Vec<u8>> {
     let cwd = cwd.as_ref();
     let _permit = gate().acquire().await.expect("git gate never closes");
     let mut command = Command::new("git");
@@ -121,7 +126,11 @@ pub async fn run_git_with_input(
         stderr,
     };
     match output {
-        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Ok(out)
+            if out.status.success() || out.status.code().is_some_and(|c| also_ok.contains(&c)) =>
+        {
+            Ok(out.stdout)
+        }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
             let why = if stderr.trim().is_empty() {

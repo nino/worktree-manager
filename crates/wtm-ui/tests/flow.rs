@@ -504,6 +504,23 @@ fn settings_keep_what_was_typed() {
 }
 
 #[test]
+fn the_worktreeinclude_popup_turns_copying_on() {
+    let (_base, _repo, app, h) = listed("include-setting");
+    h.send(Msg::OpenSettings);
+    let v = h.view();
+    let choice = v.panel("settings").unwrap().body.choice("include").unwrap();
+    assert_eq!(choice.selected, 0, "off by default");
+    let select = choice.on_select.clone();
+    h.fire(&select, 1);
+    h.wait_for(WAIT, "copying turned on", |_| {
+        app.model().config.copy_worktree_include
+    });
+    let v = h.view();
+    let choice = v.panel("settings").unwrap().body.choice("include").unwrap();
+    assert_eq!(choice.selected, 1);
+}
+
+#[test]
 fn menu_items_follow_the_selection() {
     let (base, _repo, app, h) = listed("menus");
     let enabled = |label: &str| h.view().menu_item(label).unwrap().1;

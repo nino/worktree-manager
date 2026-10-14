@@ -706,21 +706,36 @@ impl App {
             let lock = app.lock_for(&target.to_string_lossy());
             let outcome = {
                 let _g = lock.lock().await;
-                worktrees::create_worktree(&repo, &root, &params).await
+                let created = worktrees::create_worktree(&repo, &root, &params).await;
+                // Still under the lock, so a delete of the new row cannot
+                // remove the folder while files are being copied into it,
+                // and before the init command, which may need the `.env`.
+                match created {
+                    Ok((path, warning)) if copy_include => {
+                        let copied = worktree_include::apply(&repo.path, &path).await;
+                        let problem = match copied {
+                            Ok(0) => None,
+                            Ok(n) => {
+                                info!("copied {n} files from .worktreeinclude into {path}");
+                                None
+                            }
+                            Err(e) => Some(e),
+                        };
+                        // One notice at a time, so a stale-fetch warning is
+                        // kept beside a copy that went wrong.
+                        let warning = match (warning, problem) {
+                            (Some(a), Some(b)) => Some(format!("{a} {b}")),
+                            (a, b) => a.or(b),
+                        };
+                        Ok((path, warning))
+                    }
+                    other => other,
+                }
             };
             match outcome {
                 Ok((path, warning)) => {
                     if let Some(warning) = warning {
                         app.notify(Tone::Error, warning);
-                    }
-                    // Before the init command, which may well need the
-                    // `.env` this brings over.
-                    if copy_include {
-                        match worktree_include::apply(&repo.path, &path).await {
-                            Ok(0) => {}
-                            Ok(n) => info!("copied {n} files from .worktreeinclude into {path}"),
-                            Err(e) => app.notify(Tone::Error, e),
-                        }
                     }
                     let init = repo.init_command.trim().to_string();
                     if !init.is_empty() {
