@@ -13,21 +13,18 @@ use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::Message;
-use objc2::{
-    define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
-};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplicationDidResignActiveNotification, NSColor, NSControl, NSControlTextEditingDelegate,
-    NSEvent, NSEventMask, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSLayoutConstraint, NSPopover, NSPopoverBehavior, NSPopoverDelegate, NSScrollView,
-    NSTableCellView, NSTableColumn, NSTableRowView, NSTableView, NSTableViewDataSource,
-    NSTableViewDelegate, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
-    NSTextFieldDelegate, NSTextView, NSUserInterfaceItemIdentification, NSView, NSViewController,
+    NSEvent, NSEventMask, NSFont, NSImageScaling, NSImageView, NSLayoutConstraint, NSPopover,
+    NSPopoverBehavior, NSPopoverDelegate, NSScrollView, NSTableCellView, NSTableColumn,
+    NSTableRowView, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField, NSTextFieldDelegate,
+    NSTextView, NSUserInterfaceItemIdentification, NSView, NSViewController,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSDictionary, NSIndexSet, NSInteger, NSMutableAttributedString,
-    NSMutableIndexSet, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint,
-    NSRect, NSRectEdge, NSSize, NSString,
+    NSArray, NSAttributedString, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification,
+    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize,
 };
 use wtm_toolkit::{FilterList, Popover};
 
@@ -38,6 +35,8 @@ const WIDTH: f64 = 300.0;
 const LIST_HEIGHT: f64 = 208.0;
 const PAD: f64 = 8.0;
 const ROW_HEIGHT: f64 = 22.0;
+/// The check mark's slot at the start of every row.
+const CHECK: f64 = 12.0;
 
 thread_local! {
     /// The open picker, if any: the popover keeps no strong reference to
@@ -377,7 +376,9 @@ impl BranchPicker {
         }
     }
 
-    /// A recycled or new cell: a label pinned to the row's edges.
+    /// A recycled or new cell: a fixed slot for the check mark, then a label
+    /// to the row's trailing edge. The slot is kept on every row so the names
+    /// line up whether or not they carry the check.
     fn cell_view(&self, table: &NSTableView) -> Retained<NSTableCellView> {
         let mtm = MainThreadMarker::from(self);
         if let Some(v) = unsafe { table.makeViewWithIdentifier_owner(&ns("wtm.pick"), None) } {
@@ -387,26 +388,48 @@ impl BranchPicker {
         }
         let cell = NSTableCellView::new(mtm);
         cell.setIdentifier(Some(&ns("wtm.pick")));
+        let check = NSImageView::new(mtm);
+        if let Some(image) = crate::util::symbol("checkmark", "Current branch") {
+            image.setTemplate(true);
+            check.setImage(Some(&image));
+        }
+        check.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+        check.setTranslatesAutoresizingMaskIntoConstraints(false);
+        cell.addSubview(&check);
         let tf = label("", mtm);
         tf.setTranslatesAutoresizingMaskIntoConstraints(false);
         cell.addSubview(&tf);
         NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-            tf.leadingAnchor()
+            check
+                .leadingAnchor()
                 .constraintEqualToAnchor_constant(&cell.leadingAnchor(), 4.0),
+            check.widthAnchor().constraintEqualToConstant(CHECK),
+            check.heightAnchor().constraintEqualToConstant(CHECK),
+            check
+                .centerYAnchor()
+                .constraintEqualToAnchor(&cell.centerYAnchor()),
+            tf.leadingAnchor()
+                .constraintEqualToAnchor_constant(&check.trailingAnchor(), 4.0),
             tf.trailingAnchor()
                 .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -4.0),
             tf.centerYAnchor()
                 .constraintEqualToAnchor(&cell.centerYAnchor()),
         ]));
+        unsafe { cell.setImageView(Some(&check)) };
         unsafe { cell.setTextField(Some(&tf)) };
         cell
     }
 
     fn make_row_view(&self, table: &NSTableView, row: NSInteger) -> Option<Retained<NSView>> {
-        let label = self.label_for_row(row)?;
+        let (label, checked) = self.label_for_row(row)?;
         let cell = self.cell_view(table);
         if let Some(tf) = unsafe { cell.textField() } {
             tf.setAttributedStringValue(&label);
+        }
+        if let Some(check) = unsafe { cell.imageView() } {
+            // Hidden, not removed: its slot still holds the name in line.
+            check.setHidden(!checked);
+            check.setContentTintColor(Some(&self.ink_for_row(row)));
         }
         Some(Retained::into_super(cell))
     }
@@ -504,43 +527,27 @@ impl BranchPicker {
         }
     }
 
-    /// The row's text: a check mark for the current branch, the name with an
-    /// agent prefix drawn as its mark, and the matched characters emphasised.
-    /// A selected row's text is white, so it is rebuilt when selection moves.
-    fn label_for_row(&self, row: NSInteger) -> Option<Retained<NSAttributedString>> {
-        let iv = self.ivars();
-        let item = iv.list.borrow().items.get(row as usize)?.clone();
-        let selected = iv.table.selectedRow() == row;
-        let ink = if selected {
+    /// A selected row's text and check are white, so the row is rebuilt when
+    /// selection moves.
+    fn ink_for_row(&self, row: NSInteger) -> Retained<NSColor> {
+        if self.ivars().table.selectedRow() == row {
             NSColor::alternateSelectedControlTextColor()
         } else {
             crate::util::primary_ink()
-        };
+        }
+    }
+
+    /// The row's text, the name with an agent prefix drawn as its mark and
+    /// the matched characters emphasised, and whether it is the current
+    /// branch.
+    fn label_for_row(&self, row: NSInteger) -> Option<(Retained<NSAttributedString>, bool)> {
+        let item = self.ivars().list.borrow().items.get(row as usize)?.clone();
+        let ink = self.ink_for_row(row);
         let font = crate::util::branch_font();
         let bold = NSFont::monospacedSystemFontOfSize_weight(12.0, SEMIBOLD);
-        let label = rich_label(&item.label, &font, &ink, Some(&bold));
-        let text = NSMutableAttributedString::initWithAttributedString(
-            NSMutableAttributedString::alloc(),
-            &label,
-        );
-        let is_current = item.checked;
-        let attrs = unsafe {
-            NSDictionary::from_retained_objects::<NSString>(
-                &[NSFontAttributeName, NSForegroundColorAttributeName],
-                &[
-                    Retained::into_super(Retained::into_super(font)),
-                    Retained::into_super(Retained::into_super(ink)),
-                ],
-            )
-        };
-        let check = unsafe {
-            NSMutableAttributedString::initWithString_attributes(
-                NSMutableAttributedString::alloc(),
-                &ns(if is_current { "✓ " } else { "   " }),
-                Some(&attrs),
-            )
-        };
-        text.insertAttributedString_atIndex(&check, 0);
-        Some(Retained::into_super(text))
+        Some((
+            rich_label(&item.label, &font, &ink, Some(&bold)),
+            item.checked,
+        ))
     }
 }
