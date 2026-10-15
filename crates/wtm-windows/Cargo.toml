@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 wtm-platform = { workspace = true }
+wtm-os = { workspace = true }
 wtm-toolkit = { workspace = true }
 log = { workspace = true }
 

@@ -1,7 +1,7 @@
 //! The pure half of `WindowsPlatform`: quoting for `cmd.exe` and for the
 //! C runtime's argument parser, the command lines the platform runs, PATH
 //! lookup, and where the app keeps its files. Nothing here calls Windows, so
-//! it is tested on every OS (`tests/shell.rs` includes this file).
+//! it is tested on every OS (`tests/windows_shell.rs` includes this file).
 
 use std::path::{Path, PathBuf};
 

@@ -10,6 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 wtm-core = { path = "crates/wtm-core" }
 wtm-platform = { path = "crates/wtm-platform" }
+wtm-os = { path = "crates/wtm-os" }
 wtm-macos = { path = "crates/wtm-macos" }
 wtm-toolkit = { path = "crates/wtm-toolkit" }
 wtm-ui = { path = "crates/wtm-ui" }

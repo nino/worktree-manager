@@ -25,9 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install GTK
+      # GTK 4 for wtm-gtk, WebKitGTK for the Tauri app's webview.
+      - name: Install GTK and WebKitGTK
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkit2gtk-4.1-dev xvfb
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -57,3 +58,26 @@ jobs:
       # ships.
       - name: Build
         run: cargo build --release --workspace
+
+      # `cargo test -p wtm-tauri` writes the TypeScript for the bridge's
+      # types; the committed copy must be what the Rust says.
+      - name: TypeScript bindings are current
+        if: runner.os == 'Linux'
+        run: git diff --exit-code -- ui/src/wire
+
+  # The Tauri app's frontend: types, tests and a production build.
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

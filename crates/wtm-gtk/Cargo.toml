@@ -7,6 +7,7 @@ description = "Linux backend: the wtm-toolkit vocabulary shown with GTK 4, and t
 
 [dependencies]
 wtm-platform = { workspace = true }
+wtm-os = { workspace = true }
 wtm-toolkit = { workspace = true }
 log = { workspace = true }
 

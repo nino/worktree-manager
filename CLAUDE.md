@@ -14,6 +14,31 @@ It began as an Electron app; that version was replaced by this Rust one and
 deleted. Anything the old app did that this one does not is in git history
 (the last Electron commit is the parent of the rewrite's first).
 
+## The Tauri experiment (branch `claude/tauri-rewrite-xiwmjw` only)
+
+A rewrite of the window as a Tauri 2 app is under way on this branch: plan
+and stages in `docs/tauri-plan.md`. **Never release it**: it lives on its
+own branch with draft PRs, and `release.yml` refuses any tree that has
+`crates/wtm-tauri`.
+
+- `crates/wtm-tauri`: the binary. Owns the `wtm_core::App`, pushes each new
+  model to the page (`wire.rs`, coalesced on one thread), and exposes
+  `Action`s as `#[tauri::command]`s. `wire.rs` derives TypeScript into
+  `ui/src/wire/` on `cargo test -p wtm-tauri`; commit what it writes.
+- `crates/wtm-os`: the three `Platform`s, moved out of the native backends so
+  the Tauri app can link them without GTK 4 (its webview is GTK 3 on Linux).
+- `ui/`: Solid + TypeScript + Vite. Presentation logic (badges, search,
+  notices) lives here as plain tested modules, ported from `wtm-ui`.
+
+```sh
+cd ui && npm ci                  # once
+npm test                         # Vitest, jsdom: the frontend's tests
+npm run dev                      # the UI in a browser against mock data (mock.ts)
+npm run build && cargo run -p wtm-tauri   # the app, serving ui/dist from the binary
+npm run app                      # the app with Vite hot reload (tauri dev)
+scripts/tauri-screenshot.sh out.png       # Linux: the real app under Xvfb, demo repos
+```
+
 ## Stack
 
 - **Rust** (2021 edition), a Cargo workspace of eight crates
