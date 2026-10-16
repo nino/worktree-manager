@@ -38,6 +38,12 @@ export function demoModel(): Model {
     refreshing: false,
     fetching: false,
     notice: null,
+    settings: {
+      worktreesRoot: "/home/demo/worktrees",
+      editorCommand: "code",
+      copyWorktreeInclude: false,
+      updateChannel: "stable",
+    },
     repos: [
       {
         id: "app",
@@ -45,7 +51,10 @@ export function demoModel(): Model {
         path: "/home/demo/src/app",
         displayPath: "~/src/app",
         mainBranch: "main",
-        branches: ["main", "fix-login", "claude/tauri-rewrite"],
+        initCommand: "bun install",
+        defaultBaseRef: "origin/main",
+        baseRefCandidates: ["origin/main", "main", "fix-login"],
+        branches: ["main", "fix-login", "claude/tauri-rewrite", "release/2.0"],
         error: null,
         loaded: true,
         pending: [],
@@ -65,6 +74,9 @@ export function demoModel(): Model {
         path: "/home/demo/src/site",
         displayPath: "~/src/site",
         mainBranch: "main",
+        initCommand: "",
+        defaultBaseRef: "main",
+        baseRefCandidates: ["main"],
         branches: ["main"],
         error: null,
         loaded: true,
@@ -89,6 +101,7 @@ export function mockBackend(): Backend {
     for (const f of listeners) f(model);
   };
   let noticeId = 0;
+  let pendingId = 100;
   const notify = (text: string, tone: "info" | "error" = "info") =>
     publish({ ...model, notice: { id: ++noticeId, tone, text } });
   const setBusy = (path: string, busy: Busy | null) =>
@@ -107,7 +120,13 @@ export function mockBackend(): Backend {
     }, 800);
   };
   return {
-    boot: { model, fileManager: "Files", os: "browser", closedRepos: [] },
+    boot: {
+      model,
+      fileManager: "Files",
+      os: "browser",
+      closedRepos: [],
+      terminalNote: "“Open in terminal” uses $TERMINAL, else the first terminal found.",
+    },
     ready: async () => model,
     onModel: (f) => listeners.push(f),
     refresh: () => {
@@ -151,5 +170,78 @@ export function mockBackend(): Backend {
       return { ok: true, refusal: null, message: "Deleted." };
     },
     setClosedRepos: () => {},
+
+    // A rough `new_worktree::check`: enough to drive the sheet by hand.
+    checkNewWorktree: async (f) => {
+      const repo = model.repos.find((r) => r.id === f.repoId)!;
+      const name = f.name.trim();
+      const off = (problem: string) => ({ create: null, problem, note: null, fromRemote: false, folder });
+      const folder = name ? `~/worktrees/${repo.name}/${name.replaceAll("/", "-")}` : null;
+      if (!name) return off("");
+      if (/\s|\.\.|^-|[~^:?*[\\]/.test(name)) return off("Not a valid branch name.");
+      if (repo.worktrees.some((w) => w.branch === name)) return off("Branch already has a worktree.");
+      const local = repo.branches.includes(name);
+      if (local && f.newBranch) return off("Branch already exists; use Existing branch.");
+      if (!local && !f.newBranch) return off("No branch of that name.");
+      const source = f.newBranch
+        ? { kind: "new" as const, baseRef: f.base.trim() || null }
+        : { kind: "existing" as const };
+      return { create: { repoId: f.repoId, branch: name, source }, problem: null, note: null, fromRemote: false, folder };
+    },
+    createWorktree: (req) => {
+      const id = ++pendingId;
+      const folder = req.branch.replaceAll("/", "-");
+      publish({
+        ...model,
+        repos: model.repos.map((r) =>
+          r.id === req.repoId ? { ...r, pending: [...r.pending, { id, branch: req.branch, folder, error: null }] } : r,
+        ),
+      });
+      setTimeout(() => {
+        publish({
+          ...model,
+          repos: model.repos.map((r) =>
+            r.id === req.repoId
+              ? {
+                  ...r,
+                  pending: r.pending.filter((p) => p.id !== id),
+                  branches: r.branches.includes(req.branch) ? r.branches : [...r.branches, req.branch],
+                  worktrees: [...r.worktrees, worktree(`/home/demo/worktrees/${r.name}/${folder}`, req.branch)],
+                }
+              : r,
+          ),
+        });
+      }, 1200);
+    },
+    fetchRepo: () => {},
+    dismissCreation: (id) =>
+      publish({ ...model, repos: model.repos.map((r) => ({ ...r, pending: r.pending.filter((p) => p.id !== id) })) }),
+    addRepos: () => notify("Would ask for folders to add."),
+    pickFolder: async () => null,
+    updateRepo: (edit) =>
+      publish({
+        ...model,
+        repos: model.repos.map((r) =>
+          r.id === edit.repoId
+            ? {
+                ...r,
+                name: edit.name.trim() || r.name,
+                mainBranch: edit.mainBranch.trim() || "main",
+                initCommand: edit.initCommand,
+              }
+            : r,
+        ),
+      }),
+    removeRepo: (repoId) => publish({ ...model, repos: model.repos.filter((r) => r.id !== repoId) }),
+    moveRepo: (repoId, shown, gap) => {
+      const from = shown.indexOf(repoId);
+      if (from < 0 || gap === from || gap === from + 1 || gap > shown.length) return;
+      const before = shown[gap] ?? null;
+      const rest = model.repos.filter((r) => r.id !== repoId);
+      const moved = model.repos.find((r) => r.id === repoId)!;
+      const at = before === null ? rest.length : rest.findIndex((r) => r.id === before);
+      publish({ ...model, repos: [...rest.slice(0, at), moved, ...rest.slice(at)] });
+    },
+    setSettings: (settings) => publish({ ...model, settings }),
   };
 }

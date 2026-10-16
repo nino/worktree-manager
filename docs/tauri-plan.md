@@ -60,7 +60,10 @@ built, tested and photographed in the Linux cloud container end to end.
    ported to `ui/src/fuzzy.ts` with its tests.
 3. **Sheets and settings.** New Worktree (with the remote-branch check from
    `new_worktree::check`), add / remove / reorder repos (drag), repo
-   settings, app settings, `.worktreeinclude` copying.
+   settings, app settings, `.worktreeinclude` copying. Done: the sheet's
+   check runs in Rust on every change (`check_new_worktree`) and Create
+   sends exactly what the last check said; a drop's place among hidden
+   repos is `repos::drop_target`'s, also in Rust.
 4. **Window and menus.** `ui_state` (frame, scroll, focused row, closed
    cards), native menus and shortcuts, drag-and-drop of folders,
    accessibility pass, appearance check in light and dark.

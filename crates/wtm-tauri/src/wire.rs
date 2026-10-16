@@ -21,6 +21,28 @@ pub struct Model {
     pub refreshing: bool,
     /// The background fetch is running.
     pub fetching: bool,
+    pub settings: Settings,
+}
+
+/// The app-wide settings, as the Settings sheet edits them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Settings {
+    pub worktrees_root: String,
+    /// Takes a `{path}` placeholder, else the path is appended.
+    pub editor_command: String,
+    /// New worktrees get the files a repo's `.worktreeinclude` names.
+    pub copy_worktree_include: bool,
+    pub update_channel: UpdateChannel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum UpdateChannel {
+    Stable,
+    Beta,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -33,8 +55,15 @@ pub struct Repo {
     /// `path` with the home directory abbreviated to `~`.
     pub display_path: String,
     pub main_branch: String,
+    /// Run in each new worktree once it is created.
+    pub init_command: String,
     /// Local branches, for the branch picker.
     pub branches: Vec<String>,
+    /// What a new branch starts from unless the sheet says otherwise:
+    /// `origin/<trunk>` when that exists, else the trunk.
+    pub default_base_ref: String,
+    /// Refs offered as a new branch's base.
+    pub base_ref_candidates: Vec<String>,
     /// Why listing failed, if it did.
     pub error: Option<String>,
     /// False while only the cached snapshot from the last run is known.
@@ -138,6 +167,175 @@ pub struct Boot {
     pub os: String,
     /// Repos whose cards were closed when the app last ran.
     pub closed_repos: Vec<String>,
+    /// How "Open in terminal" picks a terminal on this OS, for Settings.
+    pub terminal_note: String,
+}
+
+// MARK: New Worktree
+
+/// The New Worktree sheet's fields, sent on every change to be checked.
+#[derive(Debug, Clone, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct NewWorktreeFields {
+    pub repo_id: String,
+    pub name: String,
+    pub new_branch: bool,
+    /// Empty for the repo's trunk.
+    pub base: String,
+}
+
+/// The core's verdict on those fields (`wtm_core::new_worktree::check`):
+/// what Create would send, or why it is off.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct NewWorktreeCheck {
+    /// What Create sends; `None` while it is off.
+    pub create: Option<CreateRequest>,
+    /// Why Create is off. Empty while no name has been typed.
+    pub problem: Option<String>,
+    /// Said under the name when nothing is wrong.
+    pub note: Option<String>,
+    /// The branch comes from a remote, so the base field does not apply.
+    pub from_remote: bool,
+    /// Where the worktree would go, abbreviated with `~`.
+    pub folder: Option<String>,
+}
+
+/// Create, exactly as the sheet's last check said it would.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CreateRequest {
+    pub repo_id: String,
+    pub branch: String,
+    pub source: BranchSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+#[ts(export)]
+pub enum BranchSource {
+    /// A new branch from `baseRef`, or the trunk when there is none.
+    #[serde(rename_all = "camelCase")]
+    New { base_ref: Option<String> },
+    /// A local branch that exists already.
+    Existing,
+    /// Fetched from this remote, the only one that has it.
+    Remote { remote: String },
+}
+
+impl BranchSource {
+    pub fn from_core(s: wtm_core::BranchSource) -> Self {
+        match s {
+            wtm_core::BranchSource::New { base_ref } => BranchSource::New { base_ref },
+            wtm_core::BranchSource::Existing => BranchSource::Existing,
+            wtm_core::BranchSource::Remote(remote) => BranchSource::Remote { remote },
+        }
+    }
+
+    pub fn to_core(self) -> wtm_core::BranchSource {
+        match self {
+            BranchSource::New { base_ref } => wtm_core::BranchSource::New { base_ref },
+            BranchSource::Existing => wtm_core::BranchSource::Existing,
+            BranchSource::Remote { remote } => wtm_core::BranchSource::Remote(remote),
+        }
+    }
+}
+
+impl CreateRequest {
+    pub fn to_core(self) -> wtm_core::CreateWorktreeParams {
+        wtm_core::CreateWorktreeParams {
+            repo_id: self.repo_id,
+            branch: self.branch,
+            source: self.source.to_core(),
+        }
+    }
+}
+
+impl NewWorktreeCheck {
+    /// Check `fields` against the model; `taken` is the folder for the name,
+    /// as shown, when something is already there.
+    pub fn new(m: &wtm_core::Model, fields: &NewWorktreeFields, taken: Option<&str>) -> Self {
+        let node = m.repo(&fields.repo_id);
+        let name = fields.name.trim();
+        let place = node
+            .map(|n| n.locate_branch(name))
+            .unwrap_or(wtm_core::BranchLocation::Nowhere);
+        let check = wtm_core::new_worktree::check(
+            &fields.name,
+            fields.new_branch,
+            &fields.base,
+            &place,
+            taken,
+        );
+        let folder = node
+            .filter(|_| !name.is_empty())
+            .map(|n| tildify(&m.worktree_path(&n.repo, name).to_string_lossy(), &m.home));
+        let (create, problem) = match check.create {
+            Ok(source) => (
+                Some(CreateRequest {
+                    repo_id: fields.repo_id.clone(),
+                    branch: name.to_string(),
+                    source: BranchSource::from_core(source),
+                }),
+                None,
+            ),
+            Err(reason) => (None, Some(reason)),
+        };
+        Self {
+            create,
+            problem,
+            note: check.note,
+            from_remote: check.from_remote,
+            folder,
+        }
+    }
+}
+
+// MARK: Repos and settings
+
+/// What the repo settings sheet saves.
+#[derive(Debug, Clone, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RepoEdit {
+    pub repo_id: String,
+    pub name: String,
+    pub main_branch: String,
+    pub init_command: String,
+}
+
+impl RepoEdit {
+    /// The repo as Save leaves it: a blank name keeps the old one, a blank
+    /// trunk is `main` (as `wtm-ui`'s sheet saves it).
+    pub fn apply(&self, repo: &wtm_core::RepoConfig) -> wtm_core::RepoConfig {
+        let mut updated = repo.clone();
+        if !self.name.trim().is_empty() {
+            updated.name = self.name.trim().to_string();
+        }
+        updated.main_branch = match self.main_branch.trim() {
+            "" => "main".into(),
+            m => m.to_string(),
+        };
+        updated.init_command = self.init_command.clone();
+        updated
+    }
+}
+
+impl Settings {
+    pub fn to_core(&self) -> wtm_core::AppSettings {
+        wtm_core::AppSettings {
+            worktrees_root: self.worktrees_root.trim().to_string(),
+            editor_command: self.editor_command.trim().to_string(),
+            update_channel: match self.update_channel {
+                UpdateChannel::Stable => wtm_core::update::UpdateChannel::Stable,
+                UpdateChannel::Beta => wtm_core::update::UpdateChannel::Beta,
+            },
+            copy_worktree_include: self.copy_worktree_include,
+        }
+    }
 }
 
 /// What the page sends to delete a worktree: the row as it was shown when
@@ -215,6 +413,15 @@ impl Model {
             }),
             refreshing: m.refreshing,
             fetching: m.fetching,
+            settings: Settings {
+                worktrees_root: m.config.worktrees_root.clone(),
+                editor_command: m.config.editor_command.clone(),
+                copy_worktree_include: m.config.copy_worktree_include,
+                update_channel: match m.config.update_channel {
+                    wtm_core::update::UpdateChannel::Stable => UpdateChannel::Stable,
+                    wtm_core::update::UpdateChannel::Beta => UpdateChannel::Beta,
+                },
+            },
         }
     }
 }
@@ -227,7 +434,10 @@ impl Repo {
             path: n.repo.path.clone(),
             display_path: tildify(&n.repo.path, &m.home),
             main_branch: n.repo.main_branch.clone(),
+            init_command: n.repo.init_command.clone(),
             branches: n.branches.clone(),
+            default_base_ref: n.default_base_ref.clone(),
+            base_ref_candidates: n.base_ref_candidates.clone(),
             error: n.error.clone(),
             loaded: n.loaded,
             worktrees: n
@@ -364,6 +574,58 @@ mod tests {
         assert_eq!(wt["displayPath"], "~/wt/app/fix");
         assert_eq!(wt["busy"], "pushing");
         assert_eq!(wt["status"]["hasUnstaged"], true);
+    }
+
+    fn fields(name: &str, new_branch: bool) -> NewWorktreeFields {
+        NewWorktreeFields {
+            repo_id: "r1".into(),
+            name: name.into(),
+            new_branch,
+            base: String::new(),
+        }
+    }
+
+    #[test]
+    fn new_worktree_check_says_what_create_sends_and_where() {
+        let mut m = core_model();
+        m.repos[0].loaded = true;
+        let c = NewWorktreeCheck::new(&m, &fields(" feature/x ", true), None);
+        assert_eq!(
+            c.create,
+            Some(CreateRequest {
+                repo_id: "r1".into(),
+                branch: "feature/x".into(),
+                source: BranchSource::New { base_ref: None },
+            })
+        );
+        assert_eq!(c.folder.as_deref(), Some("~/wt/app/feature-x"));
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["create"]["source"]["kind"], "new");
+        // `fix` is checked out already.
+        let c = NewWorktreeCheck::new(&m, &fields("fix", false), None);
+        assert!(c.create.is_none());
+        assert_eq!(c.problem.as_deref(), Some("Branch already has a worktree."));
+        let c = NewWorktreeCheck::new(&m, &fields("other", true), Some("~/wt/app/other"));
+        assert!(c.problem.unwrap().starts_with("A folder is already there"));
+        let c = NewWorktreeCheck::new(&m, &fields("", true), None);
+        assert_eq!((c.problem.as_deref(), c.folder), (Some(""), None));
+    }
+
+    #[test]
+    fn repo_edits_keep_a_name_and_default_the_trunk() {
+        let repo = core_model().config.repos[0].clone();
+        let saved = RepoEdit {
+            repo_id: "r1".into(),
+            name: "  ".into(),
+            main_branch: "".into(),
+            init_command: "bun i".into(),
+        }
+        .apply(&repo);
+        assert_eq!(
+            (saved.name.as_str(), saved.main_branch.as_str()),
+            ("app", "main")
+        );
+        assert_eq!(saved.init_command, "bun i");
     }
 
     #[test]

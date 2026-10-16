@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import type { Boot } from "./wire/Boot";
 import type { DeleteResult } from "./wire/DeleteResult";
+import type { NewWorktreeCheck } from "./wire/NewWorktreeCheck";
 import type { Model } from "./wire/Model";
 
 // Commands answer nothing the page waits on: their results come back as a
@@ -32,5 +33,15 @@ export function tauriBackend(boot: Boot): Backend {
     // Waited on: the answer decides whether there is a second question.
     deleteWorktree: (request) => invoke<DeleteResult>("delete_worktree", { request }),
     setClosedRepos: (ids) => send("set_closed_repos", { ids }),
+    checkNewWorktree: (fields) => invoke<NewWorktreeCheck>("check_new_worktree", { fields }),
+    createWorktree: (request) => send("create_worktree", { request }),
+    fetchRepo: (repoId) => send("fetch_repo", { repoId }),
+    dismissCreation: (id) => send("dismiss_creation", { id }),
+    addRepos: () => send("add_repos"),
+    pickFolder: () => invoke<string | null>("pick_folder"),
+    updateRepo: (edit) => send("update_repo", { edit }),
+    removeRepo: (repoId) => send("remove_repo", { repoId }),
+    moveRepo: (repoId, shown, gap) => send("move_repo", { repoId, shown, gap }),
+    setSettings: (settings) => send("set_settings", { settings }),
   };
 }

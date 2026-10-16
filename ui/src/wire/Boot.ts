@@ -18,4 +18,8 @@ os: string,
 /**
  * Repos whose cards were closed when the app last ran.
  */
-closedRepos: Array<string>, };
+closedRepos: Array<string>, 
+/**
+ * How "Open in terminal" picks a terminal on this OS, for Settings.
+ */
+terminalNote: string, };

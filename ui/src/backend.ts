@@ -5,7 +5,12 @@
 import { tauriBackend } from "./tauri";
 import type { Boot } from "./wire/Boot";
 import type { DeleteRequest } from "./wire/DeleteRequest";
+import type { CreateRequest } from "./wire/CreateRequest";
 import type { DeleteResult } from "./wire/DeleteResult";
+import type { NewWorktreeCheck } from "./wire/NewWorktreeCheck";
+import type { NewWorktreeFields } from "./wire/NewWorktreeFields";
+import type { RepoEdit } from "./wire/RepoEdit";
+import type { Settings } from "./wire/Settings";
 import type { Model } from "./wire/Model";
 
 export interface Backend {
@@ -30,6 +35,24 @@ export interface Backend {
   deleteWorktree(request: DeleteRequest): Promise<DeleteResult>;
   /// Remember which cards are closed for the next launch.
   setClosedRepos(ids: string[]): void;
+
+  /// The core's verdict on the New Worktree sheet's fields.
+  checkNewWorktree(fields: NewWorktreeFields): Promise<NewWorktreeCheck>;
+  /// Create, as the last check said; a placeholder row shows at once.
+  createWorktree(request: CreateRequest): void;
+  /// Fetch a repo's remotes now (the New Worktree sheet opened).
+  fetchRepo(repoId: string): void;
+  /// Forget a failed creation's row.
+  dismissCreation(id: number): void;
+  /// Ask for folders and add them as repos.
+  addRepos(): void;
+  /// Ask for one folder; `null` when cancelled.
+  pickFolder(): Promise<string | null>;
+  updateRepo(edit: RepoEdit): void;
+  removeRepo(repoId: string): void;
+  /// Drop a repo in the gap before `shown[gap]` of the repos shown.
+  moveRepo(repoId: string, shown: string[], gap: number): void;
+  setSettings(settings: Settings): void;
 }
 
 declare global {

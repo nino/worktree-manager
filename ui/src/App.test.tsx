@@ -15,6 +15,12 @@ function setup() {
     switchBranch: vi.spyOn(backend, "switchBranch"),
     deleteWorktree: vi.spyOn(backend, "deleteWorktree"),
     setClosedRepos: vi.spyOn(backend, "setClosedRepos"),
+    createWorktree: vi.spyOn(backend, "createWorktree"),
+    fetchRepo: vi.spyOn(backend, "fetchRepo"),
+    updateRepo: vi.spyOn(backend, "updateRepo"),
+    removeRepo: vi.spyOn(backend, "removeRepo"),
+    moveRepo: vi.spyOn(backend, "moveRepo"),
+    setSettings: vi.spyOn(backend, "setSettings"),
   };
   const result = render(() => <App backend={backend} initial={backend.boot.model} />);
   return { backend, spies, ...result };
@@ -169,5 +175,67 @@ describe("App", () => {
     fireEvent.keyDown(document, { key: "ArrowDown" });
     fireEvent.keyDown(document, { key: "Enter" });
     expect(screen.getByLabelText("Filter branches")).toBeTruthy();
+  });
+
+  it("creates a worktree once the core's check lets it", async () => {
+    const { spies } = setup();
+    fireEvent.click(screen.getAllByText("New Worktree")[0]);
+    expect(spies.fetchRepo).toHaveBeenCalledWith("app");
+    const name = screen.getByLabelText("Branch name:");
+    const create = () => screen.getByText("Create") as HTMLButtonElement;
+    fireEvent.input(name, { target: { value: "fix-login" } });
+    expect(await screen.findByText("Branch already has a worktree.")).toBeTruthy();
+    expect(create().disabled).toBe(true);
+    fireEvent.input(name, { target: { value: "release/2.0" } });
+    expect(await screen.findByText("Branch already exists; use Existing branch.")).toBeTruthy();
+    fireEvent.click(screen.getByText("Existing branch"));
+    await vi.waitFor(() => expect(create().disabled).toBe(false));
+    fireEvent.click(create());
+    expect(spies.createWorktree).toHaveBeenCalledWith({
+      repoId: "app",
+      branch: "release/2.0",
+      source: { kind: "existing" },
+    });
+    expect(screen.queryByLabelText("Branch name:")).toBeNull();
+  });
+
+  it("saves a repo's settings, and removes it after asking", () => {
+    const { spies } = setup();
+    fireEvent.click(screen.getByLabelText("Settings for site"));
+    fireEvent.input(screen.getByLabelText("Init command:"), { target: { value: "make" } });
+    fireEvent.click(screen.getByText("Save"));
+    expect(spies.updateRepo).toHaveBeenCalledWith({
+      repoId: "site",
+      name: "site",
+      mainBranch: "main",
+      initCommand: "make",
+    });
+    fireEvent.click(screen.getByLabelText("Settings for site"));
+    fireEvent.click(screen.getByText("Remove Repo…"));
+    expect(screen.getByText("Remove “site” from the list?")).toBeTruthy();
+    fireEvent.click(screen.getByText("Remove"));
+    expect(spies.removeRepo).toHaveBeenCalledWith("site");
+  });
+
+  it("saves the app's settings", () => {
+    const { spies } = setup();
+    fireEvent.click(screen.getByLabelText("Settings"));
+    fireEvent.input(screen.getByLabelText("Editor command:"), { target: { value: "zed" } });
+    fireEvent.change(screen.getByLabelText(".worktreeinclude:"), { target: { value: "copy" } });
+    fireEvent.click(screen.getByText("Save"));
+    expect(spies.setSettings).toHaveBeenCalledWith({
+      worktreesRoot: "/home/demo/worktrees",
+      editorCommand: "zed",
+      copyWorktreeInclude: true,
+      updateChannel: "stable",
+    });
+  });
+
+  it("moves the selected card with ⌥⌘↓", () => {
+    const { spies } = setup();
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    fireEvent.keyDown(document, { key: "ArrowDown", altKey: true, metaKey: true });
+    expect(spies.moveRepo).toHaveBeenCalledWith("app", ["app", "site"], 2);
+    expect(document.querySelector(".card")!.textContent).toContain("site");
   });
 });

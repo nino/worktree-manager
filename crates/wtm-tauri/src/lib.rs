@@ -44,6 +44,7 @@ pub fn run() {
     let started = Instant::now();
     let (platform, dirs) = wtm_os::native();
     let file_manager = platform.file_manager_name().to_string();
+    let terminal_note = platform.terminal_note().to_string();
     // Reads the config and the last run's snapshot; no git yet.
     let app = App::new(platform, dirs);
     let boot = wire::Boot {
@@ -51,6 +52,7 @@ pub fn run() {
         file_manager,
         os: std::env::consts::OS.to_string(),
         closed_repos: app.ui_state().collapsed_repos.into_iter().collect(),
+        terminal_note,
     };
     let script = format!(
         "window.__WTM_BOOT__ = {};",
@@ -63,6 +65,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(bridge)
         .invoke_handler(tauri::generate_handler![
             ready,
@@ -78,6 +81,16 @@ pub fn run() {
             switch_branch,
             delete_worktree,
             set_closed_repos,
+            check_new_worktree,
+            create_worktree,
+            fetch_repo,
+            dismiss_creation,
+            add_repos,
+            pick_folder,
+            update_repo,
+            remove_repo,
+            move_repo,
+            set_settings,
         ])
         .setup(move |tauri_app| {
             let window = WebviewWindowBuilder::new(tauri_app, "main", WebviewUrl::default())
@@ -232,4 +245,149 @@ fn set_closed_repos(bridge: State<'_, Bridge>, ids: Vec<String>) {
         collapsed_repos: ids.into_iter().collect(),
         ..state
     });
+}
+
+// MARK: New Worktree
+
+/// How long the sheet waits to learn whether something is at a folder. A
+/// hung network volume must not hold the sheet's check; past this the
+/// folder is taken to be free, and git says otherwise on Create.
+const FOLDER_LOOK_LIMIT: Duration = Duration::from_millis(400);
+
+/// The core's verdict on the sheet's fields, against the latest listing.
+/// The page asks on every keystroke and every new model.
+#[tauri::command]
+async fn check_new_worktree(
+    bridge: State<'_, Bridge>,
+    fields: wire::NewWorktreeFields,
+) -> Result<wire::NewWorktreeCheck, String> {
+    let model = bridge.app.model();
+    let target = model
+        .repo(&fields.repo_id)
+        .filter(|_| !fields.name.trim().is_empty())
+        .map(|n| model.worktree_path(&n.repo, &fields.name));
+    let taken = match target {
+        Some(path) => {
+            let look = tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || path.symlink_metadata().is_ok()
+            });
+            match tokio::time::timeout(FOLDER_LOOK_LIMIT, look).await {
+                Ok(Ok(true)) => Some(wtm_core::paths::tildify(
+                    &path.to_string_lossy(),
+                    &model.home,
+                )),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    Ok(wire::NewWorktreeCheck::new(
+        &model,
+        &fields,
+        taken.as_deref(),
+    ))
+}
+
+/// Create as the sheet's last check said; a placeholder row shows at once.
+#[tauri::command]
+fn create_worktree(bridge: State<'_, Bridge>, request: wire::CreateRequest) {
+    bridge
+        .app
+        .dispatch(Action::CreateWorktree(request.to_core()));
+}
+
+/// The sheet opened: fetch now, so a branch pushed since the last cycle is
+/// found by name rather than taken for a new one.
+#[tauri::command]
+fn fetch_repo(bridge: State<'_, Bridge>, repo_id: String) {
+    bridge.app.dispatch(Action::FetchRepo(repo_id));
+}
+
+#[tauri::command]
+fn dismiss_creation(bridge: State<'_, Bridge>, id: u64) {
+    bridge.app.dispatch(Action::DismissCreation(id));
+}
+
+// MARK: Repos and settings
+
+/// Ask for folders and add each as a repo; how that went lands in the
+/// notice bar.
+#[tauri::command]
+fn add_repos(handle: AppHandle) {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dialog = handle.dialog().file().set_title("Add Repository");
+    if let Some(w) = handle.get_webview_window("main") {
+        dialog = dialog.set_parent(&w);
+    }
+    let app = handle.state::<Bridge>().app.clone();
+    dialog.pick_folders(move |picked| {
+        let paths: Vec<_> = picked
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| p.into_path().ok())
+            .collect();
+        if !paths.is_empty() {
+            app.dispatch(Action::AddRepos(paths));
+        }
+    });
+}
+
+/// One folder, for the worktrees root; `None` when cancelled.
+#[tauri::command]
+async fn pick_folder(handle: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = handle.dialog().file();
+    if let Some(w) = handle.get_webview_window("main") {
+        dialog = dialog.set_parent(&w);
+    }
+    dialog.pick_folder(move |picked| {
+        let _ = tx.send(picked.and_then(|p| p.into_path().ok()));
+    });
+    Ok(rx
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn update_repo(bridge: State<'_, Bridge>, edit: wire::RepoEdit) {
+    let model = bridge.app.model();
+    if let Some(node) = model.repo(&edit.repo_id) {
+        bridge
+            .app
+            .dispatch(Action::UpdateRepo(edit.apply(&node.repo)));
+    }
+}
+
+#[tauri::command]
+fn remove_repo(bridge: State<'_, Bridge>, repo_id: String) {
+    bridge.app.dispatch(Action::RemoveRepo(repo_id));
+}
+
+/// Drop a repo in the gap before `shown[gap]`, `shown` being the repos the
+/// page shows (fewer than all of them during a search). Where that puts it
+/// among all of them is `wtm_core::repos::drop_target`'s to say.
+#[tauri::command]
+fn move_repo(bridge: State<'_, Bridge>, repo_id: String, shown: Vec<String>, gap: usize) {
+    let model = bridge.app.model();
+    let all: Vec<&str> = model.repos.iter().map(|r| r.repo.id.as_str()).collect();
+    let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+    if let Some(before) = wtm_core::repos::drop_target(&all, &shown, &repo_id, gap) {
+        bridge.app.dispatch(Action::MoveRepo {
+            repo_id,
+            before: before.map(str::to_string),
+        });
+    }
+}
+
+/// Save the Settings sheet; an empty worktrees root is never saved.
+#[tauri::command]
+fn set_settings(bridge: State<'_, Bridge>, settings: wire::Settings) {
+    let settings = settings.to_core();
+    if !settings.worktrees_root.is_empty() {
+        bridge.app.dispatch(Action::SetSettings(settings));
+    }
 }

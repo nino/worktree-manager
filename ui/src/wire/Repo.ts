@@ -8,9 +8,22 @@ export type Repo = { id: string, name: string, path: string,
  */
 displayPath: string, mainBranch: string, 
 /**
+ * Run in each new worktree once it is created.
+ */
+initCommand: string, 
+/**
  * Local branches, for the branch picker.
  */
 branches: Array<string>, 
+/**
+ * What a new branch starts from unless the sheet says otherwise:
+ * `origin/<trunk>` when that exists, else the trunk.
+ */
+defaultBaseRef: string, 
+/**
+ * Refs offered as a new branch's base.
+ */
+baseRefCandidates: Array<string>, 
 /**
  * Why listing failed, if it did.
  */

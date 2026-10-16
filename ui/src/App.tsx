@@ -7,7 +7,9 @@ import {
   on,
   onCleanup,
   onMount,
+  Match,
   Show,
+  Switch,
   useContext,
   type JSX,
 } from "solid-js";
@@ -23,6 +25,7 @@ import { noticeIsLong, noticeSummary } from "./notice";
 import { choice, moveBy, openPicker, setQuery as setPickerQuery, type PickerState } from "./picker";
 import { confirmDelete, forceDelete, type Question } from "./questions";
 import { children, normalise, repoMeta, showsRepo } from "./search";
+import { NewWorktreeSheet, RepoSettingsSheet, SettingsSheet } from "./sheets";
 import type { Model } from "./wire/Model";
 import type { Pending } from "./wire/Pending";
 import type { Repo } from "./wire/Repo";
@@ -36,8 +39,14 @@ const BUSY_LABEL = {
   deleting: "Deleting…",
 } as const;
 
-/// A question on screen: one of the delete ladder's, or a plain error.
-type Dialog = { kind: "question"; question: Question } | { kind: "error"; title: string; message: string };
+/// The sheet on screen; one at a time, as AppKit shows them.
+type Dialog =
+  | { kind: "question"; question: Question }
+  | { kind: "error"; title: string; message: string }
+  | { kind: "newWorktree"; repoId: string }
+  | { kind: "repoSettings"; repoId: string }
+  | { kind: "confirmRemove"; repoId: string; name: string }
+  | { kind: "settings" };
 
 /// An open branch picker, hung from one worktree's branch button.
 interface OpenPicker {
@@ -58,6 +67,12 @@ interface Ui {
   pickerChoose: (row: number | null) => void;
   closePicker: () => void;
   askDelete: (repo: Repo, path: string) => void;
+  newWorktree: (repoId: string) => void;
+  repoSettings: (repoId: string) => void;
+  /// Drag-and-drop of cards, by their headers.
+  drag: () => { repoId: string; gap: number | null } | null;
+  startDrag: (repoId: string) => void;
+  endDrag: () => void;
 }
 const UiContext = createContext<Ui>();
 const useUi = () => useContext(UiContext)!;
@@ -71,7 +86,13 @@ export function App(props: { backend: Backend; initial: Model }) {
   // One store for the core's model, patched in place on every push so that
   // only the rows whose data changed are touched.
   const [model, setModel] = createStore<Model>(structuredClone(props.initial));
-  const apply = (m: Model) => setModel(reconcile(m, { key: "id" }));
+  // Bumped on every model, for what must look again at each (an open New
+  // Worktree sheet re-checks its fields).
+  const [version, setVersion] = createSignal(0);
+  const apply = (m: Model) => {
+    setModel(reconcile(m, { key: "id" }));
+    setVersion((v) => v + 1);
+  };
   be.onModel(apply);
   // The DOM now holds the boot model, so the window can be shown with
   // content in its first frame; the answer is the model as it is by now.
@@ -137,6 +158,47 @@ export function App(props: { backend: Backend; initial: Model }) {
   // MARK: The branch picker
 
   const [picker, setPicker] = createSignal<OpenPicker | null>(null);
+
+  // MARK: Moving cards
+
+  // Dragging a card's header: the gap it would land in, by the pointer
+  // against each shown card's middle. Where that puts it among every repo
+  // (a search hides some) is the core's `drop_target` to say.
+  const [drag, setDrag] = createSignal<{ repoId: string; gap: number | null } | null>(null);
+  const gapAt = (y: number) => {
+    const cards = [...listEl.querySelectorAll<HTMLElement>(".card")];
+    const at = cards.findIndex((c) => {
+      const r = c.getBoundingClientRect();
+      return y < r.top + r.height / 2;
+    });
+    return at < 0 ? cards.length : at;
+  };
+  const shownIds = () => shown().map((r) => r.id);
+  const onDragOver = (e: DragEvent) => {
+    const d = drag();
+    if (!d) return;
+    e.preventDefault();
+    const gap = gapAt(e.clientY);
+    if (gap !== d.gap) setDrag({ ...d, gap });
+  };
+  const onDrop = (e: DragEvent) => {
+    const d = drag();
+    setDrag(null);
+    if (!d || d.gap === null) return;
+    e.preventDefault();
+    be.moveRepo(d.repoId, shownIds(), d.gap);
+  };
+  /// ⌥⌘↑/⌥⌘↓: what dragging the selected row's card one place does.
+  const moveSelected = (up: boolean) => {
+    const row = selectedRow();
+    if (!row) return;
+    const ids = shownIds();
+    const from = ids.indexOf(row.repoId);
+    const gap = up ? from - 1 : from + 2;
+    if (from < 0 || gap < 0 || gap > ids.length) return;
+    be.moveRepo(row.repoId, ids, gap);
+    reveal(row.key);
+  };
   const ui: Ui = {
     backend: be,
     selected,
@@ -164,11 +226,25 @@ export function App(props: { backend: Backend; initial: Model }) {
       const question = confirmDelete(repo, path);
       if (question) setDialog({ kind: "question", question });
     },
+    // Nothing can be created where nothing could be listed: the error
+    // beside the path says why.
+    newWorktree: (repoId) => {
+      if (repoOf(repoId)?.error === null) setDialog({ kind: "newWorktree", repoId });
+    },
+    repoSettings: (repoId) => setDialog({ kind: "repoSettings", repoId }),
+    drag,
+    startDrag: (repoId) => setDrag({ repoId, gap: null }),
+    // A drop outside the list, or a cancelled drag, moves nothing.
+    endDrag: () => setDrag(null),
   };
 
   // MARK: The delete ladder
 
   const [dialog, setDialog] = createSignal<Dialog | null>(null);
+  const closeDialog = () => {
+    setDialog(null);
+    listEl.focus();
+  };
   const answer = async (question: Question) => {
     setDialog(null);
     const r = await be.deleteWorktree(question.request);
@@ -210,6 +286,21 @@ export function App(props: { backend: Backend; initial: Model }) {
     }
     // A dialog or the picker has the keyboard; so does a text field.
     if (dialog() || picker()) return;
+    if (mod && !e.shiftKey && (e.key === "o" || e.key === "," || e.key === "n")) {
+      e.preventDefault();
+      if (e.key === "o") be.addRepos();
+      else if (e.key === ",") setDialog({ kind: "settings" });
+      else {
+        const row = selectedRow();
+        if (row) ui.newWorktree(row.repoId);
+      }
+      return;
+    }
+    if (mod && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      moveSelected(e.key === "ArrowUp");
+      return;
+    }
     const target = e.target instanceof Element ? e.target : null;
     if (target?.closest("input, textarea")) {
       // ↓ from the search field goes to the list, as in a Finder window.
@@ -259,6 +350,9 @@ export function App(props: { backend: Backend; initial: Model }) {
           </Show>
           <span class="toolbar-space" data-tauri-drag-region />
           <div class="tool-group">
+            <button class="tool" title="Add repository (⌘O)" aria-label="Add repository" onClick={() => be.addRepos()}>
+              <I.Add />
+            </button>
             <button
               class="tool"
               classList={{ spinning: model.refreshing }}
@@ -286,16 +380,35 @@ export function App(props: { backend: Backend; initial: Model }) {
               }}
             />
           </label>
+          <div class="tool-group single">
+            <button
+              class="tool"
+              title="Settings (⌘,)"
+              aria-label="Settings"
+              onClick={() => setDialog({ kind: "settings" })}
+            >
+              <I.Gear />
+            </button>
+          </div>
         </header>
 
         <Show when={model.notice}>
           {(n) => <NoticeBar text={n().text} tone={n().tone} onClose={() => be.clearNotice()} />}
         </Show>
 
-        <main class="list" ref={listEl} tabIndex={-1} aria-label="Repositories">
+        <main
+          class="list"
+          ref={listEl}
+          tabIndex={-1}
+          aria-label="Repositories"
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+        >
           <For each={shown()}>
-            {(repo) => (
+            {(repo, i) => (
               <RepoCard
+                dropBefore={drag()?.gap === i() && drag()?.repoId !== repo.id}
+                dropAfter={drag()?.gap === shown().length && i() === shown().length - 1}
                 repo={repo}
                 query={q()}
                 open={isOpen(repo.id)}
@@ -314,22 +427,61 @@ export function App(props: { backend: Backend; initial: Model }) {
           </Show>
         </main>
 
-        <Show when={dialog()}>
-          {(d) => (
-            <DialogSheet
-              dialog={d()}
-              onConfirm={() => {
-                const now = d();
-                if (now.kind === "question") void answer(now.question);
-                else setDialog(null);
-              }}
-              onCancel={() => {
-                setDialog(null);
-                listEl.focus();
-              }}
-            />
-          )}
-        </Show>
+        <Switch>
+          <Match when={only(dialog(), "question")}>
+            {(d) => (
+              <Alert
+                title={d().question.title}
+                message={d().question.message}
+                confirm={d().question.confirm}
+                critical={d().question.critical}
+                onConfirm={() => void answer(d().question)}
+                onCancel={closeDialog}
+              />
+            )}
+          </Match>
+          <Match when={only(dialog(), "error")}>
+            {(d) => <Alert title={d().title} message={d().message} onConfirm={closeDialog} onCancel={closeDialog} />}
+          </Match>
+          <Match when={only(dialog(), "confirmRemove")}>
+            {(d) => (
+              <Alert
+                title={`Remove “${d().name}” from the list?`}
+                message="This does not touch any files on disk."
+                confirm="Remove"
+                onConfirm={() => {
+                  be.removeRepo(d().repoId);
+                  closeDialog();
+                }}
+                onCancel={closeDialog}
+              />
+            )}
+          </Match>
+          <Match when={only(dialog(), "newWorktree")}>
+            {(d) => (
+              <Show when={repoOf(d().repoId)} fallback={<Gone onClose={closeDialog} />}>
+                {(repo) => <NewWorktreeSheet repo={repo()} backend={be} version={version} onClose={closeDialog} />}
+              </Show>
+            )}
+          </Match>
+          <Match when={only(dialog(), "repoSettings")}>
+            {(d) => (
+              <Show when={repoOf(d().repoId)} fallback={<Gone onClose={closeDialog} />}>
+                {(repo) => (
+                  <RepoSettingsSheet
+                    repo={repo()}
+                    backend={be}
+                    onClose={closeDialog}
+                    onRemove={() => setDialog({ kind: "confirmRemove", repoId: repo().id, name: repo().name })}
+                  />
+                )}
+              </Show>
+            )}
+          </Match>
+          <Match when={only(dialog(), "settings")}>
+            <SettingsSheet model={model} backend={be} terminalNote={be.boot.terminalNote} onClose={closeDialog} />
+          </Match>
+        </Switch>
       </div>
     </UiContext.Provider>
   );
@@ -352,16 +504,43 @@ function NoticeBar(props: { text: string; tone: "info" | "error"; onClose: () =>
   );
 }
 
-function RepoCard(props: { repo: Repo; query: string; open: boolean; onToggle: () => void }) {
+function RepoCard(props: {
+  repo: Repo;
+  query: string;
+  open: boolean;
+  onToggle: () => void;
+  dropBefore: boolean;
+  dropAfter: boolean;
+}) {
   const ui = useUi();
   const key = () => repoKey(props.repo.id);
   const rows = createMemo(() => children(props.repo, props.query));
+  const stop = (f: () => void) => (e: MouseEvent) => {
+    // The band's own click opens and closes the card.
+    e.stopPropagation();
+    f();
+  };
   return (
-    <section class="card" classList={{ closed: !props.open }}>
+    <section
+      class="card"
+      classList={{
+        closed: !props.open,
+        dragging: ui.drag()?.repoId === props.repo.id,
+        "drop-before": props.dropBefore,
+        "drop-after": props.dropAfter,
+      }}
+    >
       <header
         class="band"
         classList={{ selected: ui.selected() === key() }}
         data-key={key()}
+        draggable={true}
+        onDragStart={(e) => {
+          e.dataTransfer?.setData("text/plain", props.repo.path);
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          ui.startDrag(props.repo.id);
+        }}
+        onDragEnd={() => ui.endDrag()}
         onClick={props.onToggle}
       >
         <button
@@ -386,6 +565,24 @@ function RepoCard(props: { repo: Repo; query: string; open: boolean; onToggle: (
             <CopyButton text={props.repo.path} hint="Copy path" />
           </div>
           <Show when={props.repo.error}>{(e) => <div class="repo-error">{e()}</div>}</Show>
+        </div>
+        <div class="band-actions">
+          <button
+            class="push small"
+            disabled={props.repo.error !== null}
+            title="New worktree (⌘N)"
+            onClick={stop(() => ui.newWorktree(props.repo.id))}
+          >
+            New Worktree
+          </button>
+          <button
+            class="icon-button"
+            title="Repo settings"
+            aria-label={`Settings for ${props.repo.name}`}
+            onClick={stop(() => ui.repoSettings(props.repo.id))}
+          >
+            <I.Gear />
+          </button>
         </div>
       </header>
       <Show when={props.open}>
@@ -630,46 +827,63 @@ function Highlighted(props: { text: string; positions: number[] }) {
   );
 }
 
-/// A sheet over the window, as AppKit's alerts are: Escape is Cancel, and
-/// Return is Cancel too while the other button would destroy something.
-function DialogSheet(props: { dialog: Dialog; onConfirm: () => void; onCancel: () => void }) {
-  let cancel: HTMLButtonElement | undefined;
-  let ok: HTMLButtonElement | undefined;
-  onMount(() => (cancel ?? ok)?.focus());
-  const keys = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      props.onCancel();
-    }
-  };
-  const d = props.dialog;
-  const title = d.kind === "question" ? d.question.title : d.title;
-  const message = d.kind === "question" ? d.question.message : d.message;
-  const critical = d.kind === "question" && d.question.critical;
+/// The dialog of `kind`, when that is the one open.
+function only<K extends Dialog["kind"]>(d: Dialog | null, kind: K): Extract<Dialog, { kind: K }> | false {
+  return d?.kind === kind ? (d as Extract<Dialog, { kind: K }>) : false;
+}
+
+/// A repo went away while its sheet was open (removed elsewhere).
+function Gone(props: { onClose: () => void }) {
+  return <Alert title="That repository is no longer in the list." message="" onConfirm={props.onClose} onCancel={props.onClose} />;
+}
+
+/// An alert sheet, as AppKit's are: Escape is Cancel, and Return is Cancel
+/// too while the other button would destroy something. Without `confirm`
+/// it only says something, with an OK button.
+function Alert(props: {
+  title: string;
+  message: string;
+  confirm?: string;
+  critical?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  let first: HTMLButtonElement | undefined;
+  onMount(() => first?.focus());
   return (
-    <div class="scrim" onKeyDown={keys}>
+    <div
+      class="scrim"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          props.onCancel();
+        }
+      }}
+    >
       <div class="sheet" role="alertdialog" aria-modal="true" aria-labelledby="sheet-title" aria-describedby="sheet-message">
-        <Show when={critical}>
+        <Show when={props.critical}>
           <I.Warning class="sheet-icon" />
         </Show>
-        <h2 id="sheet-title">{title}</h2>
-        <p id="sheet-message">{message}</p>
+        <h2 id="sheet-title">{props.title}</h2>
+        <Show when={props.message}>
+          <p id="sheet-message">{props.message}</p>
+        </Show>
         <div class="sheet-buttons">
           <Show
-            when={d.kind === "question" ? d.question : null}
+            when={props.confirm}
             fallback={
-              <button ref={ok} class="push default" onClick={props.onConfirm}>
+              <button ref={first} class="push default" onClick={props.onConfirm}>
                 OK
               </button>
             }
           >
-            {(question) => (
+            {(label) => (
               <>
-                <button ref={cancel} class="push" onClick={props.onCancel}>
+                <button ref={first} class="push" onClick={props.onCancel}>
                   Cancel
                 </button>
                 <button class="push destructive" onClick={props.onConfirm}>
-                  {question().confirm}
+                  {label()}
                 </button>
               </>
             )}
@@ -722,6 +936,7 @@ function CopyButton(props: { text: string; hint: string }) {
 }
 
 function PendingRow(props: { p: Pending }) {
+  const ui = useUi();
   return (
     <article class="plate pending" classList={{ failed: props.p.error !== null }}>
       <div class="line">
@@ -737,7 +952,22 @@ function PendingRow(props: { p: Pending }) {
             </span>
           }
         >
-          {(e) => <span class="repo-error">{e()}</span>}
+          {(e) => (
+            <>
+              <span class="repo-error" title={e()}>
+                {e()}
+              </span>
+              <span class="fill" />
+              <button
+                class="icon-button"
+                title="Dismiss"
+                aria-label="Dismiss"
+                onClick={() => ui.backend.dismissCreation(props.p.id)}
+              >
+                <I.Close />
+              </button>
+            </>
+          )}
         </Show>
       </div>
     </article>

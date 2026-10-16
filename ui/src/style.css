@@ -702,6 +702,55 @@ button {
   font-family: inherit !important;
 }
 
+/* MARK: Card header actions, moving cards */
+
+.band-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+}
+
+.band .icon-button .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.push.small {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--label) 8%, var(--control-bg));
+}
+
+.push:disabled {
+  color: var(--tertiary-label);
+}
+
+.band[draggable="true"] {
+  cursor: default;
+}
+
+.card.dragging {
+  opacity: 0.45;
+}
+
+/* Where a dragged card would land: a bar in the gap, in the accent, drawn
+   as a shadow so the card keeps clipping its corners. */
+.card.drop-before {
+  box-shadow: var(--card-shadow), 0 -7px 0 -4px var(--accent);
+}
+
+.card.drop-after {
+  box-shadow: var(--card-shadow), 0 7px 0 -4px var(--accent);
+}
+
+.tool-group.single {
+  padding: 0 1px;
+}
+
 /* MARK: Sheets */
 
 .scrim {
@@ -776,6 +825,142 @@ button {
 .push:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
   outline-offset: 0;
+}
+
+/* Forms: labels right-aligned in one column, fields in the next, as an
+   NSAlert's accessory form is laid out (wtm-toolkit `Form`). */
+.form-sheet {
+  width: 520px;
+  text-align: left;
+}
+
+.form-sheet h2 {
+  margin-bottom: 4px;
+}
+
+.sheet-subtitle {
+  color: var(--secondary-label) !important;
+  font: 11px var(--mono) !important;
+  margin-bottom: 12px !important;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 10px;
+  align-items: start;
+  margin: 14px 0 18px;
+}
+
+.form-label {
+  padding-top: 4px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.form-field {
+  min-width: 0;
+}
+
+.text-field {
+  width: 100%;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--separator) 22%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: 13px -apple-system, system-ui, sans-serif;
+  outline: none;
+}
+
+.text-field:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.text-field:disabled {
+  color: var(--tertiary-label);
+}
+
+#nw-branch,
+#nw-base {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.form-note,
+.form-hint {
+  margin: 4px 0 0 !important;
+  font-size: 11px !important;
+  color: var(--secondary-label) !important;
+}
+
+.form-note {
+  min-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.form-note.error {
+  color: var(--red) !important;
+}
+
+.field-with-button {
+  display: flex;
+  gap: 8px;
+}
+
+.field-with-button .push {
+  height: 24px;
+  flex: none;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--label) 8%, var(--control-bg));
+}
+
+.segmented button {
+  height: 20px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: 12px;
+}
+
+.segmented button.on {
+  background: var(--control-bg);
+  box-shadow: 0 0.5px 2px rgb(0 0 0 / 0.2);
+}
+
+.popup {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--separator) 22%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: 13px -apple-system, system-ui, sans-serif;
+}
+
+.sheet-buttons.row {
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.sheet-buttons.row .push {
+  min-width: 80px;
+}
+
+.push.default:disabled {
+  background: color-mix(in srgb, var(--accent) 35%, var(--control-bg));
+  color: rgb(255 255 255 / 0.8);
 }
 
 @keyframes sheet-in {
