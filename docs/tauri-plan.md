@@ -19,7 +19,7 @@ built, tested and photographed in the Linux cloud container end to end.
 | `wtm-platform` | unchanged |
 | `wtm-os` (new) | the three `Platform` impls, moved out of the native backends as they were. On Linux the webview is GTK 3 and must not share a process with `wtm-gtk`'s GTK 4, so the services had to stop living in a toolkit crate |
 | `wtm-tauri` (new) | the Tauri binary: owns the `App`, turns `Model` into a JSON wire type, exposes `Action`s as commands, pushes each new model as an event |
-| `ui/` (new) | the frontend: Solid + TypeScript + Vite, no CSS framework |
+| `ui/` (new) | the frontend: Solid + TypeScript + Vite, no CSS framework, built and tested with Bun |
 | `wtm-toolkit`, `wtm-ui`, `wtm-macos`, `wtm-gtk`, `wtm-windows`, `wtm-app` | kept, and still built and tested, until the Tauri app does everything they do; deleted in the last stage. Presentation logic in `wtm-ui` (badges, search matching, notice folding) is ported to TypeScript with its tests as each stage needs it |
 
 ## Shape
@@ -43,7 +43,7 @@ built, tested and photographed in the Linux cloud container end to end.
   JS file and one CSS file, served from memory by Tauri's custom protocol.
   `RUST_LOG=info` logs the time from process start to first paint.
 - **Testing from the cloud.** `cargo test` covers the core and the bridge;
-  `npm test` (Vitest) covers the frontend; `npm run dev` serves the UI to a
+  `bun run test` (Vitest) covers the frontend; `bun run dev` serves the UI to a
   browser with a mock backend, and the real app runs under Xvfb on Linux
   (`scripts/tauri-screenshot.sh`).
 

@@ -1,5 +1,5 @@
 // A backend for a plain browser: demo repos, and actions that behave
-// roughly as the core's do (a spinner, then a notice). `npm run dev` and
+// roughly as the core's do (a spinner, then a notice). `bun run dev` and
 // the screenshot script run the UI against this.
 
 import type { Backend } from "./backend";

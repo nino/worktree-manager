@@ -13,7 +13,7 @@ set -eu
 OUT=$(realpath -m "${1:?usage: $0 out.png}")
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
-(cd "$ROOT/ui" && { [ -d node_modules ] || npm ci --silent; } && npm run build --silent >/dev/null)
+(cd "$ROOT/ui" && { [ -d node_modules ] || bun install --frozen-lockfile --silent; } && bun run --silent build >/dev/null)
 cargo build -q -p wtm-tauri --manifest-path "$ROOT/Cargo.toml"
 
 if [ -n "${WTM_SANDBOX:-}" ]; then

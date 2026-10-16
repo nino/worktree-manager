@@ -3,12 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "test": "vitest run",
-    "check": "tsc --noEmit",
-    "tauri": "tauri",
-    "app": "cd .. && tauri dev -- --no-default-features"
+    "dev": "bun --bun vite",
+    "build": "bun --bun tsc --noEmit && bun --bun vite build",
+    "test": "bun --bun vitest run",
+    "check": "bun --bun tsc --noEmit",
+    "tauri": "bun --bun tauri",
+    "app": "cd .. && bun --bun ui/node_modules/.bin/tauri dev -- --no-default-features"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",
@@ -23,5 +23,6 @@
     "vite": "8.3.4",
     "vite-plugin-solid": "2.11.14",
     "vitest": "5.0.5"
-  }
+  },
+  "packageManager": "bun@1.4.2"
 }

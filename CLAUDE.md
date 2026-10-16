@@ -27,15 +27,16 @@ own branch with draft PRs, and `release.yml` refuses any tree that has
   `ui/src/wire/` on `cargo test -p wtm-tauri`; commit what it writes.
 - `crates/wtm-os`: the three `Platform`s, moved out of the native backends so
   the Tauri app can link them without GTK 4 (its webview is GTK 3 on Linux).
-- `ui/`: Solid + TypeScript + Vite. Presentation logic (badges, search,
+- `ui/`: Solid + TypeScript + Vite, run with **Bun** (package manager and
+  runtime; no npm or Node). Presentation logic (badges, search,
   notices) lives here as plain tested modules, ported from `wtm-ui`.
 
 ```sh
-cd ui && npm ci                  # once
-npm test                         # Vitest, jsdom: the frontend's tests
-npm run dev                      # the UI in a browser against mock data (mock.ts)
-npm run build && cargo run -p wtm-tauri   # the app, serving ui/dist from the binary
-npm run app                      # the app with Vite hot reload (tauri dev)
+cd ui && bun install             # once
+bun run test                     # Vitest, jsdom: the frontend's tests
+bun run dev                      # the UI in a browser against mock data (mock.ts)
+bun run build && cargo run -p wtm-tauri   # the app, serving ui/dist from the binary
+bun run app                      # the app with Vite hot reload (tauri dev)
 scripts/tauri-screenshot.sh out.png       # Linux: the real app under Xvfb, demo repos
 ```
 

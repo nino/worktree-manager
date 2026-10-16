@@ -1,5 +1,5 @@
 // The page's only way to the core. In the app this is Tauri's IPC; in a
-// plain browser (`npm run dev`, tests, screenshots) it is the mock in
+// plain browser (`bun run dev`, tests, screenshots) it is the mock in
 // `mock.ts`, so the whole UI can be worked on without the native shell.
 
 import { tauriBackend } from "./tauri";
