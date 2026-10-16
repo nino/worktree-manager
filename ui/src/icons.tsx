@@ -1,96 +1,53 @@
-// Icons as inline SVG, drawn after the SF Symbols the AppKit build uses
-// (`symbol_name` in wtm-macos), at its 12-point medium weight. No font or
-// image requests, and they take the text colour, so both appearances work.
+// The app's icons: Lucide's, named for what they do here, and the two
+// agents' marks, which Lucide has no equivalent for. Lucide's are inline
+// SVG in the text colour, so both appearances work, and each is imported
+// on its own so the bundle carries only these.
 
-import type { JSX } from "solid-js";
+import type { LucideProps } from "lucide-solid";
+import ArrowDownToLine from "lucide-solid/icons/arrow-down-to-line";
+import ArrowUpToLine from "lucide-solid/icons/arrow-up-to-line";
+import CheckIcon from "lucide-solid/icons/check";
+import ChevronDown from "lucide-solid/icons/chevron-down";
+import ChevronsUpDown from "lucide-solid/icons/chevrons-up-down";
+import Code from "lucide-solid/icons/code";
+import CopyIcon from "lucide-solid/icons/copy";
+import FolderIcon from "lucide-solid/icons/folder";
+import GitMerge from "lucide-solid/icons/git-merge";
+import Plus from "lucide-solid/icons/plus";
+import RotateCw from "lucide-solid/icons/rotate-cw";
+import SearchIcon from "lucide-solid/icons/search";
+import Settings from "lucide-solid/icons/settings";
+import SquareTerminal from "lucide-solid/icons/square-terminal";
+import Trash from "lucide-solid/icons/trash";
+import TriangleAlert from "lucide-solid/icons/triangle-alert";
+import X from "lucide-solid/icons/x";
+import type { Component } from "solid-js";
 
-// `body` is a function: Solid's JSX makes real DOM nodes, and one node
-// inserted in two rows would move rather than appear twice.
-const icon = (body: () => JSX.Element) => (props: { class?: string }) => (
-  <svg
-    class={`icon ${props.class ?? ""}`}
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    {body()}
-  </svg>
+// Sized by the stylesheet (`.icon`); a little lighter than Lucide's 2 at
+// these sizes, nearer the SF Symbols the AppKit build draws.
+const icon = (Lucide: Component<LucideProps>) => (props: { class?: string }) => (
+  <Lucide class={`icon ${props.class ?? ""}`} stroke-width={1.75} aria-hidden="true" />
 );
 
-/// arrow.clockwise
-export const Refresh = icon(() => (
-  <>
-    {/* Round from the upper right, through the bottom, to the top, where
-        a solid head points on round: the arc meets the head's back. */}
-    <path d="M12.6 6.6A5 5 0 1 1 7.8 3.5" />
-    <path d="M7.6 1.6 10.3 3.5 7.6 5.4Z" fill="currentColor" stroke-width="1" />
-  </>
-));
-/// arrow.up.to.line
-export const Push = icon(() => <path d="M3 2.5h10M8 14V5.5M4.5 9 8 5.5 11.5 9" />);
-/// arrow.down.to.line
-export const Pull = icon(() => <path d="M3 13.5h10M8 2v8.5M4.5 7 8 10.5 11.5 7" />);
-/// arrow.triangle.merge
-export const Merge = icon(() => <path d="M8 14V7.5M8 7.5 3.5 3M8 7.5 12.5 3M5.5 9.5 8 7.5l2.5 2M3.5 3v2.5M3.5 3H6" />);
-/// chevron.left.forwardslash.chevron.right
-export const Editor = icon(() => <path d="M4.5 4.5 1.5 8l3 3.5M11.5 4.5l3 3.5-3 3.5M9.5 3l-3 10" />);
-/// terminal
-export const Terminal = icon(() => (
-  <>
-    <rect x="1.5" y="2.5" width="13" height="11" rx="1.8" />
-    <path d="m4.5 6 2 1.8-2 1.8M8 10h3" />
-  </>
-));
-/// folder
-export const Folder = icon(() => (
-  <path d="M1.5 4.3c0-.7.5-1.3 1.2-1.3h3.2l1.5 1.5h5.9c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H2.7c-.7 0-1.2-.5-1.2-1.2zM1.5 6.5h13" />
-));
-/// doc.on.doc
-export const Copy = icon(() => (
-  <>
-    <rect x="5" y="4.5" width="8" height="10" rx="1.5" />
-    <path d="M3 11.5V3c0-.8.6-1.5 1.5-1.5H10" />
-  </>
-));
-/// chevron.down (rotated for a closed card)
-export const Chevron = icon(() => <path d="m4 6 4 4 4-4" />);
-/// magnifyingglass
-export const Search = icon(() => (
-  <>
-    <circle cx="7" cy="7" r="4.5" />
-    <path d="m10.3 10.3 3.7 3.7" />
-  </>
-));
-/// xmark
-export const Close = icon(() => <path d="m4 4 8 8M12 4l-8 8" />);
-/// plus
-export const Add = icon(() => <path d="M8 2.5v11M2.5 8h11" />);
-/// gearshape
-export const Gear = icon(() => (
-  <>
-    <path d="M12.72 6.36 14.45 6.59 14.45 9.41 12.72 9.64 12.50 10.18 13.56 11.56 11.56 13.56 10.18 12.50 9.64 12.72 9.41 14.45 6.59 14.45 6.36 12.72 5.82 12.50 4.44 13.56 2.44 11.56 3.50 10.18 3.28 9.64 1.55 9.41 1.55 6.59 3.28 6.36 3.50 5.82 2.44 4.44 4.44 2.44 5.82 3.50 6.36 3.28 6.59 1.55 9.41 1.55 9.64 3.28 10.18 3.50 11.56 2.44 13.56 4.44 12.50 5.82Z" />
-    <circle cx="8" cy="8" r="2.2" />
-  </>
-));
-/// trash
-export const Delete = icon(() => (
-  <path d="M2.5 4h11M6 4V2.5h4V4M3.8 4l.7 9.2c.1.7.6 1.3 1.3 1.3h4.4c.7 0 1.2-.6 1.3-1.3L12.2 4M6.5 6.8v5M9.5 6.8v5" />
-));
-/// chevron.up.chevron.down: the branch button opens a list
-export const UpDown = icon(() => <path d="m5 6 3-3 3 3M5 10l3 3 3-3" />);
-/// checkmark
-export const Check = icon(() => <path d="m3 8.5 3.2 3L13 4.5" />);
-/// exclamationmark.triangle
-export const Warning = icon(() => (
-  <>
-    <path d="M7.1 2.3a1 1 0 0 1 1.8 0l5.6 10.2a1 1 0 0 1-.9 1.5H2.4a1 1 0 0 1-.9-1.5z" />
-    <path d="M8 6v3.5M8 11.8v.1" />
-  </>
-));
+export const Refresh = icon(RotateCw);
+export const Push = icon(ArrowUpToLine);
+export const Pull = icon(ArrowDownToLine);
+export const Merge = icon(GitMerge);
+export const Editor = icon(Code);
+export const Terminal = icon(SquareTerminal);
+export const Folder = icon(FolderIcon);
+export const Copy = icon(CopyIcon);
+/// Rotated for a closed card.
+export const Chevron = icon(ChevronDown);
+export const Search = icon(SearchIcon);
+export const Close = icon(X);
+export const Add = icon(Plus);
+export const Gear = icon(Settings);
+export const Delete = icon(Trash);
+/// The branch button opens a list.
+export const UpDown = icon(ChevronsUpDown);
+export const Check = icon(CheckIcon);
+export const Warning = icon(TriangleAlert);
 
 /// Clawd, the Claude Code mascot, in his own colours (wtm-macos `toolicon`).
 export const ClaudeMark = () => (

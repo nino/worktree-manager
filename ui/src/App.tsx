@@ -54,7 +54,12 @@ interface OpenPicker {
   repoId: string;
   path: string;
   state: PickerState;
+  /// Animating away; gone once that has played.
+  closing?: boolean;
 }
+
+/// How long the picker takes to fade away (`.popover.closing`).
+const PICKER_CLOSE_MS = 120;
 
 /// What the rows need from the window, without threading it through props.
 interface Ui {
@@ -254,8 +259,13 @@ export function App(props: { backend: Backend; initial: Model }) {
       if (branch !== null) be.switchBranch(p.repoId, p.path, branch);
     },
     closePicker: () => {
-      setPicker(null);
+      const p = picker();
+      if (!p || p.closing) return;
+      const closing = { ...p, closing: true };
+      setPicker(closing);
       listEl.focus();
+      // Unless it was opened again meanwhile.
+      setTimeout(() => setPicker((now) => (now === closing ? null : now)), PICKER_CLOSE_MS);
     },
     askDelete: (repo, path) => {
       const question = confirmDelete(repo, path);
@@ -794,7 +804,8 @@ function WorktreeRow(props: { repo: Repo; w: Worktree }) {
             title={`Switch branch (current: ${shown()})`}
             aria-haspopup="listbox"
             aria-expanded={picking() !== null}
-            onClick={() => ui.openPicker(props.repo, props.w)}
+            // A second click on the button closes what the first opened.
+            onClick={() => (picking() && !picking()!.closing ? ui.closePicker() : ui.openPicker(props.repo, props.w))}
           >
             <BranchLabel branch={props.w.branch} />
             <I.UpDown class="updown" />
@@ -877,9 +888,12 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
     const height = root.offsetHeight;
     const below = a.bottom + 6;
     const fitsBelow = below + height <= window.innerHeight - 8;
+    const left = Math.max(8, Math.min(a.left, window.innerWidth - root.offsetWidth - 8));
     setPlace({
-      left: `${Math.max(8, Math.min(a.left, window.innerWidth - root.offsetWidth - 8))}px`,
+      left: `${left}px`,
       top: `${fitsBelow ? below : Math.max(8, a.top - 6 - height)}px`,
+      // It grows out of the button, and shrinks back into it.
+      "transform-origin": `${a.left + a.width / 2 - left}px ${fitsBelow ? "0" : "100%"}`,
     });
   };
   onMount(() => {
@@ -893,8 +907,10 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
     window.removeEventListener("resize", position);
     document.removeEventListener("scroll", position, true);
   });
+  // The button's own click closes it, in its click handler.
   const away = (e: MouseEvent) => {
-    if (!root.contains(e.target as Node)) ui.closePicker();
+    const t = e.target as Node;
+    if (!root.contains(t) && !props.anchor.contains(t)) ui.closePicker();
   };
   // Not this turn's mousedown: that is the click that opened it.
   queueMicrotask(() => document.addEventListener("mousedown", away));
@@ -907,6 +923,7 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
     <Portal>
       <div
         class="popover"
+        classList={{ closing: props.picker.closing === true }}
         ref={root}
         style={place()}
         role="dialog"

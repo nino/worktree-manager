@@ -109,7 +109,7 @@ describe("App", () => {
     expect(spies.storeView).toHaveBeenLastCalledWith({ closedRepos: ["site"], scroll: 0, focus: { repoId: "site", worktreePath: null } });
   });
 
-  it("switches branch from the picker, filtered by what is typed", () => {
+  it("switches branch from the picker, filtered by what is typed", async () => {
     const { spies } = setup();
     const row = screen.getByLabelText("fix-login").closest("article")!;
     fireEvent.click(row.querySelector("button.branch")!);
@@ -123,7 +123,18 @@ describe("App", () => {
       "/home/demo/worktrees/app/fix-login",
       "claude/tauri-rewrite",
     );
-    expect(screen.queryByLabelText("Filter branches")).toBeNull();
+    // Once it has faded away.
+    await vi.waitFor(() => expect(screen.queryByLabelText("Filter branches")).toBeNull());
+  });
+
+  it("closes the picker when its button is clicked again", async () => {
+    setup();
+    const button = screen.getByLabelText("fix-login").closest("button")!;
+    fireEvent.click(button);
+    expect(screen.getByLabelText("Filter branches")).toBeTruthy();
+    fireEvent.mouseDown(button);
+    fireEvent.click(button);
+    await vi.waitFor(() => expect(screen.queryByLabelText("Filter branches")).toBeNull());
   });
 
   it("does nothing when the current branch is chosen", () => {

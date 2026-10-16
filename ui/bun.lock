@@ -6,6 +6,7 @@
       "name": "worktree-manager-ui",
       "dependencies": {
         "@tauri-apps/api": "2.12.4",
+        "lucide-solid": "^1.58.0",
         "solid-js": "1.9.17",
       },
       "devDependencies": {
@@ -316,6 +317,8 @@
     "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
 
     "lru-cache": ["lru-cache@11.5.3", "", {}, "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg=="],
+
+    "lucide-solid": ["lucide-solid@1.58.0", "", { "peerDependencies": { "solid-js": "^1.4.7" } }, "sha512-C2+ehdiMtq6OQ2ZMtX0Y32d5lhqjoNkZO62udhFea+UN7FiKbhvhtQ2VDX1R4WWROfzAm6rdP0oSkcd3wJICLg=="],
 
     "lz-string": ["lz-string@1.5.0", "", { "bin": { "lz-string": "bin/bin.js" } }, "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ=="],
 
