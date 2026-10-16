@@ -32,7 +32,9 @@ own branch with draft PRs, and `release.yml` refuses any tree that has
   notices) lives here as plain tested modules, ported from `wtm-ui`.
 
 ```sh
-cd ui && bun install             # once
+bun app                          # from the repo root: install ui/'s packages, run the app with hot reload
+bun run test                     # from the repo root: the frontend's tests, then wtm-tauri's
+cd ui && bun install             # once, for the commands below
 bun run test                     # Vitest, jsdom: the frontend's tests
 bun run dev                      # the UI in a browser against mock data (mock.ts)
 bun run build && cargo run -p wtm-tauri   # the app, serving ui/dist from the binary

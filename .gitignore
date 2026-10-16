@@ -8,5 +8,6 @@
 # Worktrees Claude Code makes for its subagents
 /.claude/worktrees/
 /crates/wtm-tauri/gen/
+/node_modules/
 /ui/node_modules/
 /ui/dist/
