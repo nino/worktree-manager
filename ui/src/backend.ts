@@ -11,7 +11,20 @@ import type { NewWorktreeCheck } from "./wire/NewWorktreeCheck";
 import type { NewWorktreeFields } from "./wire/NewWorktreeFields";
 import type { RepoEdit } from "./wire/RepoEdit";
 import type { Settings } from "./wire/Settings";
+import type { MenuState } from "./wire/MenuState";
 import type { Model } from "./wire/Model";
+import type { ViewState } from "./wire/ViewState";
+
+/// The menu bar's own items (`crates/wtm-tauri/src/menu.rs`).
+export type MenuId =
+  | "settings"
+  | "add-repo"
+  | "new-worktree"
+  | "switch-branch"
+  | "move-up"
+  | "move-down"
+  | "refresh"
+  | "find";
 
 export interface Backend {
   /// What the Rust side handed the page before it loaded.
@@ -33,8 +46,16 @@ export interface Backend {
   switchBranch(repoId: string, path: string, branch: string): void;
   /// Runs the core's safety ladder; a refusal says which question is next.
   deleteWorktree(request: DeleteRequest): Promise<DeleteResult>;
-  /// Remember which cards are closed for the next launch.
-  setClosedRepos(ids: string[]): void;
+  /// What the list looks like now (closed cards, scroll, selection), for
+  /// the next launch. Called on every change.
+  storeView(view: ViewState): void;
+  /// Which of the menu bar's items apply now (macOS; elsewhere a no-op).
+  setMenuState(state: MenuState): void;
+  /// Called with each menu item chosen, by its id.
+  onMenu(f: (id: MenuId) => void): void;
+  /// Called as folders are dragged over the window (true) and away or
+  /// dropped (false). The drop itself is handled in Rust.
+  onFilesOver(f: (over: boolean) => void): void;
 
   /// The core's verdict on the New Worktree sheet's fields.
   checkNewWorktree(fields: NewWorktreeFields): Promise<NewWorktreeCheck>;

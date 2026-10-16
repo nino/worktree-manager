@@ -16,7 +16,7 @@ import {
 import { createStore, reconcile } from "solid-js/store";
 import { Portal } from "solid-js/web";
 
-import type { Backend } from "./backend";
+import type { Backend, MenuId } from "./backend";
 import { badgesFor } from "./badges";
 import { splitAgentPrefix } from "./branch";
 import * as I from "./icons";
@@ -29,6 +29,7 @@ import { NewWorktreeSheet, RepoSettingsSheet, SettingsSheet } from "./sheets";
 import type { Model } from "./wire/Model";
 import type { Pending } from "./wire/Pending";
 import type { Repo } from "./wire/Repo";
+import type { RowFocus } from "./wire/RowFocus";
 import type { Worktree } from "./wire/Worktree";
 
 const BUSY_LABEL = {
@@ -69,12 +70,18 @@ interface Ui {
   askDelete: (repo: Repo, path: string) => void;
   newWorktree: (repoId: string) => void;
   repoSettings: (repoId: string) => void;
-  /// Drag-and-drop of cards, by their headers.
+  /// Dragging a card by its header: pressed, then moved far enough.
   drag: () => { repoId: string; gap: number | null } | null;
-  startDrag: (repoId: string) => void;
-  endDrag: () => void;
+  pressCard: (repoId: string, e: MouseEvent) => void;
+  /// Whether the click that ends a press is the end of a drag, which does
+  /// not also open or close the card.
+  wasDrag: () => boolean;
 }
 const UiContext = createContext<Ui>();
+
+/// A row's element id, for the list's `aria-activedescendant`: the list
+/// keeps the keyboard and names the selected row, as an outline view does.
+const rowId = (key: RowKey) => `row-${encodeURIComponent(key)}`;
 const useUi = () => useContext(UiContext)!;
 
 /// The branch button's switches are off while a row is busy or its folder
@@ -103,7 +110,7 @@ export function App(props: { backend: Backend; initial: Model }) {
 
   // MARK: Closed cards
 
-  const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set(be.boot.closedRepos));
+  const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set(be.boot.view.closedRepos));
   // A search opens every card, so that a match is never hidden in a closed
   // one; cards closed mid-search are closed only until it is cleared, and
   // what is remembered is how they were before it.
@@ -123,7 +130,6 @@ export function App(props: { backend: Backend; initial: Model }) {
       setClosedInSearch(flip);
     } else {
       setClosed(flip);
-      be.setClosedRepos([...closed()]);
     }
     // A worktree row that just went away cannot keep the selection.
     const sel = selected();
@@ -163,8 +169,13 @@ export function App(props: { backend: Backend; initial: Model }) {
 
   // Dragging a card's header: the gap it would land in, by the pointer
   // against each shown card's middle. Where that puts it among every repo
-  // (a search hides some) is the core's `drop_target` to say.
+  // (a search hides some) is the core's `drop_target` to say. Mouse events
+  // rather than HTML drag and drop, which the webview hands to the native
+  // drop handler that takes folders dropped from outside.
   const [drag, setDrag] = createSignal<{ repoId: string; gap: number | null } | null>(null);
+  /// How far the pointer moves before a press on a header becomes a drag.
+  const DRAG_SLOP = 4;
+  let dragged = false;
   const gapAt = (y: number) => {
     const cards = [...listEl.querySelectorAll<HTMLElement>(".card")];
     const at = cards.findIndex((c) => {
@@ -174,29 +185,53 @@ export function App(props: { backend: Backend; initial: Model }) {
     return at < 0 ? cards.length : at;
   };
   const shownIds = () => shown().map((r) => r.id);
-  const onDragOver = (e: DragEvent) => {
-    const d = drag();
-    if (!d) return;
-    e.preventDefault();
-    const gap = gapAt(e.clientY);
-    if (gap !== d.gap) setDrag({ ...d, gap });
+  const pressCard = (repoId: string, down: MouseEvent) => {
+    if (down.button !== 0) return;
+    dragged = false;
+    const move = (e: MouseEvent) => {
+      if (!drag()) {
+        if (Math.abs(e.clientY - down.clientY) < DRAG_SLOP) return;
+        dragged = true;
+      }
+      e.preventDefault();
+      const gap = gapAt(e.clientY);
+      if (gap !== drag()?.gap) setDrag({ repoId, gap });
+    };
+    const finish = (drop: boolean) => {
+      const d = drag();
+      setDrag(null);
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      document.removeEventListener("keydown", escape, true);
+      if (drop && d && d.gap !== null) be.moveRepo(d.repoId, shownIds(), d.gap);
+    };
+    const up = () => finish(true);
+    // Escape puts the card back, as a cancelled drag does on macOS.
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !drag()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish(false);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    document.addEventListener("keydown", escape, true);
   };
-  const onDrop = (e: DragEvent) => {
-    const d = drag();
-    setDrag(null);
-    if (!d || d.gap === null) return;
-    e.preventDefault();
-    be.moveRepo(d.repoId, shownIds(), d.gap);
-  };
-  /// ⌥⌘↑/⌥⌘↓: what dragging the selected row's card one place does.
-  const moveSelected = (up: boolean) => {
+  /// Where ⌥⌘↑/⌥⌘↓ would drop the selected row's card: what dragging it
+  /// one place does. `null` at either end.
+  const moveGap = (up: boolean) => {
     const row = selectedRow();
-    if (!row) return;
+    if (!row) return null;
     const ids = shownIds();
     const from = ids.indexOf(row.repoId);
     const gap = up ? from - 1 : from + 2;
-    if (from < 0 || gap < 0 || gap > ids.length) return;
-    be.moveRepo(row.repoId, ids, gap);
+    return from < 0 || gap < 0 || gap > ids.length ? null : gap;
+  };
+  const moveSelected = (up: boolean) => {
+    const row = selectedRow();
+    const gap = moveGap(up);
+    if (!row || gap === null) return;
+    be.moveRepo(row.repoId, shownIds(), gap);
     reveal(row.key);
   };
   const ui: Ui = {
@@ -233,9 +268,8 @@ export function App(props: { backend: Backend; initial: Model }) {
     },
     repoSettings: (repoId) => setDialog({ kind: "repoSettings", repoId }),
     drag,
-    startDrag: (repoId) => setDrag({ repoId, gap: null }),
-    // A drop outside the list, or a cancelled drag, moves nothing.
-    endDrag: () => setDrag(null),
+    pressCard,
+    wasDrag: () => dragged,
   };
 
   // MARK: The delete ladder
@@ -271,36 +305,75 @@ export function App(props: { backend: Backend; initial: Model }) {
     Home: "home",
     End: "end",
   };
-  const onKey = (e: KeyboardEvent) => {
-    const mod = e.metaKey || e.ctrlKey;
-    if (mod && e.key === "f") {
-      e.preventDefault();
+  /// What a menu item, or its shortcut, does. A sheet or the picker on
+  /// screen has the keyboard: only Find and Refresh reach past it.
+  const run = (id: MenuId) => {
+    if (id === "find") {
       search.focus();
       search.select();
       return;
     }
-    if (mod && e.key === "r") {
-      e.preventDefault();
+    if (id === "refresh") {
       be.refresh();
+      return;
+    }
+    if (dialog() || picker()) return;
+    const row = selectedRow();
+    switch (id) {
+      case "settings":
+        setDialog({ kind: "settings" });
+        break;
+      case "add-repo":
+        be.addRepos();
+        break;
+      case "new-worktree":
+        if (row) ui.newWorktree(row.repoId);
+        break;
+      case "switch-branch": {
+        const w = row?.path !== undefined ? worktreeOf(row.repoId, row.path) : undefined;
+        const repo = row && repoOf(row.repoId);
+        if (w && repo) ui.openPicker(repo, w);
+        break;
+      }
+      case "move-up":
+      case "move-down":
+        moveSelected(id === "move-up");
+        break;
+    }
+  };
+  be.onMenu(run);
+  /// The menu's shortcuts, for where there is no menu bar to take them.
+  const shortcut = (e: KeyboardEvent): MenuId | null => {
+    if (!(e.metaKey || e.ctrlKey) || e.shiftKey) return null;
+    if (e.altKey) {
+      if (e.key === "ArrowUp") return "move-up";
+      if (e.key === "ArrowDown") return "move-down";
+      return null;
+    }
+    const ids: Record<string, MenuId> = {
+      f: "find",
+      r: "refresh",
+      o: "add-repo",
+      ",": "settings",
+      n: "new-worktree",
+      t: "switch-branch",
+    };
+    return ids[e.key] ?? null;
+  };
+  const onKey = (e: KeyboardEvent) => {
+    const mod = e.metaKey || e.ctrlKey;
+    const id = shortcut(e);
+    if (id) {
+      // With a menu bar the menu has the key: WebKit passes on a key
+      // equivalent the page leaves alone, and acting here too would do
+      // it twice.
+      if (be.boot.menuBar) return;
+      e.preventDefault();
+      run(id);
       return;
     }
     // A dialog or the picker has the keyboard; so does a text field.
     if (dialog() || picker()) return;
-    if (mod && !e.shiftKey && (e.key === "o" || e.key === "," || e.key === "n")) {
-      e.preventDefault();
-      if (e.key === "o") be.addRepos();
-      else if (e.key === ",") setDialog({ kind: "settings" });
-      else {
-        const row = selectedRow();
-        if (row) ui.newWorktree(row.repoId);
-      }
-      return;
-    }
-    if (mod && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      e.preventDefault();
-      moveSelected(e.key === "ArrowUp");
-      return;
-    }
     const target = e.target instanceof Element ? e.target : null;
     if (target?.closest("input, textarea")) {
       // ↓ from the search field goes to the list, as in a Finder window.
@@ -322,13 +395,12 @@ export function App(props: { backend: Backend; initial: Model }) {
     }
     if (!row) return;
     const w = row.path !== undefined ? worktreeOf(row.repoId, row.path) : undefined;
-    // Return or ⌘T on a worktree: switch its branch. Return on a card's
-    // header opens or closes it.
-    if ((e.key === "Enter" && !mod) || (mod && e.key === "t")) {
+    // Return on a worktree switches its branch, as ⌘T does; on a card's
+    // header it opens or closes the card.
+    if (e.key === "Enter" && !mod) {
       e.preventDefault();
-      const repo = repoOf(row.repoId);
-      if (w && repo) ui.openPicker(repo, w);
-      else if (!w && e.key === "Enter") setOpen(row.repoId, !isOpen(row.repoId));
+      if (w) run("switch-branch");
+      else setOpen(row.repoId, !isOpen(row.repoId));
       return;
     }
     // ⌘⌫, as the Finder moves to the Bin: delete, which asks first.
@@ -340,6 +412,70 @@ export function App(props: { backend: Backend; initial: Model }) {
   };
   document.addEventListener("keydown", onKey);
   onCleanup(() => document.removeEventListener("keydown", onKey));
+
+  // The menu bar's items follow the selection, as its shortcuts do.
+  createEffect(() => {
+    const free = !dialog() && !picker();
+    const row = selectedRow();
+    const w = row?.path !== undefined ? worktreeOf(row.repoId, row.path) : undefined;
+    be.setMenuState({
+      newWorktree: free && row !== null && repoOf(row.repoId)?.error === null,
+      switchBranch: free && w !== undefined && idle(w),
+      moveUp: free && moveGap(true) !== null,
+      moveDown: free && moveGap(false) !== null,
+    });
+  });
+
+  // MARK: Coming back as it was
+
+  // The selection and scroll offset of the last launch are put back once
+  // the rows they need are there: the boot snapshot can be older than the
+  // listing, and a worktree it lacks arrives a moment later. Until then,
+  // and unless the user moves first, they are what is kept for next time.
+  const [restoreFocus, setRestoreFocus] = createSignal<RowFocus | null>(be.boot.view.focus);
+  const [restoreScroll, setRestoreScroll] = createSignal<number | null>(be.boot.view.scroll || null);
+  const [scroll, setScroll] = createSignal(0);
+  const restore = () => {
+    const f = restoreFocus();
+    if (f) {
+      const key = f.worktreePath != null ? worktreeKey(f.worktreePath) : repoKey(f.repoId);
+      if (rows().some((r) => r.key === key)) {
+        setSelected(key);
+        setRestoreFocus(null);
+      }
+    }
+    const top = restoreScroll();
+    if (top !== null) {
+      listEl.scrollTop = top;
+      // Short of it, the list is not that long yet.
+      if (Math.abs(listEl.scrollTop - top) < 1) setRestoreScroll(null);
+    }
+  };
+  onMount(() => {
+    restore();
+    // The list starts with the keyboard, so the arrow keys work at once.
+    listEl.focus();
+  });
+  // `version`, not `model.repos`: reconcile patches the store in place.
+  createEffect(on(version, () => queueMicrotask(restore), { defer: true }));
+  // The user's own move wins over what is still to be put back.
+  const userScrolled = () => setRestoreScroll(null);
+  createEffect(on(selected, () => setRestoreFocus(null), { defer: true }));
+  const focus = (): RowFocus | null => {
+    const row = selectedRow();
+    return row ? { repoId: row.repoId, worktreePath: row.path ?? null } : null;
+  };
+  createEffect(() =>
+    be.storeView({
+      closedRepos: [...closed()],
+      scroll: restoreScroll() ?? scroll(),
+      focus: restoreFocus() ?? focus(),
+    }),
+  );
+
+  // Folders dragged in from outside; Rust adds them when dropped.
+  const [filesOver, setFilesOver] = createSignal(false);
+  be.onFilesOver(setFilesOver);
 
   return (
     <UiContext.Provider value={ui}>
@@ -398,11 +534,16 @@ export function App(props: { backend: Backend; initial: Model }) {
 
         <main
           class="list"
+          classList={{ "files-over": filesOver() }}
           ref={listEl}
-          tabIndex={-1}
+          tabIndex={0}
+          role="tree"
           aria-label="Repositories"
-          onDragOver={onDragOver}
-          onDrop={onDrop}
+          aria-activedescendant={selected() ? rowId(selected()!) : undefined}
+          onScroll={() => setScroll(listEl.scrollTop)}
+          onWheel={userScrolled}
+          onMouseDown={userScrolled}
+          onKeyDown={userScrolled}
         >
           <For each={shown()}>
             {(repo, i) => (
@@ -523,6 +664,12 @@ function RepoCard(props: {
   return (
     <section
       class="card"
+      id={rowId(key())}
+      role="treeitem"
+      aria-level={1}
+      aria-label={props.repo.name}
+      aria-expanded={props.open}
+      aria-selected={ui.selected() === key()}
       classList={{
         closed: !props.open,
         dragging: ui.drag()?.repoId === props.repo.id,
@@ -534,17 +681,16 @@ function RepoCard(props: {
         class="band"
         classList={{ selected: ui.selected() === key() }}
         data-key={key()}
-        draggable={true}
-        onDragStart={(e) => {
-          e.dataTransfer?.setData("text/plain", props.repo.path);
-          if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-          ui.startDrag(props.repo.id);
+        onMouseDown={(e) => {
+          if (!(e.target instanceof Element && e.target.closest("button"))) ui.pressCard(props.repo.id, e);
         }}
-        onDragEnd={() => ui.endDrag()}
-        onClick={props.onToggle}
+        onClick={() => {
+          if (!ui.wasDrag()) props.onToggle();
+        }}
       >
         <button
           class="disclosure"
+          tabIndex={-1}
           aria-expanded={props.open}
           aria-label={props.open ? `Collapse ${props.repo.name}` : `Expand ${props.repo.name}`}
         >
@@ -586,7 +732,7 @@ function RepoCard(props: {
         </div>
       </header>
       <Show when={props.open}>
-        <div class="well">
+        <div class="well" role="group">
           <For each={rows()}>
             {(c) =>
               c.kind === "worktree" ? <WorktreeRow repo={props.repo} w={c.worktree} /> : <PendingRow p={c.pending} />
@@ -630,6 +776,11 @@ function WorktreeRow(props: { repo: Repo; w: Worktree }) {
   return (
     <article
       class="plate"
+      id={rowId(key())}
+      role="treeitem"
+      aria-level={2}
+      aria-label={`${shown()}, ${props.w.displayPath}`}
+      aria-selected={ui.selected() === key()}
       classList={{ busy: props.w.busy !== null, missing: missing(), selected: ui.selected() === key() }}
       data-key={key()}
       onMouseDown={() => ui.select(key())}

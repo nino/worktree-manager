@@ -124,8 +124,9 @@ export function mockBackend(): Backend {
       model,
       fileManager: "Files",
       os: "browser",
-      closedRepos: [],
       terminalNote: "“Open in terminal” uses $TERMINAL, else the first terminal found.",
+      view: { closedRepos: [], scroll: 0, focus: null },
+      menuBar: false,
     },
     ready: async () => model,
     onModel: (f) => listeners.push(f),
@@ -169,7 +170,10 @@ export function mockBackend(): Backend {
       });
       return { ok: true, refusal: null, message: "Deleted." };
     },
-    setClosedRepos: () => {},
+    storeView: () => {},
+    setMenuState: () => {},
+    onMenu: () => {},
+    onFilesOver: () => {},
 
     // A rough `new_worktree::check`: enough to drive the sheet by hand.
     checkNewWorktree: async (f) => {

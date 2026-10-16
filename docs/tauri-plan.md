@@ -66,7 +66,14 @@ built, tested and photographed in the Linux cloud container end to end.
    repos is `repos::drop_target`'s, also in Rust.
 4. **Window and menus.** `ui_state` (frame, scroll, focused row, closed
    cards), native menus and shortcuts, drag-and-drop of folders,
-   accessibility pass, appearance check in light and dark.
+   accessibility pass, appearance check in light and dark. Done: the frame
+   is saved from Rust in the native build's coordinates (`frame.rs`), so
+   either build reopens where the other left off; the macOS menu bar is
+   `menu.rs`, and the page leaves its shortcuts to it there; cards are
+   dragged with mouse events, because the webview gives HTML drag and drop
+   to the native handler that takes folders dropped from outside (also on
+   the Dock icon, through `Info.plist`); the list is an ARIA tree whose
+   selected row is its active descendant.
 5. **Shipping.** Bundle identifier `uk.org.plinth.worktree-manager`,
    Developer ID signing and notarisation in `release.yml`, the updater
    (keep `updater.rs`'s checks or move to `tauri-plugin-updater`), startup

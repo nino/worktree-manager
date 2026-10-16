@@ -593,7 +593,8 @@ button {
 
 /* rowview.rs `draw_selection`: an accent outline with a glow, dimmed when
    dark so it does not bloom. */
-.list:focus {
+.list:focus,
+.list:focus-visible {
   outline: none;
 }
 
@@ -729,10 +730,6 @@ button {
   color: var(--tertiary-label);
 }
 
-.band[draggable="true"] {
-  cursor: default;
-}
-
 .card.dragging {
   opacity: 0.45;
 }
@@ -745,6 +742,12 @@ button {
 
 .card.drop-after {
   box-shadow: var(--card-shadow), 0 7px 0 -4px var(--accent);
+}
+
+/* Folders dragged over the window from outside: dropping adds them. */
+.list.files-over {
+  outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -3px;
 }
 
 .tool-group.single {

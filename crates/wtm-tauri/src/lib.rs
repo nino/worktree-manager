@@ -2,21 +2,32 @@
 //! to the webview as JSON on every change, and its actions exposed as
 //! commands. Nothing here decides what the window shows; `ui/` does.
 
+pub mod frame;
+mod menu;
 pub mod wire;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use log::{info, warn};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use wtm_core::{Action, App, UiState};
+use tauri::{
+    AppHandle, DragDropEvent, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder,
+    Window, WindowEvent,
+};
+use wtm_core::{Action, App};
+
+use frame::{Origin, Rect};
 
 /// Shared with every command.
 struct Bridge {
     app: App,
     started: Instant,
     shown: AtomicBool,
+    /// The menu items that follow the selection; macOS only.
+    menu: OnceLock<menu::Items>,
 }
 
 impl Bridge {
@@ -51,8 +62,9 @@ pub fn run() {
         model: wire::Model::from_core(&app.model()),
         file_manager,
         os: std::env::consts::OS.to_string(),
-        closed_repos: app.ui_state().collapsed_repos.into_iter().collect(),
         terminal_note,
+        view: wire::ViewState::from_core(&app.ui_state()),
+        menu_bar: MENU_BAR,
     };
     let script = format!(
         "window.__WTM_BOOT__ = {};",
@@ -62,6 +74,7 @@ pub fn run() {
         app: app.clone(),
         started,
         shown: AtomicBool::new(false),
+        menu: OnceLock::new(),
     };
 
     tauri::Builder::default()
@@ -80,7 +93,8 @@ pub fn run() {
             pull_main,
             switch_branch,
             delete_worktree,
-            set_closed_repos,
+            store_view,
+            set_menu_state,
             check_new_worktree,
             create_worktree,
             fetch_repo,
@@ -92,13 +106,53 @@ pub fn run() {
             move_repo,
             set_settings,
         ])
+        .on_menu_event(|handle, event| {
+            let id = event.id().as_ref();
+            if menu::IDS.contains(&id) {
+                let _ = handle.emit("menu", id);
+            }
+        })
         .setup(move |tauri_app| {
+            if MENU_BAR {
+                let (bar, items) = menu::build(tauri_app.handle())?;
+                tauri_app.set_menu(bar)?;
+                let _ = tauri_app.state::<Bridge>().menu.set(items);
+            }
             let window = WebviewWindowBuilder::new(tauri_app, "main", WebviewUrl::default())
                 .title("Worktree Manager")
-                .inner_size(940.0, 760.0)
                 .min_inner_size(520.0, 320.0)
                 .visible(false)
                 .initialization_script(&script);
+            // Back where it was, unless that is no longer on a screen.
+            let to_rect = |m: &tauri::Monitor| {
+                let area = m.work_area();
+                let s = m.scale_factor();
+                Rect {
+                    x: area.position.x as f64 / s,
+                    y: area.position.y as f64 / s,
+                    width: area.size.width as f64 / s,
+                    height: area.size.height as f64 / s,
+                }
+            };
+            let screens: Vec<Rect> = tauri_app
+                .available_monitors()
+                .unwrap_or_default()
+                .iter()
+                .map(to_rect)
+                .collect();
+            let main_screen = tauri_app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| to_rect(&m));
+            let window =
+                match frame::restore(app.ui_state().window, origin(tauri_app.handle()), &screens) {
+                    Some(r) => window.position(r.x, r.y).inner_size(r.width, r.height),
+                    None => {
+                        let (width, height) = frame::first_size(main_screen);
+                        window.inner_size(width, height).center()
+                    }
+                };
             // As the AppKit build's unified toolbar: the page's toolbar runs
             // under the traffic lights, which sit centred in its 52 points.
             // tao only grows the title bar to the button's height + y and
@@ -109,7 +163,19 @@ pub fn run() {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .traffic_light_position(tauri::LogicalPosition::new(20.0, 27.0));
-            window.build()?;
+            let window = window.build()?;
+            window.on_window_event({
+                let app = app.clone();
+                let handle = tauri_app.handle().clone();
+                let window = window.as_ref().window();
+                move |event| match event {
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                        save_frame(&window, &app, &handle);
+                    }
+                    WindowEvent::DragDrop(drop) => dropped(drop, &app, &handle),
+                    _ => {}
+                }
+            });
             let handle = tauri_app.handle().clone();
             forward_models(&app, handle.clone());
             app.start();
@@ -119,8 +185,95 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the app");
+        .build(tauri::generate_context!())
+        .expect("error while building the app")
+        .run(|handle, event| match event {
+            // The delayed write of the window's state never lands once
+            // the process is gone.
+            RunEvent::Exit => handle.state::<Bridge>().app.flush_ui_state(),
+            // Folders dropped on the Dock icon, or opened with the app.
+            #[cfg(target_os = "macos")]
+            RunEvent::Opened { urls } => {
+                let paths: Vec<PathBuf> =
+                    urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
+                add_folders(paths, &handle.state::<Bridge>().app);
+            }
+            _ => {}
+        });
+}
+
+/// macOS has a menu bar with the app's shortcuts (`menu.rs`).
+const MENU_BAR: bool = cfg!(target_os = "macos");
+
+// MARK: Window
+
+/// How this OS measures a saved frame (`frame.rs`).
+fn origin(handle: &AppHandle) -> Origin {
+    if !cfg!(target_os = "macos") {
+        return Origin::Top;
+    }
+    match handle.primary_monitor() {
+        Ok(Some(m)) => Origin::Bottom {
+            main_height: m.size().height as f64 / m.scale_factor(),
+        },
+        _ => Origin::Top,
+    }
+}
+
+/// Record where the window is, for the next launch. A minimised, maximised
+/// or full-screen window keeps the frame it had before.
+fn save_frame(window: &Window, app: &App, handle: &AppHandle) {
+    let normal = !window.is_minimized().unwrap_or(true)
+        && !window.is_maximized().unwrap_or(true)
+        && !window.is_fullscreen().unwrap_or(true);
+    let (Ok(scale), Ok(pos), Ok(size)) = (
+        window.scale_factor(),
+        window.outer_position(),
+        window.inner_size(),
+    ) else {
+        return;
+    };
+    if !normal || !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let pos = pos.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+    let rect = Rect {
+        x: pos.x,
+        y: pos.y,
+        width: size.width,
+        height: size.height,
+    };
+    let mut state = app.ui_state();
+    state.window = Some(origin(handle).save(rect));
+    app.store_ui_state(state);
+}
+
+/// Folders dragged over the window: the page outlines the list while they
+/// are over it, and a drop adds each as a repo.
+fn dropped(event: &DragDropEvent, app: &App, handle: &AppHandle) {
+    match event {
+        DragDropEvent::Enter { paths, .. } => {
+            let _ = handle.emit("files-over", paths.iter().any(|p| p.is_dir()));
+        }
+        DragDropEvent::Drop { paths, .. } => {
+            let _ = handle.emit("files-over", false);
+            add_folders(paths.clone(), app);
+        }
+        DragDropEvent::Leave => {
+            let _ = handle.emit("files-over", false);
+        }
+        _ => {}
+    }
+}
+
+/// Add each folder as a repo; how that went lands in the notice bar. A
+/// file is not a repo and is passed over without a word.
+fn add_folders(paths: Vec<PathBuf>, app: &App) {
+    let folders: Vec<PathBuf> = paths.into_iter().filter(|p| p.is_dir()).collect();
+    if !folders.is_empty() {
+        app.dispatch(Action::AddRepos(folders));
+    }
 }
 
 /// Push every new model to the page. The core calls listeners on whichever
@@ -236,15 +389,20 @@ async fn delete_worktree(
         .map_err(|_| "the delete was dropped before it finished".to_string())
 }
 
-/// Remember which cards are closed, for the next launch. The rest of the
-/// window's state is kept as it was until the page reports it too.
+/// The list's closed cards, scroll and selection, for the next launch.
+/// Sent on every change; an unchanged state is not written.
 #[tauri::command]
-fn set_closed_repos(bridge: State<'_, Bridge>, ids: Vec<String>) {
-    let state = bridge.app.ui_state();
-    bridge.app.store_ui_state(UiState {
-        collapsed_repos: ids.into_iter().collect(),
-        ..state
-    });
+fn store_view(bridge: State<'_, Bridge>, view: wire::ViewState) {
+    let state = view.apply(bridge.app.ui_state());
+    bridge.app.store_ui_state(state);
+}
+
+/// Enable the menu items that apply to the selection.
+#[tauri::command]
+fn set_menu_state(bridge: State<'_, Bridge>, state: wire::MenuState) {
+    if let Some(items) = bridge.menu.get() {
+        items.set(state);
+    }
 }
 
 // MARK: New Worktree

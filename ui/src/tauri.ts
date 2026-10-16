@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import type { Backend } from "./backend";
+import type { Backend, MenuId } from "./backend";
 import type { Boot } from "./wire/Boot";
 import type { DeleteResult } from "./wire/DeleteResult";
 import type { NewWorktreeCheck } from "./wire/NewWorktreeCheck";
@@ -32,7 +32,15 @@ export function tauriBackend(boot: Boot): Backend {
     switchBranch: (repoId, path, branch) => send("switch_branch", { repoId, path, branch }),
     // Waited on: the answer decides whether there is a second question.
     deleteWorktree: (request) => invoke<DeleteResult>("delete_worktree", { request }),
-    setClosedRepos: (ids) => send("set_closed_repos", { ids }),
+    storeView: (view) => send("store_view", { view }),
+    // Only macOS has a menu bar to update.
+    setMenuState: boot.menuBar ? (state) => send("set_menu_state", { state }) : () => {},
+    onMenu: (f) => {
+      listen<MenuId>("menu", (e) => f(e.payload));
+    },
+    onFilesOver: (f) => {
+      listen<boolean>("files-over", (e) => f(e.payload));
+    },
     checkNewWorktree: (fields) => invoke<NewWorktreeCheck>("check_new_worktree", { fields }),
     createWorktree: (request) => send("create_worktree", { request }),
     fetchRepo: (repoId) => send("fetch_repo", { repoId }),

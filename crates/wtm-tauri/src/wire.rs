@@ -165,10 +165,81 @@ pub struct Boot {
     /// `std::env::consts::OS`: "macos", "linux", "windows". The page draws
     /// its own title on macOS, where the toolbar sits in the title bar.
     pub os: String,
-    /// Repos whose cards were closed when the app last ran.
-    pub closed_repos: Vec<String>,
     /// How "Open in terminal" picks a terminal on this OS, for Settings.
     pub terminal_note: String,
+    /// The list as it was left when the app last ran.
+    pub view: ViewState,
+    /// Whether the app's menu bar has the shortcuts (macOS). Then the page
+    /// leaves those keys to the menu, which sends them back as `menu`
+    /// events, rather than acting on a key the menu also acts on.
+    pub menu_bar: bool,
+}
+
+// MARK: Window state
+
+/// What the page keeps of the list between launches; the window's frame is
+/// kept on the Rust side, which sees it move.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ViewState {
+    /// Repos whose cards are closed.
+    pub closed_repos: Vec<String>,
+    /// How far the list is scrolled, in CSS pixels (points).
+    pub scroll: f64,
+    pub focus: Option<RowFocus>,
+}
+
+/// The selected row, by identity: a repo's header, or one of its worktrees.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RowFocus {
+    pub repo_id: String,
+    pub worktree_path: Option<String>,
+}
+
+impl ViewState {
+    pub fn from_core(s: &wtm_core::UiState) -> Self {
+        Self {
+            closed_repos: s.collapsed_repos.iter().cloned().collect(),
+            scroll: s.scroll,
+            focus: s.focus.as_ref().map(|f| RowFocus {
+                repo_id: f.repo_id.clone(),
+                worktree_path: f.worktree_path.clone(),
+            }),
+        }
+    }
+
+    /// `state` with the page's part replaced; the frame is left as it was.
+    pub fn apply(self, state: wtm_core::UiState) -> wtm_core::UiState {
+        wtm_core::UiState {
+            collapsed_repos: self.closed_repos.into_iter().collect(),
+            // A NaN from a page bug must not reach the file.
+            scroll: if self.scroll.is_finite() {
+                self.scroll.max(0.0)
+            } else {
+                0.0
+            },
+            focus: self.focus.map(|f| wtm_core::Focus {
+                repo_id: f.repo_id,
+                worktree_path: f.worktree_path,
+            }),
+            ..state
+        }
+    }
+}
+
+/// Which of the menu's items can be chosen now; the page knows, from the
+/// selection and any open dialog.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MenuState {
+    pub new_worktree: bool,
+    pub switch_branch: bool,
+    pub move_up: bool,
+    pub move_down: bool,
 }
 
 // MARK: New Worktree
@@ -642,5 +713,34 @@ mod tests {
         }))
         .unwrap();
         assert!(req.to_core().force);
+    }
+
+    #[test]
+    fn the_page_view_leaves_the_window_frame_alone() {
+        let frame = wtm_core::WindowFrame {
+            x: 10.0,
+            y: 20.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let before = wtm_core::UiState {
+            window: Some(frame),
+            ..Default::default()
+        };
+        let view = ViewState {
+            closed_repos: vec!["b".into(), "a".into()],
+            scroll: f64::NAN,
+            focus: Some(RowFocus {
+                repo_id: "a".into(),
+                worktree_path: Some("/w".into()),
+            }),
+        };
+        let after = view.clone().apply(before);
+        assert_eq!(after.window, Some(frame));
+        assert_eq!(after.scroll, 0.0);
+        // Read back, the cards come sorted (a set) and the rest as sent.
+        let back = ViewState::from_core(&after);
+        assert_eq!(back.closed_repos, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(back.focus, view.focus);
     }
 }

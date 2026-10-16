@@ -2,19 +2,23 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import type { Backend, MenuId } from "./backend";
 import { mockBackend } from "./mock";
+import type { Model } from "./wire/Model";
 
 afterEach(cleanup);
 
-function setup() {
+function setup(tweak?: (b: Backend) => void) {
   const backend = mockBackend();
+  tweak?.(backend);
   const spies = {
     push: vi.spyOn(backend, "push"),
     openInTerminal: vi.spyOn(backend, "openInTerminal"),
     refresh: vi.spyOn(backend, "refresh"),
     switchBranch: vi.spyOn(backend, "switchBranch"),
     deleteWorktree: vi.spyOn(backend, "deleteWorktree"),
-    setClosedRepos: vi.spyOn(backend, "setClosedRepos"),
+    storeView: vi.spyOn(backend, "storeView"),
+    setMenuState: vi.spyOn(backend, "setMenuState"),
     createWorktree: vi.spyOn(backend, "createWorktree"),
     fetchRepo: vi.spyOn(backend, "fetchRepo"),
     updateRepo: vi.spyOn(backend, "updateRepo"),
@@ -102,7 +106,7 @@ describe("App", () => {
   it("remembers a closed card", () => {
     const { spies } = setup();
     fireEvent.click(screen.getByLabelText("Collapse site"));
-    expect(spies.setClosedRepos).toHaveBeenLastCalledWith(["site"]);
+    expect(spies.storeView).toHaveBeenLastCalledWith({ closedRepos: ["site"], scroll: 0, focus: { repoId: "site", worktreePath: null } });
   });
 
   it("switches branch from the picker, filtered by what is typed", () => {
@@ -237,5 +241,120 @@ describe("App", () => {
     fireEvent.keyDown(document, { key: "ArrowDown", altKey: true, metaKey: true });
     expect(spies.moveRepo).toHaveBeenCalledWith("app", ["app", "site"], 2);
     expect(document.querySelector(".card")!.textContent).toContain("site");
+  });
+
+  it("comes back with the row that was selected", () => {
+    const fixLogin = "/home/demo/worktrees/app/fix-login";
+    const { spies } = setup((b) => {
+      b.boot.view = { closedRepos: ["site"], scroll: 0, focus: { repoId: "app", worktreePath: fixLogin } };
+    });
+    const row = screen.getByLabelText("fix-login").closest("article")!;
+    expect(row.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tree").getAttribute("aria-activedescendant")).toBe(row.id);
+    expect(screen.queryByLabelText("old-experiment")).toBeNull();
+    expect(spies.storeView).toHaveBeenLastCalledWith({
+      closedRepos: ["site"],
+      scroll: 0,
+      focus: { repoId: "app", worktreePath: fixLogin },
+    });
+  });
+
+  it("keeps a saved selection whose row is not listed yet", () => {
+    const { spies } = setup((b) => {
+      b.boot.view = { closedRepos: [], scroll: 0, focus: { repoId: "app", worktreePath: "/not/yet" } };
+    });
+    expect(spies.storeView).toHaveBeenLastCalledWith({
+      closedRepos: [],
+      scroll: 0,
+      focus: { repoId: "app", worktreePath: "/not/yet" },
+    });
+    // Until the user picks a row of their own.
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(spies.storeView).toHaveBeenLastCalledWith({
+      closedRepos: [],
+      scroll: 0,
+      focus: { repoId: "app", worktreePath: null },
+    });
+  });
+
+  it("selects a saved row once a later listing has it", async () => {
+    let push!: (m: Model) => void;
+    setup((b) => {
+      b.boot.view = { closedRepos: [], scroll: 0, focus: { repoId: "app", worktreePath: "/late" } };
+      b.onModel = (f) => (push = f);
+    });
+    // After the page's first `ready`, whose answer would replace this.
+    await Promise.resolve();
+    const m = structuredClone(mockBackend().boot.model);
+    const app = m.repos.find((r) => r.id === "app")!;
+    app.worktrees.push({ ...app.worktrees[1], path: "/late", displayPath: "/late", branch: "late" });
+    push(m);
+    await Promise.resolve();
+    expect(screen.getByLabelText("late").closest("article")!.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("does what a menu item says", () => {
+    let menu!: (id: MenuId) => void;
+    const { spies } = setup((b) => {
+      b.onMenu = (f) => (menu = f);
+    });
+    menu("refresh");
+    expect(spies.refresh).toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    menu("new-worktree");
+    expect(screen.getByRole("dialog", { name: "New worktree — app" })).toBeTruthy();
+  });
+
+  it("leaves the shortcuts to the menu bar when there is one", () => {
+    const { spies } = setup((b) => {
+      b.boot.menuBar = true;
+    });
+    fireEvent.keyDown(document, { key: "r", metaKey: true });
+    expect(spies.refresh).not.toHaveBeenCalled();
+  });
+
+  it("enables the menu's items for the selection", () => {
+    const { spies } = setup();
+    expect(spies.setMenuState).toHaveBeenLastCalledWith({
+      newWorktree: false,
+      switchBranch: false,
+      moveUp: false,
+      moveDown: false,
+    });
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(spies.setMenuState).toHaveBeenLastCalledWith({
+      newWorktree: true,
+      switchBranch: true,
+      moveUp: false,
+      moveDown: true,
+    });
+  });
+
+  it("drags a card below the next one", () => {
+    const { spies } = setup();
+    // jsdom lays nothing out: each card is 100 high, one under the other.
+    document.querySelectorAll<HTMLElement>(".card").forEach((c, i) => {
+      c.getBoundingClientRect = () => ({ top: i * 100, height: 100 }) as DOMRect;
+    });
+    const band = document.querySelector(".card .band")!;
+    fireEvent.mouseDown(band, { button: 0, clientY: 10 });
+    fireEvent.mouseMove(document, { clientY: 160 });
+    expect(document.querySelector(".card.dragging")).toBeTruthy();
+    fireEvent.mouseUp(document, { clientY: 160 });
+    fireEvent.click(band);
+    expect(spies.moveRepo).toHaveBeenCalledWith("app", ["app", "site"], 2);
+    // The click that ends a drag does not also close the card.
+    expect(screen.getByLabelText("Collapse app")).toBeTruthy();
+  });
+
+  it("puts a card back when a drag is cancelled with Escape", () => {
+    const { spies } = setup();
+    const band = document.querySelector(".card .band")!;
+    fireEvent.mouseDown(band, { button: 0, clientY: 10 });
+    fireEvent.mouseMove(document, { clientY: 160 });
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.mouseUp(document, { clientY: 160 });
+    expect(spies.moveRepo).not.toHaveBeenCalled();
   });
 });
