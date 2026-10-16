@@ -133,6 +133,9 @@ pub struct Boot {
     pub model: Model,
     /// "Finder", "Files", "Explorer": for button captions.
     pub file_manager: String,
+    /// `std::env::consts::OS`: "macos", "linux", "windows". The page draws
+    /// its own title on macOS, where the toolbar sits in the title bar.
+    pub os: String,
 }
 
 // MARK: From the core

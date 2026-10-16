@@ -107,7 +107,7 @@ export function mockBackend(): Backend {
     }, 800);
   };
   return {
-    boot: { model, fileManager: "Files" },
+    boot: { model, fileManager: "Files", os: "browser" },
     ready: async () => model,
     onModel: (f) => listeners.push(f),
     refresh: () => {

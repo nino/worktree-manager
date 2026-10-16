@@ -49,7 +49,7 @@ esac
 LOG=$(mktemp)
 HOME="$S/home" WTM_USER_DATA="$S/data" WTM_NO_LAUNCH=1 RUST_LOG=info \
   WEBKIT_DISABLE_COMPOSITING_MODE=1 \
-  xvfb-run -a -s "-screen 0 880x640x24" sh -c '
+  xvfb-run -a -s "-screen 0 960x700x24" sh -c '
     "$1" >"$2" 2>&1 &
     app=$!
     # Shown once the page has painted; then give git a moment to list.

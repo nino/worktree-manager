@@ -9,4 +9,9 @@ export type Boot = { model: Model,
 /**
  * "Finder", "Files", "Explorer": for button captions.
  */
-fileManager: string, };
+fileManager: string, 
+/**
+ * `std::env::consts::OS`: "macos", "linux", "windows". The page draws
+ * its own title on macOS, where the toolbar sits in the title bar.
+ */
+os: string, };

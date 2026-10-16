@@ -49,6 +49,7 @@ pub fn run() {
     let boot = wire::Boot {
         model: wire::Model::from_core(&app.model()),
         file_manager,
+        os: std::env::consts::OS.to_string(),
     };
     let script = format!(
         "window.__WTM_BOOT__ = {};",
@@ -75,13 +76,20 @@ pub fn run() {
             pull_main,
         ])
         .setup(move |tauri_app| {
-            WebviewWindowBuilder::new(tauri_app, "main", WebviewUrl::default())
+            let window = WebviewWindowBuilder::new(tauri_app, "main", WebviewUrl::default())
                 .title("Worktree Manager")
-                .inner_size(880.0, 640.0)
+                .inner_size(940.0, 760.0)
                 .min_inner_size(520.0, 320.0)
                 .visible(false)
-                .initialization_script(&script)
-                .build()?;
+                .initialization_script(&script);
+            // As the AppKit build's unified toolbar: the page's toolbar runs
+            // under the traffic lights, which sit centred in its 52 points.
+            #[cfg(target_os = "macos")]
+            let window = window
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(20.0, 19.0));
+            window.build()?;
             let handle = tauri_app.handle().clone();
             forward_models(&app, handle.clone());
             app.start();

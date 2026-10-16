@@ -59,18 +59,23 @@ export function App(props: { backend: Backend; initial: Model }) {
   const shown = createMemo(() => model.repos.filter((r) => showsRepo(r, q())));
 
   return (
-    <div class="window">
-      <header class="toolbar">
-        <button
-          class="tool"
-          classList={{ spinning: model.refreshing }}
-          title="Refresh all (⌘R)"
-          aria-label="Refresh all"
-          onClick={() => be.refresh()}
-        >
-          <I.Refresh />
-        </button>
-        <h1>Worktree Manager</h1>
+    <div class="window" data-os={be.boot.os}>
+      <header class="toolbar" data-tauri-drag-region>
+        <Show when={be.boot.os === "macos" || be.boot.os === "browser"}>
+          <h1 data-tauri-drag-region>Worktree Manager</h1>
+        </Show>
+        <span class="toolbar-space" data-tauri-drag-region />
+        <div class="tool-group">
+          <button
+            class="tool"
+            classList={{ spinning: model.refreshing }}
+            title="Refresh all (⌘R)"
+            aria-label="Refresh all"
+            onClick={() => be.refresh()}
+          >
+            <I.Refresh />
+          </button>
+        </div>
         <label class="search">
           <I.Search />
           <input
@@ -144,7 +149,7 @@ function RepoCard(props: {
   const rows = createMemo(() => children(props.repo, props.query));
   return (
     <section class="card" classList={{ closed: !props.open }}>
-      <header class="card-header" onClick={props.onToggle}>
+      <header class="band" onClick={props.onToggle}>
         <button
           class="disclosure"
           aria-expanded={props.open}
@@ -160,14 +165,17 @@ function RepoCard(props: {
               <span class="meta loading">loading…</span>
             </Show>
           </div>
-          <div class="path" title={props.repo.path}>
-            {props.repo.displayPath}
+          <div class="line tight">
+            <span class="path" title={props.repo.path}>
+              {props.repo.displayPath}
+            </span>
+            <CopyButton text={props.repo.path} hint="Copy path" />
           </div>
           <Show when={props.repo.error}>{(e) => <div class="repo-error">{e()}</div>}</Show>
         </div>
       </header>
       <Show when={props.open}>
-        <div class="rows">
+        <div class="well">
           <For each={rows()}>
             {(c) =>
               c.kind === "worktree" ? (
@@ -206,9 +214,11 @@ function WorktreeRow(props: { repo: Repo; w: Worktree; backend: Backend }) {
   const act = (f: (repoId: string, path: string) => void) => () => f(props.repo.id, props.w.path);
   const at = (f: (path: string) => void) => () => f(props.w.path);
   return (
-    <article class="row" classList={{ busy: props.w.busy !== null, missing: missing() }}>
+    <article class="plate" classList={{ busy: props.w.busy !== null, missing: missing() }}>
       <div class="line">
         <BranchLabel branch={props.w.branch} />
+        <Show when={props.w.branch}>{(b) => <CopyButton text={b()} hint="Copy branch name" />}</Show>
+        <span class="fill" />
         <Show when={props.w.busy}>
           {(b) => (
             <span class="busy-label">
@@ -231,6 +241,8 @@ function WorktreeRow(props: { repo: Repo; w: Worktree; backend: Backend }) {
         <span class="path" title={props.w.path}>
           {props.w.displayPath}
         </span>
+        <CopyButton text={props.w.path} hint="Copy path" />
+        <span class="fill" />
         <span class="actions">
           <Action hint="Push" disabled={!idle()} onPress={act(be.push)} icon={I.Push} />
           <Action hint="Pull (fast-forward only)" disabled={!idle()} onPress={act(be.pull)} icon={I.Pull} />
@@ -274,9 +286,30 @@ function Action(props: {
   );
 }
 
+/// Copies `text`; the button's hint says what was copied for a moment.
+function CopyButton(props: { text: string; hint: string }) {
+  const [copied, setCopied] = createSignal(false);
+  const copy = (e: MouseEvent) => {
+    // Inside a card's band, a click would also close the card.
+    e.stopPropagation();
+    navigator.clipboard?.writeText(props.text).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      },
+      (err) => console.error("copy failed", err),
+    );
+  };
+  return (
+    <button class="icon-button copy" title={copied() ? "Copied" : props.hint} aria-label={props.hint} onClick={copy}>
+      <I.Copy />
+    </button>
+  );
+}
+
 function PendingRow(props: { p: Pending }) {
   return (
-    <article class="row pending" classList={{ failed: props.p.error !== null }}>
+    <article class="plate pending" classList={{ failed: props.p.error !== null }}>
       <div class="line">
         <BranchLabel branch={props.p.branch} />
         <Show
