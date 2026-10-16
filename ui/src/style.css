@@ -689,7 +689,8 @@ button {
   list-style: none;
   margin: 6px 0 0;
   padding: 0;
-  max-height: 260px;
+  /* Set by the picker to what fits the window (`LIST_MAX` at most). */
+  max-height: var(--list-max, 260px);
   overflow-y: auto;
 }
 

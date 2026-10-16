@@ -58,6 +58,10 @@ interface OpenPicker {
   closing?: boolean;
 }
 
+/// The picker list's tallest, and the least it shrinks to in a short window.
+const LIST_MAX = 260;
+const LIST_MIN = 60;
+
 /// How long the picker takes to fade away (`.popover.closing`).
 const PICKER_CLOSE_MS = 120;
 
@@ -880,26 +884,37 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
   const ui = useUi();
   let root!: HTMLDivElement;
   let field!: HTMLInputElement;
+  let list!: HTMLUListElement;
   // In a portal, placed against the button: a card clips what it holds,
   // and a popover belongs over everything, as an NSPopover is.
   const [place, setPlace] = createSignal<JSX.CSSProperties>({});
+  // Below the button, or above it when there is more room there, never over
+  // the toolbar (and the traffic lights in it); the list shortens to fit.
   const position = () => {
     const a = props.anchor.getBoundingClientRect();
-    const height = root.offsetHeight;
-    const below = a.bottom + 6;
-    const fitsBelow = below + height <= window.innerHeight - 8;
+    const toolbar = document.querySelector(".toolbar")?.getBoundingClientRect().bottom ?? 0;
+    const chrome = root.offsetHeight - list.offsetHeight;
+    const natural = Math.min(LIST_MAX, list.scrollHeight);
+    const spaceBelow = window.innerHeight - 8 - (a.bottom + 6);
+    const spaceAbove = a.top - 6 - (toolbar + 8);
+    const below = spaceBelow >= chrome + natural || spaceBelow >= spaceAbove;
+    const listMax = Math.max(LIST_MIN, Math.min(LIST_MAX, (below ? spaceBelow : spaceAbove) - chrome));
+    const height = chrome + Math.min(natural, listMax);
     const left = Math.max(8, Math.min(a.left, window.innerWidth - root.offsetWidth - 8));
     setPlace({
       left: `${left}px`,
-      top: `${fitsBelow ? below : Math.max(8, a.top - 6 - height)}px`,
+      top: `${below ? a.bottom + 6 : a.top - 6 - height}px`,
+      "--list-max": `${listMax}px`,
       // It grows out of the button, and shrinks back into it.
-      "transform-origin": `${a.left + a.width / 2 - left}px ${fitsBelow ? "0" : "100%"}`,
+      "transform-origin": `${a.left + a.width / 2 - left}px ${below ? "0" : "100%"}`,
     });
   };
   onMount(() => {
     position();
     field.focus();
   });
+  // Above the button, a shorter list moves the top down to stay against it.
+  createEffect(on(() => props.picker.state.rows.length, () => queueMicrotask(position), { defer: true }));
   // Follows its button when the window resizes or the list scrolls.
   window.addEventListener("resize", position);
   document.addEventListener("scroll", position, true);
@@ -951,7 +966,7 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
             }
           }}
         />
-        <ul class="popover-list" role="listbox">
+        <ul class="popover-list" role="listbox" ref={list}>
           <For each={props.picker.state.rows} fallback={<li class="popover-empty">No branch matches.</li>}>
             {(row, i) => (
               <li
