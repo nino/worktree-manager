@@ -9,6 +9,7 @@ description = "macOS backend: AppKit UI and platform services via objc2"
 wtm-core = { workspace = true }
 wtm-toolkit = { workspace = true }
 wtm-platform = { workspace = true }
+wtm-os = { workspace = true }
 
 # Only macOS builds AppKit: `cargo test --workspace` on Linux and Windows sees
 # an empty crate (lib.rs is cfg-gated too).

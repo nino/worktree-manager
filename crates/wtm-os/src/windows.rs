@@ -1,6 +1,6 @@
 //! `wtm_platform::Platform` for Windows: plain process spawning, through
 //! `cmd.exe` for the user's own command lines. The quoting and the command
-//! lines themselves are in `shell.rs`, where they are tested on every OS.
+//! lines themselves are in `windows_shell.rs`, where they are tested on every OS.
 
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use log::info;
 use wtm_platform::{AppDirs, Platform};
 
-use crate::shell;
+use crate::windows_shell as shell;
 
 /// No console window for a program started from this GUI process: `cmd`
 /// would otherwise flash one up for every editor launch.

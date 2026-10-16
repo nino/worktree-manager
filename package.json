@@ -1,0 +1,10 @@
+{
+  "name": "worktree-manager",
+  "private": true,
+  "description": "Run the Tauri app from the repo root: `bun app`. The frontend's own package is ui/.",
+  "scripts": {
+    "app": "bun install --cwd ui --frozen-lockfile && bun run --cwd ui app",
+    "test": "bun run --cwd ui test && cargo test -p wtm-tauri"
+  },
+  "packageManager": "bun@1.4.2"
+}

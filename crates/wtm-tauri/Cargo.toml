@@ -1,0 +1,32 @@
+[package]
+name = "wtm-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Worktree Manager in a webview: the core behind Tauri, the UI in ui/"
+
+[[bin]]
+name = "worktree-manager-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+wtm-core = { workspace = true }
+wtm-os = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2.12", features = [] }
+tokio = { workspace = true }
+tauri-plugin-dialog = "2"
+ts-rs = "12"
+
+[features]
+# Serve the built `ui/dist` from inside the binary. On by default so that
+# `cargo run -p wtm-tauri` is the app; `bun run app` (in `ui/`) turns it off
+# to load the Vite dev server with hot reload instead.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

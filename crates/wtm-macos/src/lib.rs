@@ -19,7 +19,6 @@ pub mod items;
 pub mod menu;
 pub mod outline;
 pub mod picker;
-pub mod platform;
 pub mod rowview;
 pub mod settings;
 pub mod toolicon;
@@ -33,8 +32,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 pub use controller::legacy_autosaved_frame;
-pub use platform::{app_dirs, MacPlatform};
 pub use updater::MacUpdater;
+pub use wtm_os::{app_dirs, MacPlatform};
 
 use dispatch2::DispatchQueue;
 use objc2::runtime::ProtocolObject;

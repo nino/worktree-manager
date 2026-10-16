@@ -38,6 +38,17 @@ jobs:
         with:
           fetch-depth: 0 # the version is derived from the commit count
 
+      # The Tauri rewrite is an experiment and must never reach anyone's
+      # copy: not from a manual run on its branch, not from the beta tag
+      # moved onto one of its commits. Delete this step on purpose when it
+      # is ready to ship (docs/tauri-plan.md, stage 5).
+      - name: Refuse to release the Tauri experiment
+        run: |
+          if [ -d crates/wtm-tauri ]; then
+            echo "::error::this tree has the unreleased Tauri app (crates/wtm-tauri); not releasing it"
+            exit 1
+          fi
+
       - name: Cache cargo
         uses: actions/cache@v6
         with:
