@@ -377,4 +377,35 @@ describe("App", () => {
     expect(option.querySelector(".mark.claude")).toBeTruthy();
     expect(option.querySelector("[aria-label]")!.getAttribute("aria-label")).toBe("claude/tauri-rewrite");
   });
+
+  it("lets an information notice fade, but not an error", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend, spies } = setup();
+      const clear = vi.spyOn(backend, "clearNotice");
+      const row = screen.getByLabelText("fix-login").closest("article")!;
+      fireEvent.click(row.querySelector('[aria-label="Push"]')!);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(screen.getByText("Pushed.")).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(clear).toHaveBeenCalled();
+      expect(spies.push).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes when the app comes back after a while", () => {
+    vi.useFakeTimers();
+    try {
+      const { spies } = setup();
+      window.dispatchEvent(new Event("focus"));
+      expect(spies.refresh).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(3000);
+      window.dispatchEvent(new Event("focus"));
+      expect(spies.refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

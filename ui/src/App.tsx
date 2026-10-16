@@ -58,6 +58,11 @@ interface OpenPicker {
   closing?: boolean;
 }
 
+/// As `wtm-ui`: how long an information notice stays, and how soon after
+/// the last one coming back to the app refreshes again.
+const NOTICE_LIFETIME_MS = 5000;
+const ACTIVATION_REFRESH_GAP_MS = 2000;
+
 /// The picker list's tallest, and the least it shrinks to in a short window.
 const LIST_MAX = 260;
 const LIST_MIN = 60;
@@ -487,6 +492,33 @@ export function App(props: { backend: Backend; initial: Model }) {
     }),
   );
 
+  // MARK: Notices and coming back
+
+  // An information notice fades once its outcome shows in the list; an
+  // error stays until it is dismissed.
+  createEffect(
+    on(
+      () => model.notice?.id,
+      (id) => {
+        if (id === undefined || model.notice?.tone !== "info") return;
+        const timer = setTimeout(() => {
+          if (model.notice?.id === id) be.clearNotice();
+        }, NOTICE_LIFETIME_MS);
+        onCleanup(() => clearTimeout(timer));
+      },
+    ),
+  );
+  // Coming back to the app is when stale status would be noticed. The
+  // launch already lists, and quick back-and-forths are let be.
+  let lastActivation = Date.now();
+  const activated = () => {
+    const now = Date.now();
+    if (now - lastActivation >= ACTIVATION_REFRESH_GAP_MS) be.refresh();
+    lastActivation = now;
+  };
+  window.addEventListener("focus", activated);
+  onCleanup(() => window.removeEventListener("focus", activated));
+
   // Folders dragged in from outside; Rust adds them when dropped.
   const [filesOver, setFilesOver] = createSignal(false);
   be.onFilesOver(setFilesOver);
@@ -505,8 +537,8 @@ export function App(props: { backend: Backend; initial: Model }) {
             </button>
             <button
               class="tool"
-              classList={{ spinning: model.refreshing }}
-              title="Refresh all (⌘R)"
+              classList={{ spinning: model.refreshing || model.fetching }}
+              title={model.fetching ? "Fetching remotes…" : "Refresh all (⌘R)"}
               aria-label="Refresh all"
               onClick={() => be.refresh()}
             >
@@ -575,7 +607,13 @@ export function App(props: { backend: Backend; initial: Model }) {
             )}
           </For>
           <Show when={model.repos.length === 0}>
-            <p class="empty">No repositories yet.</p>
+            <div class="empty">
+              <h2>No repositories yet</h2>
+              <p>Add a git repository to see its worktrees here.</p>
+              <button class="push default" onClick={() => be.addRepos()}>
+                Add Repository…
+              </button>
+            </div>
           </Show>
           <Show when={model.repos.length > 0 && shown().length === 0}>
             <p class="empty">No worktree matches “{query().trim()}”.</p>

@@ -266,6 +266,18 @@ button {
   color: var(--secondary-label);
 }
 
+.empty h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.empty p {
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
 .card {
   margin-top: 12px;
   border-radius: 10px;
