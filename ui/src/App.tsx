@@ -960,11 +960,17 @@ function BranchPicker(props: { picker: OpenPicker; anchor: HTMLElement }) {
 }
 
 /// `text` with the characters at `positions` (code-point indices) in bold.
+/// A branch name with the characters a search matched in bold, and an
+/// agent's prefix drawn as its mark, as on the row's button.
 function Highlighted(props: { text: string; positions: number[] }) {
+  const split = () => splitAgentPrefix(props.text);
   const parts = () => {
+    const s = split();
+    // Matched characters inside the prefix have nothing left to embolden.
+    const skip = s ? s[0].length + 1 : 0;
     const out: { text: string; strong: boolean }[] = [];
-    [...props.text].forEach((c, i) => {
-      const strong = props.positions.includes(i);
+    [...props.text].slice(skip).forEach((c, i) => {
+      const strong = props.positions.includes(i + skip);
       const last = out[out.length - 1];
       if (last && last.strong === strong) last.text += c;
       else out.push({ text: c, strong });
@@ -973,6 +979,7 @@ function Highlighted(props: { text: string; positions: number[] }) {
   };
   return (
     <span class="branch-option" aria-label={props.text}>
+      <Show when={split()}>{(s) => (s()[0] === "claude" ? <I.ClaudeMark /> : <I.CursorMark />)}</Show>
       <For each={parts()}>{(p) => (p.strong ? <b>{p.text}</b> : p.text)}</For>
     </span>
   );

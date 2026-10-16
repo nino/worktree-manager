@@ -24,8 +24,10 @@ const icon = (body: () => JSX.Element) => (props: { class?: string }) => (
 /// arrow.clockwise
 export const Refresh = icon(() => (
   <>
-    <path d="M13 8.5A5 5 0 1 1 11.2 4.6" />
-    <path d="M11.6 1.8v3.2H8.4" />
+    {/* Round from the upper right, through the bottom, to the top, where
+        a solid head points on round: the arc meets the head's back. */}
+    <path d="M12.6 6.6A5 5 0 1 1 7.8 3.5" />
+    <path d="M7.6 1.6 10.3 3.5 7.6 5.4Z" fill="currentColor" stroke-width="1" />
   </>
 ));
 /// arrow.up.to.line

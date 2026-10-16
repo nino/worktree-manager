@@ -357,4 +357,13 @@ describe("App", () => {
     fireEvent.mouseUp(document, { clientY: 160 });
     expect(spies.moveRepo).not.toHaveBeenCalled();
   });
+
+  it("draws an agent's mark in the picker, as on the row", () => {
+    setup();
+    const row = screen.getByLabelText("fix-login").closest("article")!;
+    fireEvent.click(row.querySelector("button.branch")!);
+    const option = screen.getAllByRole("option").find((o) => o.textContent === "tauri-rewrite")!;
+    expect(option.querySelector(".mark.claude")).toBeTruthy();
+    expect(option.querySelector("[aria-label]")!.getAttribute("aria-label")).toBe("claude/tauri-rewrite");
+  });
 });
