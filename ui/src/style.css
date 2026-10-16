@@ -3,9 +3,12 @@
    `cells.rs` for sizes): a raised card per repo with an Aqua-blue band, a
    recessed well, and a raised plate per worktree.
 
-   Colours are macOS's system colours. On a Mac, WebKit knows them by name
-   (`-apple-system-…`) and they follow the appearance and the accent colour
-   by themselves; elsewhere the fallbacks below are their published values. */
+   Colours are macOS's published system colours, written out opaque. Not
+   WebKit's `-apple-system-…` names: those are translucent, and AppKit's
+   `colorWithAlphaComponent` *replaces* a colour's alpha where `color-mix`
+   with transparent multiplies it, so "separator at 34%" came out at a tenth
+   of the native strength. `--separator` is therefore plain black (white
+   when dark), and every use mixes in the alpha AppKit sets. */
 
 :root {
   color-scheme: light dark;
@@ -48,7 +51,7 @@
     --label: rgb(255 255 255 / 0.85);
     --secondary-label: rgb(255 255 255 / 0.55);
     --tertiary-label: rgb(255 255 255 / 0.25);
-    --separator: rgb(255 255 255 / 0.55);
+    --separator: rgb(255 255 255 / 1);
     --control-bg: #1e1e1e;
     --window-bg: #323232;
     --accent: #0a84ff;
@@ -73,25 +76,6 @@
   }
 }
 
-/* The real thing on a Mac: these follow the appearance and the user's accent. */
-@supports (color: -apple-system-label) {
-  :root {
-    --label: -apple-system-label;
-    --secondary-label: -apple-system-secondary-label;
-    --tertiary-label: -apple-system-tertiary-label;
-    --separator: -apple-system-separator;
-    --control-bg: -apple-system-control-background;
-    --window-bg: -apple-system-window-background;
-    --green: -apple-system-green;
-    --blue: -apple-system-blue;
-    --orange: -apple-system-orange;
-    --purple: -apple-system-purple;
-    --teal: -apple-system-teal;
-    --red: -apple-system-red;
-    --yellow: -apple-system-yellow;
-    --gray: -apple-system-gray;
-  }
-}
 @supports (color: AccentColor) {
   :root {
     --accent: AccentColor;

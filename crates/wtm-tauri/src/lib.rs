@@ -84,11 +84,14 @@ pub fn run() {
                 .initialization_script(&script);
             // As the AppKit build's unified toolbar: the page's toolbar runs
             // under the traffic lights, which sit centred in its 52 points.
+            // tao only grows the title bar to the button's height + y and
+            // leaves each button where it sat, about 16 pt above the bar's
+            // bottom edge, so y = 42 − 15 puts their centres at 26 pt.
             #[cfg(target_os = "macos")]
             let window = window
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
-                .traffic_light_position(tauri::LogicalPosition::new(20.0, 19.0));
+                .traffic_light_position(tauri::LogicalPosition::new(20.0, 27.0));
             window.build()?;
             let handle = tauri_app.handle().clone();
             forward_models(&app, handle.clone());
