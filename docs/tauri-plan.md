@@ -55,7 +55,9 @@ built, tested and photographed in the Linux cloud container end to end.
    editor / terminal / file manager, push, pull, merge trunk). Fast startup
    path, CI for the new crate and the frontend, the release guard.
 2. **Row workflows.** Branch picker (switch), delete with its confirmation
-   ladder, keyboard navigation and selection, closed cards.
+   ladder, keyboard navigation and selection, closed cards (remembered
+   across launches). Done; the picker's ranking is `wtm_core::fuzzy`
+   ported to `ui/src/fuzzy.ts` with its tests.
 3. **Sheets and settings.** New Worktree (with the remote-branch check from
    `new_worktree::check`), add / remove / reorder repos (drag), repo
    settings, app settings, `.worktreeinclude` copying.

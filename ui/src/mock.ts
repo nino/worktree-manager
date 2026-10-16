@@ -107,7 +107,7 @@ export function mockBackend(): Backend {
     }, 800);
   };
   return {
-    boot: { model, fileManager: "Files", os: "browser" },
+    boot: { model, fileManager: "Files", os: "browser", closedRepos: [] },
     ready: async () => model,
     onModel: (f) => listeners.push(f),
     refresh: () => {
@@ -122,5 +122,34 @@ export function mockBackend(): Backend {
     push: op("pushing", "Pushed."),
     pull: op("pulling", "Already up to date."),
     pullMain: op("merging", "Merged origin/main."),
+    switchBranch: (_repoId, path, branch) => {
+      setBusy(path, "switching");
+      setTimeout(
+        () =>
+          publish({
+            ...model,
+            repos: model.repos.map((r) => ({
+              ...r,
+              worktrees: r.worktrees.map((w) => (w.path === path ? { ...w, branch, busy: null } : w)),
+            })),
+          }),
+        600,
+      );
+    },
+    // As git does: a tree with changes is refused until forced.
+    deleteWorktree: async (req) => {
+      const w = model.repos.flatMap((r) => r.worktrees).find((w) => w.path === req.path);
+      if (!w) return { ok: false, refusal: "changed", message: "That worktree is not listed any more." };
+      const s = w.status;
+      if (!req.force && s && (s.hasStaged || s.hasUnstaged || s.hasUntracked)) {
+        return { ok: false, refusal: "dirty", message: "The worktree has uncommitted changes." };
+      }
+      publish({
+        ...model,
+        repos: model.repos.map((r) => ({ ...r, worktrees: r.worktrees.filter((w) => w.path !== req.path) })),
+      });
+      return { ok: true, refusal: null, message: "Deleted." };
+    },
+    setClosedRepos: () => {},
   };
 }

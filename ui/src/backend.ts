@@ -4,6 +4,8 @@
 
 import { tauriBackend } from "./tauri";
 import type { Boot } from "./wire/Boot";
+import type { DeleteRequest } from "./wire/DeleteRequest";
+import type { DeleteResult } from "./wire/DeleteResult";
 import type { Model } from "./wire/Model";
 
 export interface Backend {
@@ -23,6 +25,11 @@ export interface Backend {
   push(repoId: string, path: string): void;
   pull(repoId: string, path: string): void;
   pullMain(repoId: string, path: string): void;
+  switchBranch(repoId: string, path: string, branch: string): void;
+  /// Runs the core's safety ladder; a refusal says which question is next.
+  deleteWorktree(request: DeleteRequest): Promise<DeleteResult>;
+  /// Remember which cards are closed for the next launch.
+  setClosedRepos(ids: string[]): void;
 }
 
 declare global {

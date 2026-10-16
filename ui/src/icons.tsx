@@ -65,6 +65,21 @@ export const Search = icon(() => (
 ));
 /// xmark
 export const Close = icon(() => <path d="m4 4 8 8M12 4l-8 8" />);
+/// trash
+export const Delete = icon(() => (
+  <path d="M2.5 4h11M6 4V2.5h4V4M3.8 4l.7 9.2c.1.7.6 1.3 1.3 1.3h4.4c.7 0 1.2-.6 1.3-1.3L12.2 4M6.5 6.8v5M9.5 6.8v5" />
+));
+/// chevron.up.chevron.down: the branch button opens a list
+export const UpDown = icon(() => <path d="m5 6 3-3 3 3M5 10l3 3 3-3" />);
+/// checkmark
+export const Check = icon(() => <path d="m3 8.5 3.2 3L13 4.5" />);
+/// exclamationmark.triangle
+export const Warning = icon(() => (
+  <>
+    <path d="M7.1 2.3a1 1 0 0 1 1.8 0l5.6 10.2a1 1 0 0 1-.9 1.5H2.4a1 1 0 0 1-.9-1.5z" />
+    <path d="M8 6v3.5M8 11.8v.1" />
+  </>
+));
 
 /// Clawd, the Claude Code mascot, in his own colours (wtm-macos `toolicon`).
 export const ClaudeMark = () => (

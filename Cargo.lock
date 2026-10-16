@@ -5146,6 +5146,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "ts-rs",
  "wtm-core",
  "wtm-os",

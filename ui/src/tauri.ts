@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { Backend } from "./backend";
 import type { Boot } from "./wire/Boot";
+import type { DeleteResult } from "./wire/DeleteResult";
 import type { Model } from "./wire/Model";
 
 // Commands answer nothing the page waits on: their results come back as a
@@ -27,5 +28,9 @@ export function tauriBackend(boot: Boot): Backend {
     push: (repoId, path) => send("push", { repoId, path }),
     pull: (repoId, path) => send("pull", { repoId, path }),
     pullMain: (repoId, path) => send("pull_main", { repoId, path }),
+    switchBranch: (repoId, path, branch) => send("switch_branch", { repoId, path, branch }),
+    // Waited on: the answer decides whether there is a second question.
+    deleteWorktree: (request) => invoke<DeleteResult>("delete_worktree", { request }),
+    setClosedRepos: (ids) => send("set_closed_repos", { ids }),
   };
 }

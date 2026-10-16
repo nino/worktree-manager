@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use log::{info, warn};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use wtm_core::{Action, App};
+use wtm_core::{Action, App, UiState};
 
 /// Shared with every command.
 struct Bridge {
@@ -50,6 +50,7 @@ pub fn run() {
         model: wire::Model::from_core(&app.model()),
         file_manager,
         os: std::env::consts::OS.to_string(),
+        closed_repos: app.ui_state().collapsed_repos.into_iter().collect(),
     };
     let script = format!(
         "window.__WTM_BOOT__ = {};",
@@ -74,6 +75,9 @@ pub fn run() {
             push,
             pull,
             pull_main,
+            switch_branch,
+            delete_worktree,
+            set_closed_repos,
         ])
         .setup(move |tauri_app| {
             let window = WebviewWindowBuilder::new(tauri_app, "main", WebviewUrl::default())
@@ -189,4 +193,43 @@ fn pull(bridge: State<'_, Bridge>, repo_id: String, path: String) {
 #[tauri::command]
 fn pull_main(bridge: State<'_, Bridge>, repo_id: String, path: String) {
     bridge.app.dispatch(Action::PullMain { repo_id, path });
+}
+
+#[tauri::command]
+fn switch_branch(bridge: State<'_, Bridge>, repo_id: String, path: String, branch: String) {
+    bridge.app.dispatch(Action::Switch {
+        repo_id,
+        path,
+        branch,
+    });
+}
+
+/// Runs the core's safety ladder and answers how it ended; a refusal is
+/// the page's cue to ask the next question.
+#[tauri::command]
+async fn delete_worktree(
+    bridge: State<'_, Bridge>,
+    request: wire::DeleteRequest,
+) -> Result<wire::DeleteResult, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    bridge.app.dispatch(Action::DeleteWorktree(
+        request.to_core(),
+        Box::new(move |r| {
+            let _ = tx.send(r);
+        }),
+    ));
+    rx.await
+        .map(wire::DeleteResult::from_core)
+        .map_err(|_| "the delete was dropped before it finished".to_string())
+}
+
+/// Remember which cards are closed, for the next launch. The rest of the
+/// window's state is kept as it was until the page reports it too.
+#[tauri::command]
+fn set_closed_repos(bridge: State<'_, Bridge>, ids: Vec<String>) {
+    let state = bridge.app.ui_state();
+    bridge.app.store_ui_state(UiState {
+        collapsed_repos: ids.into_iter().collect(),
+        ..state
+    });
 }

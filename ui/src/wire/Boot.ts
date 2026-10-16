@@ -14,4 +14,8 @@ fileManager: string,
  * `std::env::consts::OS`: "macos", "linux", "windows". The page draws
  * its own title on macOS, where the toolbar sits in the title bar.
  */
-os: string, };
+os: string, 
+/**
+ * Repos whose cards were closed when the app last ran.
+ */
+closedRepos: Array<string>, };

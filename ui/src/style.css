@@ -388,13 +388,21 @@ button {
 
 /* The branch's bezel (button.rs `draw_pill`): shaded from dark at the top
    down to the plate's colour, with a bevel and a hairline border. */
+.branch-anchor {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 55%;
+}
+
 .branch {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  max-width: 55%;
-  padding: 1.5px 7px;
+  max-width: 100%;
+  margin: 0;
+  padding: 1.5px 5px 1.5px 7px;
   border-radius: 5px;
   background: linear-gradient(color-mix(in srgb, var(--control-bg) 91%, black), var(--control-bg));
   border: 1px solid color-mix(in srgb, var(--separator) 32%, transparent);
@@ -402,8 +410,36 @@ button {
   color: var(--label);
   font: 12px var(--mono);
   white-space: nowrap;
+}
+
+.branch.static {
+  padding-right: 7px;
+}
+
+.branch:disabled {
+  color: var(--label);
+  opacity: 0.6;
+}
+
+.branch:not(:disabled):active {
+  background: linear-gradient(color-mix(in srgb, var(--control-bg) 84%, black), color-mix(in srgb, var(--control-bg) 94%, black));
+}
+
+.branch-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.branch .updown {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  color: var(--secondary-label);
+  stroke-width: 2;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -531,11 +567,222 @@ button {
   color: var(--tertiary-label);
 }
 
+/* cells.rs: red in light. Dark keeps the other icons' grey, where a red
+   trash per row would be a column of the loudest colour in the window. */
+.icon-button.danger:not(:disabled) {
+  color: var(--red);
+}
+
+@media (prefers-color-scheme: dark) {
+  .icon-button.danger:not(:disabled) {
+    color: var(--secondary-label);
+  }
+  .icon-button.danger:hover:not(:disabled) {
+    color: var(--red);
+  }
+}
+
 .icon-button:focus-visible,
 .tool:focus-visible,
 .disclosure:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* MARK: Keyboard selection */
+
+/* rowview.rs `draw_selection`: an accent outline with a glow, dimmed when
+   dark so it does not bloom. */
+.list:focus {
+  outline: none;
+}
+
+.plate.selected,
+.band.selected {
+  outline: 2px solid color-mix(in srgb, var(--accent) 90%, transparent);
+  outline-offset: -1px;
+  box-shadow: var(--plate-shadow), 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.band.selected {
+  outline-offset: -2px;
+  border-radius: 9px 9px 0 0;
+}
+
+.card.closed .band.selected {
+  border-radius: 9px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .plate.selected,
+  .band.selected {
+    outline-color: color-mix(in srgb, var(--accent) 75%, transparent);
+    box-shadow: var(--plate-shadow), 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+}
+
+/* MARK: Branch picker */
+
+.popover {
+  position: fixed;
+  z-index: 10;
+  width: 300px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--control-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 20%, transparent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.12);
+  font-size: 13px;
+}
+
+.popover-field {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--separator) 25%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: inherit;
+  outline: none;
+}
+
+.popover-field:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.popover-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.popover-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 2px;
+  border-radius: 5px;
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+
+.popover-list li.selected {
+  background: var(--accent);
+  color: white;
+}
+
+.popover-list li b {
+  font-weight: 700;
+}
+
+.popover-list .check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+}
+
+.popover-list .check .icon {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2;
+}
+
+.branch-option {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.popover-empty {
+  color: var(--secondary-label);
+  font-family: inherit !important;
+}
+
+/* MARK: Sheets */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 52px;
+  background: rgb(0 0 0 / 0.12);
+}
+
+.sheet {
+  width: 360px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--window-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 18%, transparent);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.25);
+  text-align: center;
+  animation: sheet-in 0.18s ease-out;
+}
+
+.sheet-icon {
+  width: 40px;
+  height: 40px;
+  color: var(--orange);
+  margin-bottom: 6px;
+}
+
+.sheet h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sheet p {
+  margin: 0 0 18px;
+  font-size: 11px;
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+
+.sheet-buttons {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+
+.push {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 0;
+  background: color-mix(in srgb, var(--label) 9%, var(--control-bg));
+  box-shadow: 0 0.5px 1px rgb(0 0 0 / 0.15);
+  color: var(--label);
+  font-size: 13px;
+}
+
+.push.default {
+  background: var(--accent);
+  color: white;
+}
+
+.push.destructive {
+  background: color-mix(in srgb, var(--red) 12%, var(--control-bg));
+  color: var(--red);
+}
+
+.push:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 0;
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(-12px);
+    opacity: 0;
+  }
 }
 
 @keyframes spin {

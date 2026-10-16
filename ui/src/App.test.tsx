@@ -12,6 +12,9 @@ function setup() {
     push: vi.spyOn(backend, "push"),
     openInTerminal: vi.spyOn(backend, "openInTerminal"),
     refresh: vi.spyOn(backend, "refresh"),
+    switchBranch: vi.spyOn(backend, "switchBranch"),
+    deleteWorktree: vi.spyOn(backend, "deleteWorktree"),
+    setClosedRepos: vi.spyOn(backend, "setClosedRepos"),
   };
   const result = render(() => <App backend={backend} initial={backend.boot.model} />);
   return { backend, spies, ...result };
@@ -88,5 +91,83 @@ describe("App", () => {
     const { spies } = setup();
     fireEvent.keyDown(document, { key: "r", ctrlKey: true });
     expect(spies.refresh).toHaveBeenCalled();
+  });
+
+  it("remembers a closed card", () => {
+    const { spies } = setup();
+    fireEvent.click(screen.getByLabelText("Collapse site"));
+    expect(spies.setClosedRepos).toHaveBeenLastCalledWith(["site"]);
+  });
+
+  it("switches branch from the picker, filtered by what is typed", () => {
+    const { spies } = setup();
+    const row = screen.getByLabelText("fix-login").closest("article")!;
+    fireEvent.click(row.querySelector("button.branch")!);
+    const field = screen.getByLabelText("Filter branches");
+    expect(document.activeElement).toBe(field);
+    fireEvent.input(field, { target: { value: "tauri" } });
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(spies.switchBranch).toHaveBeenCalledWith(
+      "app",
+      "/home/demo/worktrees/app/fix-login",
+      "claude/tauri-rewrite",
+    );
+    expect(screen.queryByLabelText("Filter branches")).toBeNull();
+  });
+
+  it("does nothing when the current branch is chosen", () => {
+    const { spies } = setup();
+    const row = screen.getByLabelText("fix-login").closest("article")!;
+    fireEvent.click(row.querySelector("button.branch")!);
+    // It opens on the current branch.
+    fireEvent.keyDown(screen.getByLabelText("Filter branches"), { key: "Enter" });
+    expect(spies.switchBranch).not.toHaveBeenCalled();
+  });
+
+  it("asks twice before deleting a worktree with changes", async () => {
+    const { spies } = setup();
+    const row = screen.getByLabelText("claude/tauri-rewrite").closest("article")!;
+    fireEvent.click(row.querySelector('[aria-label="Delete worktree"]')!);
+    expect(screen.getByText("Delete worktree “claude/tauri-rewrite”?")).toBeTruthy();
+    fireEvent.click(screen.getByText("Delete"));
+    expect(await screen.findByText("“claude/tauri-rewrite” has uncommitted changes")).toBeTruthy();
+    fireEvent.click(screen.getByText("Force Delete — Discard Changes"));
+    await vi.waitFor(() => expect(screen.queryByLabelText("claude/tauri-rewrite")).toBeNull());
+    expect(spies.deleteWorktree).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+  });
+
+  it("cancels a delete with Escape and offers none on the primary tree", () => {
+    const { spies } = setup();
+    const main = screen.getAllByLabelText("main")[0].closest("article")!;
+    expect(main.querySelector('[aria-label="Delete worktree"]')).toBeNull();
+    const row = screen.getByLabelText("fix-login").closest("article")!;
+    fireEvent.click(row.querySelector('[aria-label="Delete worktree"]')!);
+    fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(spies.deleteWorktree).not.toHaveBeenCalled();
+  });
+
+  it("walks the rows with the arrow keys and closes a card with ←", () => {
+    setup();
+    const selected = () => document.querySelector(".selected")!;
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(selected().textContent).toContain("app");
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(selected().querySelector('[aria-label="claude/tauri-rewrite"]')).toBeTruthy();
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    expect(screen.queryByLabelText("claude/tauri-rewrite")).toBeNull();
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(screen.getByLabelText("claude/tauri-rewrite")).toBeTruthy();
+  });
+
+  it("opens the picker on the selected worktree with Return", () => {
+    setup();
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(screen.getByLabelText("Filter branches")).toBeTruthy();
   });
 });
