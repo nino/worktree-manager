@@ -101,7 +101,17 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # Compiled into the app for its opt-in error reports
+      # (`wtm_core::telemetry::compiled_in`); nothing is sent unless the user
+      # turns them on in Settings. A PostHog project key (`phc_…`) can only
+      # write events and ships inside every client by design, so it is not a
+      # secret. The one project is shared by all of Nino's apps.
       - name: Build the universal app
+        env:
+          POSTHOG_KEY: phc_khU8oAxkqoNVCHp5euLyyWCQ4W3sBAMrJnTtZGKgcWwA
+          # ninoes forwards this to PostHog's EU cloud; sending there rather than
+          # to posthog.com keeps tracker blockers from stopping reports.
+          POSTHOG_HOST: https://ninoes.fly.dev/relay
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           scripts/bundle.sh --universal --version "$VERSION" --build "$BUILD"

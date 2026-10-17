@@ -79,6 +79,13 @@ Environment switches, all dev-only:
 | `RUST_LOG=info` | timings for refreshes and git runs |
 | `WTM_SCREENSHOT=<png>` | Linux: write the window to a PNG once the first listing settles (`WTM_SCREENSHOT_STEPS`, `WTM_SCREENSHOT_QUIT`; see the `screenshot` skill) |
 
+Read at build time, not at run time:
+
+| variable | effect |
+| --- | --- |
+| `POSTHOG_KEY`, `POSTHOG_HOST` | compiled into a release build so it can send error reports (the host must be `https://`); a debug build, or one built without both, never sends anything |
+| `WTM_VERSION` | the version error reports carry; `scripts/bundle.sh --version` sets it |
+
 **Never test against the real config.** Use `WTM_USER_DATA` pointed at a
 throwaway directory and demo repos created for the purpose. The real profile is
 `~/Library/Application Support/Worktree Manager/` on macOS,
@@ -187,6 +194,20 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Branch labels**: a `claude/` or `cursor/` prefix is drawn as that agent's
   mark. The full name is what gets matched, dispatched, and read out by
   assistive technology (`setAccessibilityLabel`).
+- **Error reports** (`wtm_core::telemetry`) are strictly opt-in — the app has
+  a few professional users: Settings → "Error reports", off by default (`sendErrorReports` in the config), and nothing is
+  sent while it is off, nor ever asked about. When on, panics (a hook in
+  `wtm-app` that waits up to 2 s for the send) and the errors the app shows
+  (error notices, failed creations, deletes and listings) go to PostHog as
+  `$exception` events, plus one `app started` per launch. Messages are
+  scrubbed first (home folder → `~`, URL credentials and email addresses
+  removed), events never make person profiles, and at most 30 leave an hour,
+  each distinct message once. The anonymous id is a UUID in `analytics-id`
+  beside the config, written at the first send and deleted when the setting
+  goes off. The POST goes through the system's `curl` (see the module doc
+  for why not a Rust HTTP client), off the UI thread; a failure is only
+  logged. Only a release build with `POSTHOG_KEY` and `POSTHOG_HOST` compiled
+  in sends; `release.yml` sets both.
 - **Releases**: pushing to `main` builds, signs, notarises and publishes a
   rolling `latest` release; installed copies update themselves from it. See
   "Releases" below.
@@ -309,6 +330,13 @@ Settings → Secrets and variables → Actions:
 | `APPLE_API_KEY_P8` | the whole `.p8` App Store Connect key, `-----BEGIN PRIVATE KEY-----` included |
 | `APPLE_API_KEY_ID` | the ten-character key ID |
 | `APPLE_API_ISSUER_ID` | the issuer UUID |
+
+The PostHog key and host for error reports are not secrets: a `phc_` project
+key can only send events and is public by design, so the build step sets
+`POSTHOG_KEY` and `POSTHOG_HOST` as plain `env` values in `release.yml`
+(the EU cloud project all of Nino's apps share). The host is
+`https://ninoes.fly.dev/relay`, which forwards to PostHog, so tracker
+blockers that stop `*.posthog.com` don't stop reports.
 
 Local `scripts/bundle.sh` builds are ad-hoc signed, which is enough for a
 stable identity but is not a Developer ID signature.

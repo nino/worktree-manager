@@ -82,6 +82,7 @@ fn app_in(base: &Path) -> (App, mpsc::Receiver<Event>) {
         editor_command: "true".into(),
         update_channel: Default::default(),
         copy_worktree_include: false,
+        send_error_reports: false,
     }));
     (app, rx)
 }
@@ -606,6 +607,7 @@ fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
         editor_command: "true".into(),
         update_channel: Default::default(),
         copy_worktree_include: true,
+        send_error_reports: false,
     }));
     let on = create("on");
     let read = |rel: &str| std::fs::read_to_string(on.join(rel)).ok();

@@ -8,6 +8,7 @@
 #                 release workflow ships; a local build only needs the host)
 #   --version     stamp CFBundleShortVersionString — the version the updater
 #                 compares, which for a beta reads e.g. 1.0.112-beta.91
+#                 (and compile it into the binary as WTM_VERSION)
 #   --build       stamp CFBundleVersion, which Apple wants to be digits and
 #                 dots only; defaults to --version
 set -euo pipefail
@@ -29,6 +30,12 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# The binary carries the version too, for error reports
+# (`wtm_core::telemetry::VERSION`); the plist alone is what the updater reads.
+if [[ -n "$version" ]]; then
+  export WTM_VERSION=$version
+fi
 
 if (( universal )); then
   for target in aarch64-apple-darwin x86_64-apple-darwin; do

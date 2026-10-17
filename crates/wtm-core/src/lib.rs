@@ -9,6 +9,7 @@
 //! - [`config`]: load/save of the configuration file.
 //! - [`ui_state`]: the window frame, scroll offset and focused row that a
 //!   backend restores at the next launch.
+//! - [`telemetry`]: opt-in error reports to PostHog, and what they may say.
 //! - [`app`]: the [`App`] facade the UI talks to — synchronous, thread-safe
 //!   [`Action`] dispatch, a shared [`Model`] snapshot, and change events.
 //!
@@ -28,6 +29,7 @@ pub mod new_worktree;
 pub mod paths;
 pub mod repos;
 pub mod splice;
+pub mod telemetry;
 pub mod types;
 pub mod ui_state;
 pub mod update;
