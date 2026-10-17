@@ -334,7 +334,9 @@ Settings → Secrets and variables → Actions:
 The PostHog key and host for error reports are not secrets: a `phc_` project
 key can only send events and is public by design, so the build step sets
 `POSTHOG_KEY` and `POSTHOG_HOST` as plain `env` values in `release.yml`
-(the EU cloud project all of Nino's apps share).
+(the EU cloud project all of Nino's apps share). The host is
+`https://ninoes.fly.dev/relay`, which forwards to PostHog, so tracker
+blockers that stop `*.posthog.com` don't stop reports.
 
 Local `scripts/bundle.sh` builds are ad-hoc signed, which is enough for a
 stable identity but is not a Developer ID signature.
