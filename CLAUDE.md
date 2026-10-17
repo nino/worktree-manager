@@ -54,6 +54,11 @@ UI there, the GTK build can photograph itself: see the `screenshot` skill
 Linux with `cargo check --target x86_64-pc-windows-gnu`, and macOS with
 `--target aarch64-apple-darwin` (type-checking only; nothing links).
 
+**Before opening a pull request**, or marking a draft ready, follow the
+`pre-pr` skill (`.claude/skills/pre-pr/SKILL.md`): run the checks above,
+review the whole diff against `origin/main` (with `/code-review` where it is
+available), and fix what it finds before anyone else reads the PR.
+
 `scripts/monkey.sh` (macOS only) is for what only a debug build shows: objc2 checks each
 `msg_send!`'s types only with debug assertions on, so a wrong signature panics
 under `cargo run` and passes silently in a release build. It runs the app in a
