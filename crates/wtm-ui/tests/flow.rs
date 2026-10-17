@@ -107,6 +107,7 @@ fn app_in(base: &Path) -> App {
         editor_command: "true".into(),
         update_channel: Default::default(),
         copy_worktree_include: false,
+        send_error_reports: false,
     }));
     app
 }
@@ -518,6 +519,26 @@ fn the_worktreeinclude_popup_turns_copying_on() {
     let v = h.view();
     let choice = v.panel("settings").unwrap().body.choice("include").unwrap();
     assert_eq!(choice.selected, 1);
+}
+
+#[test]
+fn the_error_reports_popup_opts_in_and_out() {
+    let (base, _repo, app, h) = listed("reports-setting");
+    h.send(Msg::OpenSettings);
+    let v = h.view();
+    let choice = v.panel("settings").unwrap().body.choice("reports").unwrap();
+    assert_eq!(choice.selected, 0, "off by default");
+    let select = choice.on_select.clone();
+    h.fire(&select, 1);
+    h.wait_for(WAIT, "reports turned on", |_| {
+        app.model().config.send_error_reports
+    });
+    h.fire(&select, 0);
+    h.wait_for(WAIT, "reports turned off", |_| {
+        !app.model().config.send_error_reports
+    });
+    // A debug build has no keys, so opting in never wrote an id.
+    assert!(!base.join("config").join("analytics-id").exists());
 }
 
 #[test]

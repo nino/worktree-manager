@@ -36,6 +36,7 @@ use crate::git::{
 use crate::model::{Busy, Model, Notice, PendingCreation, RepoNode, Tone};
 use crate::paths::tildify;
 use crate::repos::{describe_add_failure, inspect_repo};
+use crate::telemetry::{Curl, Reporter};
 use crate::types::*;
 use crate::ui_state::{UiState, UiStateStore};
 use crate::watcher::{linked_gitdir, WatchKey, Watcher};
@@ -109,6 +110,9 @@ pub enum Action {
 /// that much.
 const UI_STATE_WRITE_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
+/// The anonymous id error reports carry, beside the config.
+const ANALYTICS_ID_FILE: &str = "analytics-id";
+
 /// Callback for actions that need an answer beyond a model change.
 pub type Reply<T> = Box<dyn FnOnce(T) + Send + 'static>;
 
@@ -142,6 +146,7 @@ struct Inner {
     repo_seq: Mutex<HashMap<String, (u64, u64)>>,
     watcher: Mutex<Option<Watcher>>,
     next_id: AtomicU64,
+    reporter: Arc<Reporter>,
 }
 
 /// Thread-safe handle to the application. Cheap to clone.
@@ -180,6 +185,19 @@ impl App {
         };
         model.repos = load_snapshot(&dirs).unwrap_or_default();
         model.sync_repos_with_config();
+        let reporter = {
+            let platform = platform.clone();
+            // What keeps a git call from opening a console window on
+            // Windows does the same for curl.
+            let curl = Curl::new(move |c| platform.configure_git(c));
+            Arc::new(Reporter::new(
+                crate::telemetry::compiled_in(),
+                dirs.config_dir.join(ANALYTICS_ID_FILE),
+                model.home.clone(),
+                Arc::new(curl),
+            ))
+        };
+        reporter.set_enabled(model.config.send_error_reports);
         let inner = Inner {
             rt,
             platform,
@@ -194,6 +212,7 @@ impl App {
             repo_seq: Mutex::new(HashMap::new()),
             watcher: Mutex::new(None),
             next_id: AtomicU64::new(1),
+            reporter,
         };
         Self {
             inner: Arc::new(inner),
@@ -203,6 +222,7 @@ impl App {
     /// Begin background work: the first full listing, the file watcher, and the
     /// periodic fetch loop.
     pub fn start(&self) {
+        self.inner.reporter.started();
         let app = self.clone();
         match Watcher::new(move |key: WatchKey| {
             app.dispatch(Action::RefreshWorktree {
@@ -240,6 +260,11 @@ impl App {
 
     pub fn platform(&self) -> &dyn Platform {
         &*self.inner.platform
+    }
+
+    /// The error reporter, for the executable's panic hook.
+    pub fn reporter(&self) -> Arc<Reporter> {
+        self.inner.reporter.clone()
     }
 
     // MARK: Window state
@@ -408,6 +433,9 @@ impl App {
     }
 
     fn notify(&self, tone: Tone, text: String) {
+        if tone == Tone::Error {
+            self.inner.reporter.error(&text);
+        }
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         self.update(|m| m.notice = Some(Notice { tone, text, id }));
     }
@@ -419,6 +447,9 @@ impl App {
         // screen, though not in the file.
         let changed = {
             let store = self.inner.store.lock();
+            self.inner
+                .reporter
+                .set_enabled(store.config().send_error_reports);
             self.publish(|m| {
                 m.config = store.config().clone();
                 m.sync_repos_with_config();
@@ -524,6 +555,13 @@ impl App {
             Ok(w) => (w, None),
             Err(e) => (Vec::new(), Some(e.detail())),
         };
+        if let Some(error) = &error {
+            // Shown on the repo's card. The reporter drops a repeat within
+            // the hour, so a repo that fails at every refresh is one report.
+            self.inner
+                .reporter
+                .error(&format!("Listing failed: {error}"));
+        }
         let branches = branches.unwrap_or_default();
         let (candidates, remote_branches) = refs.unwrap_or_default();
         let remotes = remotes.unwrap_or_default();
@@ -750,11 +788,16 @@ impl App {
                     app.update(|m| m.pending.retain(|p| p.id != id));
                     app.rewatch();
                 }
-                Err(message) => app.update(|m| {
-                    if let Some(p) = m.pending.iter_mut().find(|p| p.id == id) {
-                        p.error = Some(message);
-                    }
-                }),
+                Err(message) => {
+                    app.inner
+                        .reporter
+                        .error(&format!("Create failed: {message}"));
+                    app.update(|m| {
+                        if let Some(p) = m.pending.iter_mut().find(|p| p.id == id) {
+                            p.error = Some(message);
+                        }
+                    })
+                }
             }
         });
     }
@@ -781,6 +824,11 @@ impl App {
             if result.ok {
                 app.refresh_repo(repo.id.clone()).await;
                 app.rewatch();
+            } else if result.reason != Some(DeleteRefusal::Dirty) {
+                // A dirty tree is the ladder working, not a fault.
+                app.inner
+                    .reporter
+                    .error(&format!("Delete failed: {}", result.message));
             }
             app.update(|m| {
                 m.busy.remove(&path);
