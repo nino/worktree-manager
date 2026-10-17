@@ -354,7 +354,10 @@ impl Transport for Curl {
             .spawn()
             .map_err(|e| format!("cannot run curl: {e}"))?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(body).map_err(|e| e.to_string())?;
+            // A curl that gave up before reading (no network) closes the
+            // pipe; its exit status below says why, and waiting for it is
+            // what reaps the process.
+            let _ = stdin.write_all(body);
         }
         // curl's own --max-time is the real limit; this is the backstop for
         // a curl that hangs before it gets that far.
@@ -393,6 +396,9 @@ impl Transport for Curl {
 pub struct Reporter {
     keys: Option<Keys>,
     enabled: AtomicBool,
+    /// `set_enabled` has been called once: the first call always clears a
+    /// leftover id, later ones only when the setting goes from on to off.
+    synced: AtomicBool,
     id_path: PathBuf,
     id: Mutex<Option<String>>,
     limiter: Mutex<RateLimiter>,
@@ -412,6 +418,7 @@ impl Reporter {
         Reporter {
             keys,
             enabled: AtomicBool::new(false),
+            synced: AtomicBool::new(false),
             id_path,
             id: Mutex::new(None),
             limiter: Mutex::new(RateLimiter::new(MAX_PER_HOUR, Duration::from_secs(3600))),
@@ -421,14 +428,20 @@ impl Reporter {
     }
 
     /// Follow the setting. Turning it off forgets the anonymous id, so
-    /// turning it on again starts as someone new.
+    /// turning it on again starts as someone new. Called on every config
+    /// change, so it touches the disk only when the setting changes.
     pub fn set_enabled(&self, on: bool) {
         let was = self.enabled.swap(on, Ordering::AcqRel);
+        let first = !self.synced.swap(true, Ordering::AcqRel);
         if on && !was && self.keys.is_some() {
             info!("error reports are on");
         }
-        if !on {
-            *self.id.lock() = None;
+        if !on && (was || first) {
+            // Under the id's lock, which `distinct_id` checks the setting
+            // inside: a report already on its way cannot write the id back
+            // after this.
+            let mut slot = self.id.lock();
+            *slot = None;
             match std::fs::remove_file(&self.id_path) {
                 Ok(()) => info!("error reports are off; forgot the anonymous id"),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -528,6 +541,9 @@ impl Reporter {
         } else {
             self.id.lock()
         };
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
         if let Some(id) = slot.as_ref() {
             return Some(id.clone());
         }
@@ -799,6 +815,21 @@ mod tests {
         assert_eq!(rec2.wait_for(1)[0].1["distinct_id"], id.as_str());
         again.set_enabled(false);
         assert!(!dir.join("analytics-id").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_id_left_from_an_earlier_run_goes_when_reports_are_off() {
+        let dir = scratch("stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id_path = dir.join("analytics-id");
+        std::fs::write(&id_path, uuid::Uuid::new_v4().to_string()).unwrap();
+        let (r, _) = reporter(keys(), &dir);
+        r.set_enabled(false);
+        assert!(!id_path.exists());
+        // Off, an id is never made, even by a report already under way.
+        assert_eq!(r.distinct_id(false), None);
+        assert!(!id_path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
