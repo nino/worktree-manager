@@ -62,6 +62,7 @@ impl ConfigStore {
         self.config.editor_command = settings.editor_command;
         self.config.update_channel = settings.update_channel;
         self.config.copy_worktree_include = settings.copy_worktree_include;
+        self.config.send_error_reports = settings.send_error_reports;
         self.save();
     }
 
@@ -165,6 +166,7 @@ pub(crate) fn defaults(home: &Path) -> AppConfig {
         editor_command: "code".to_string(),
         update_channel: UpdateChannel::default(),
         copy_worktree_include: false,
+        send_error_reports: false,
         repos: Vec::new(),
     }
 }
@@ -249,6 +251,17 @@ mod tests {
         // An Electron-era file, and every existing install, follows stable.
         assert_eq!(c.update_channel, UpdateChannel::Stable);
         assert!(!c.copy_worktree_include, "off unless chosen");
+        assert!(!c.send_error_reports, "nothing is sent unless chosen");
+    }
+
+    #[test]
+    fn the_error_report_choice_round_trips() {
+        let json = r#"{"worktreesRoot":"/w","editorCommand":"c","sendErrorReports":true}"#;
+        let c: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(c.send_error_reports);
+        assert!(serde_json::to_string(&c)
+            .unwrap()
+            .contains(r#""sendErrorReports":true"#));
     }
 
     #[test]

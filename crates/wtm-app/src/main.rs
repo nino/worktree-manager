@@ -15,6 +15,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         let app = wtm_core::App::new(Arc::new(wtm_macos::MacPlatform), wtm_macos::app_dirs());
+        wtm_core::telemetry::install_panic_hook(app.reporter());
         // Versions before `ui-state.json` had AppKit keep the window's frame;
         // the first launch after the update opens it there.
         let state = app.ui_state();
@@ -33,6 +34,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     {
         let app = wtm_core::App::new(Arc::new(wtm_gtk::LinuxPlatform), wtm_gtk::app_dirs());
+        wtm_core::telemetry::install_panic_hook(app.reporter());
         // Releases are built for macOS only, so there is nothing to update to.
         wtm_ui::run(wtm_gtk::Gtk, app, Rc::new(wtm_platform::NoUpdater));
     }
@@ -43,6 +45,7 @@ fn main() {
             Arc::new(wtm_windows::WindowsPlatform),
             wtm_windows::app_dirs(),
         );
+        wtm_core::telemetry::install_panic_hook(app.reporter());
         wtm_ui::run(wtm_windows::Win32, app, Rc::new(wtm_platform::NoUpdater));
     }
 

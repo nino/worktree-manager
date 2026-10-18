@@ -23,6 +23,7 @@ pub enum SettingsMsg {
     Editor(String),
     Channel(usize),
     Include(usize),
+    Reports(usize),
     Browse,
     Picked(Vec<std::path::PathBuf>),
     Closed,
@@ -34,10 +35,16 @@ pub struct Settings {
     pub channel: usize,
     /// Whether `.worktreeinclude` is followed: 1 for yes, as in [`INCLUDE`].
     pub include: usize,
+    /// Whether error reports are sent: 1 for yes, as in [`REPORTS`].
+    pub reports: usize,
 }
 
 /// What the `.worktreeinclude` popup offers, off first.
 pub const INCLUDE: [&str; 2] = ["Ignore", "Copy listed files"];
+
+/// What the error reports popup offers, off first: nothing is sent until
+/// the user picks the second.
+pub const REPORTS: [&str; 2] = ["Don’t send", "Send error reports"];
 
 impl Settings {
     pub fn new(config: &AppConfig) -> Self {
@@ -49,6 +56,7 @@ impl Settings {
                 .position(|(c, _)| *c == config.update_channel)
                 .unwrap_or(0),
             include: usize::from(config.copy_worktree_include),
+            reports: usize::from(config.send_error_reports),
         }
     }
 
@@ -66,6 +74,7 @@ impl Settings {
             editor_command: self.editor.trim().to_string(),
             update_channel: self.channel(),
             copy_worktree_include: self.include == 1,
+            send_error_reports: self.reports == 1,
         };
         if settings.worktrees_root.is_empty() {
             return None;
@@ -73,7 +82,8 @@ impl Settings {
         (config.worktrees_root != settings.worktrees_root
             || config.editor_command != settings.editor_command
             || config.update_channel != settings.update_channel
-            || config.copy_worktree_include != settings.copy_worktree_include)
+            || config.copy_worktree_include != settings.copy_worktree_include
+            || config.send_error_reports != settings.send_error_reports)
             .then_some(settings)
     }
 
@@ -135,7 +145,18 @@ impl Settings {
                     on_select: v.map(|i| Msg::Settings(SettingsMsg::Channel(i))),
                 },
             )
-            .hint("Beta builds arrive before they are released to everyone, and are less tested. Only an app installed from a release updates itself.");
+            .hint("Beta builds arrive before they are released to everyone, and are less tested. Only an app installed from a release updates itself.")
+            .row(
+                "Error reports:",
+                Choice {
+                    id: "reports",
+                    options: REPORTS.iter().map(|t| t.to_string()).collect(),
+                    selected: self.reports,
+                    a11y_label: Some("Error reports".into()),
+                    on_select: v.map(|i| Msg::Settings(SettingsMsg::Reports(i))),
+                },
+            )
+            .hint("Sends crashes and the error messages this window shows (which can name branches and files) to the developer through PostHog, with your home folder shortened to ~, plus the app version and OS. Never your code or file contents.");
         Panel {
             key: KEY.into(),
             title: "Settings".into(),
@@ -156,6 +177,7 @@ mod tests {
             editor_command: "code".into(),
             update_channel: UpdateChannel::Stable,
             copy_worktree_include: false,
+            send_error_reports: false,
             repos: Vec::new(),
         }
     }
@@ -180,5 +202,15 @@ mod tests {
         assert_eq!(s.include, 0, "off by default");
         s.include = 1;
         assert!(s.changed(&c).unwrap().copy_worktree_include);
+    }
+
+    #[test]
+    fn error_reports_are_off_until_chosen() {
+        let c = config();
+        let mut s = Settings::new(&c);
+        assert_eq!(s.reports, 0, "off by default");
+        assert_eq!(s.changed(&c), None);
+        s.reports = 1;
+        assert!(s.changed(&c).unwrap().send_error_reports);
     }
 }

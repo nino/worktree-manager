@@ -53,6 +53,10 @@ pub struct AppConfig {
     /// main checkout into each new worktree, as Claude Code does.
     #[serde(default)]
     pub copy_worktree_include: bool,
+    /// Send crashes and the errors the window shows to PostHog. Off unless
+    /// the user turns it on in Settings; see `telemetry`.
+    #[serde(default)]
+    pub send_error_reports: bool,
     /// Configured repositories.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
@@ -65,6 +69,7 @@ pub struct AppSettings {
     pub editor_command: String,
     pub update_channel: UpdateChannel,
     pub copy_worktree_include: bool,
+    pub send_error_reports: bool,
 }
 
 /// A path that could not be added as a repository, with the reason why.
