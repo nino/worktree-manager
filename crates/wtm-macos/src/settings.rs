@@ -103,6 +103,11 @@ fn create(panel: &Panel, mtm: MainThreadMarker) -> Open {
     };
     window.setTitle(&ns(&panel.title));
     unsafe { window.setReleasedWhenClosed(false) };
+    // A window with an initial first responder builds no key view loop of
+    // its own, so Tab found no next view and handed the keyboard straight
+    // back to the field it left. This also keeps the loop right when a
+    // reshaped body replaces the content view.
+    window.setAutorecalculatesKeyViewLoop(true);
     let body = Built::new(&panel.body, mtm);
     fill(&window, &body);
     if let Some(v) = panel.focus.and_then(|id| body.find(id, &panel.body)) {
