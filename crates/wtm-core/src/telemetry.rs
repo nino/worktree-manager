@@ -109,6 +109,8 @@ pub fn common_properties() -> Map<String, Value> {
     let mut p = Map::new();
     p.insert("$process_person_profile".into(), Value::Bool(false));
     p.insert("$lib".into(), "worktree-manager".into());
+    // Which app sent it: all of Nino's apps share one PostHog project.
+    p.insert("app".into(), "worktree-manager".into());
     p.insert("$app_version".into(), VERSION.into());
     p.insert("$os".into(), os.into());
     p.insert("arch".into(), std::env::consts::ARCH.into());
