@@ -349,15 +349,13 @@ fn report(
             tone: Tone::Info,
         }),
         Ok(_) => {}
-        Err(message) => {
-            log::warn!("updates: {message}");
-            if announce {
-                app.dispatch(Action::ShowNotice {
-                    text: format!("Could not check for updates: {message}"),
-                    tone: Tone::Error,
-                });
-            }
-        }
+        // Announced, the notice is the report; a background check that
+        // fails is seen by nobody, so it is logged as a warning instead.
+        Err(message) if announce => app.dispatch(Action::ShowNotice {
+            text: format!("Could not check for updates: {message}"),
+            tone: Tone::Error,
+        }),
+        Err(message) => log::warn!("updates: {message}"),
     }
 }
 
@@ -611,8 +609,14 @@ fn swap(new_app: &Path, installed: &Path) -> Result<(), String> {
     std::fs::rename(installed, &old)
         .map_err(|e| format!("could not move the installed app aside: {e}"))?;
     if let Err(e) = std::fs::rename(&staged, installed) {
-        // Put back what was there.
-        let _ = std::fs::rename(&old, installed);
+        // Put back what was there. If that fails too, the app is gone
+        // from where it was installed, which no notice can tell anyone.
+        if let Err(back) = std::fs::rename(&old, installed) {
+            log::error!(
+                "updates: could not put the old app back at {}: {back}",
+                installed.display()
+            );
+        }
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("could not install the update: {e}"));
     }
@@ -664,7 +668,8 @@ pub fn install_or_restart(app: &App, mtm: MainThreadMarker) {
                     INSTALLING.set(false);
                     let cancelled = message == CANCELLED;
                     if !cancelled {
-                        log::warn!("updates: {message}");
+                        // Not a warning: the error notice below is reported.
+                        log::info!("updates: {message}");
                     }
                     // The download stays staged either way, so the button is
                     // still there to try again.
@@ -766,7 +771,10 @@ pub fn restart(mtm: MainThreadMarker) {
         pid = std::process::id(),
         app = shell_quote(&install.bundle.to_string_lossy()),
     );
-    let _ = Command::new("/bin/sh").args(["-c", &script]).spawn();
+    if let Err(e) = Command::new("/bin/sh").args(["-c", &script]).spawn() {
+        // The app still quits below; the new copy just has to be opened by hand.
+        log::warn!("updates: cannot schedule the relaunch: {e}");
+    }
     // On the next turn: this runs from the program's update, and quitting
     // there would leave `applicationWillTerminate:` unable to drain the
     // window state into the program before the process exits.

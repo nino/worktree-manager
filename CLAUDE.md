@@ -197,12 +197,18 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Error reports** (`wtm_core::telemetry`) are strictly opt-in — the app has
   a few professional users: Settings → "Error reports", off by default (`sendErrorReports` in the config), and nothing is
   sent while it is off, nor ever asked about. When on, panics (a hook in
-  `wtm-app` that waits up to 2 s for the send) and the errors the app shows
-  (error notices, failed creations, deletes and listings) go to PostHog as
-  `$exception` events, plus one `app started` per launch. Messages are
+  `wtm-app` that waits up to 2 s for the send), the errors the app shows
+  (error notices, failed creations, deletes and listings) and the warnings
+  and errors the `wtm_*` crates log (`warn!`, `error!`; level `warning` or
+  `error`, typed by module) go to PostHog as `$exception` events, plus one
+  `app started` per launch and `error reports turned on` when the setting is
+  switched on while running. A failure nobody sees on screen gets a `warn!`,
+  so it reaches PostHog; nothing in `telemetry` itself is forwarded, and
+  background fetch failures log under the `fetch` target so being offline
+  is not reported. Messages are
   scrubbed first (home folder → `~`, URL credentials and email addresses
-  removed), events never make person profiles, and at most 30 leave an hour,
-  each distinct message once. The anonymous id is a UUID in `analytics-id`
+  removed), events never make person profiles, and at most 30 leave an hour
+  (logged warnings get 10 of their own; logged errors share the 30), each distinct message once. The anonymous id is a UUID in `analytics-id`
   beside the config, written at the first send and deleted when the setting
   goes off. The POST goes through the system's `curl` (see the module doc
   for why not a Rust HTTP client), off the UI thread; a failure is only
