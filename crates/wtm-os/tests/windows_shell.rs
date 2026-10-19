@@ -2,5 +2,5 @@
 //! command lines and directories are plain functions: test them everywhere.
 
 #[allow(dead_code)]
-#[path = "../src/shell.rs"]
+#[path = "../src/windows_shell.rs"]
 mod shell;

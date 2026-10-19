@@ -1,0 +1,1039 @@
+/* One stylesheet, no framework. The look is the AppKit build's, measured
+   from wtm-macos (`rowview.rs` for the cards, `badge.rs`, `button.rs`,
+   `cells.rs` for sizes): a raised card per repo with an Aqua-blue band, a
+   recessed well, and a raised plate per worktree.
+
+   Colours are macOS's published system colours, written out opaque. Not
+   WebKit's `-apple-system-…` names: those are translucent, and AppKit's
+   `colorWithAlphaComponent` *replaces* a colour's alpha where `color-mix`
+   with transparent multiplies it, so "separator at 34%" came out at a tenth
+   of the native strength. `--separator` is therefore plain black (white
+   when dark), and every use mixes in the alpha AppKit sets. */
+
+:root {
+  color-scheme: light dark;
+
+  --label: rgb(0 0 0 / 0.85);
+  --secondary-label: rgb(0 0 0 / 0.5);
+  --tertiary-label: rgb(0 0 0 / 0.26);
+  --separator: rgb(0 0 0 / 1);
+  --control-bg: #ffffff;
+  --window-bg: #f6f6f6;
+  --accent: #007aff;
+
+  --green: #34c759;
+  --blue: #007aff;
+  --orange: #ff9500;
+  --purple: #af52de;
+  --teal: #30b0c7;
+  --red: #ff3b30;
+  --yellow: #ffcc00;
+  --gray: #8e8e93;
+
+  /* rowview.rs: the band is the card's colour tinted towards a greyed
+     system blue and darkened, deepening towards the plates. */
+  --band-blue: color-mix(in srgb, var(--blue) 55%, var(--gray));
+  --band-top: color-mix(in srgb, color-mix(in srgb, var(--control-bg) 92%, var(--band-blue)) 98%, black);
+  --band-bottom: color-mix(in srgb, color-mix(in srgb, var(--control-bg) 84%, var(--band-blue)) 96%, black);
+  --bevel: rgb(255 255 255 / 0.35);
+  --plate-bevel: rgb(255 255 255 / 0.3);
+  --well: color-mix(in srgb, var(--window-bg) 98%, black);
+  --card-shadow: 0 1px 3px rgb(0 0 0 / 0.14);
+  --plate-shadow: 0 1.5px 4px rgb(0 0 0 / 0.16);
+  --well-shade: rgb(0 0 0 / 0.1);
+  --well-side: rgb(0 0 0 / 0.06);
+
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --label: rgb(255 255 255 / 0.85);
+    --secondary-label: rgb(255 255 255 / 0.55);
+    --tertiary-label: rgb(255 255 255 / 0.25);
+    --separator: rgb(255 255 255 / 1);
+    --control-bg: #1e1e1e;
+    --window-bg: #323232;
+    --accent: #0a84ff;
+
+    --green: #30d158;
+    --blue: #0a84ff;
+    --orange: #ff9f0a;
+    --purple: #bf5af2;
+    --teal: #40c8e0;
+    --red: #ff453a;
+    --yellow: #ffd60a;
+    --gray: #98989d;
+
+    /* The other way round when dark, and weaker: a wash on a light card is
+       a coloured band on a near-black one. */
+    --band-top: color-mix(in srgb, color-mix(in srgb, var(--control-bg) 88%, var(--band-blue)) 95%, black);
+    --band-bottom: color-mix(in srgb, color-mix(in srgb, var(--control-bg) 95%, var(--band-blue)) 98%, black);
+    --bevel: rgb(255 255 255 / 0.1);
+    --plate-bevel: rgb(255 255 255 / 0.1);
+    --well: color-mix(in srgb, var(--window-bg) 58%, black);
+    --plate-shadow: 0 1.5px 4px rgb(0 0 0 / 0.3);
+  }
+}
+
+@supports (color: AccentColor) {
+  :root {
+    --accent: AccentColor;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--control-bg);
+  color: var(--label);
+  font: 13px/1.25 -apple-system, system-ui, "Segoe UI", Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* An app, not a document. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.window {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* MARK: Toolbar */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 12px 0 16px;
+  background: var(--control-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--separator) 10%, transparent);
+  flex: none;
+}
+
+/* Under the traffic lights, as the unified toolbar is. */
+.window[data-os="macos"] .toolbar {
+  padding-left: 88px;
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--label) 82%, transparent);
+  white-space: nowrap;
+}
+
+.toolbar-space {
+  flex: 1;
+  align-self: stretch;
+}
+
+.tool-group {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 4px;
+  border-radius: 17px;
+  background: var(--control-bg);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--separator) 18%, transparent),
+    0 1px 3px rgb(0 0 0 / 0.08);
+}
+
+.tool {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  color: var(--label);
+}
+
+.tool .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.tool:hover {
+  background: color-mix(in srgb, var(--label) 8%, transparent);
+}
+
+.tool.spinning .icon {
+  animation: spin 0.9s linear infinite;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 320px;
+  min-width: 140px;
+  flex-shrink: 1;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 17px;
+  background: var(--control-bg);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--separator) 18%, transparent),
+    0 1px 3px rgb(0 0 0 / 0.08);
+  color: var(--secondary-label);
+}
+
+.search .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.search:focus-within {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+}
+
+.search input::placeholder {
+  color: var(--secondary-label);
+}
+
+/* MARK: Notice */
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px 6px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--separator) 20%, transparent);
+  background: color-mix(in srgb, var(--window-bg) 92%, var(--accent));
+  flex: none;
+}
+
+.notice.error {
+  background: color-mix(in srgb, var(--window-bg) 88%, var(--red));
+}
+
+.notice-text {
+  flex: 1;
+  margin: 2px 0;
+  font: inherit;
+  white-space: pre-wrap;
+  max-height: 40vh;
+  overflow: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.link {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  padding: 2px 0;
+}
+
+/* MARK: The list: raised cards, a recessed well, plates on it */
+
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 14px 14px;
+}
+
+.empty {
+  margin-top: 25vh;
+  text-align: center;
+  color: var(--secondary-label);
+}
+
+.empty h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label);
+}
+
+.empty p {
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.card {
+  margin-top: 12px;
+  border-radius: 10px;
+  background: var(--control-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 42%, transparent);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+/* A soft vertical gradient and a bright hairline along the top: Aqua. */
+.band {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 49px;
+  padding: 8px 14px 7px 6px;
+  background: linear-gradient(var(--band-top), var(--band-bottom));
+  box-shadow: inset 0 1px var(--bevel);
+}
+
+.disclosure {
+  display: grid;
+  place-items: center;
+  align-self: flex-start;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--secondary-label);
+}
+
+.disclosure .icon {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.15s;
+}
+
+.disclosure[aria-expanded="false"] .icon {
+  transform: rotate(-90deg);
+}
+
+.card-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.line.tight {
+  gap: 4px;
+}
+
+.fill {
+  flex: 1;
+}
+
+.repo-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.meta {
+  color: var(--secondary-label);
+  font-size: 11px;
+}
+
+.path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--secondary-label);
+  font: 10.5px var(--mono);
+}
+
+.repo-error {
+  color: var(--red);
+  font-size: 11px;
+}
+
+.well {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--well);
+  border-top: 1px solid color-mix(in srgb, var(--separator) 30%, transparent);
+  box-shadow: inset 0 4px 4px -3px var(--well-shade), inset 5px 0 4px -4px var(--well-side),
+    inset -5px 0 4px -4px var(--well-side);
+}
+
+.plate {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-height: 50px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  background: var(--control-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 34%, transparent);
+  box-shadow: var(--plate-shadow), inset 0 1px var(--plate-bevel);
+}
+
+.plate.missing .branch,
+.plate.missing .path {
+  opacity: 0.55;
+}
+
+.plate.pending {
+  min-height: 36px;
+}
+
+/* The branch's bezel (button.rs `draw_pill`): the plate's colour at the
+   top, shading darker towards the bottom, with a bevel and a hairline
+   border. NSButton is flipped, so the native gradient runs this way up
+   whatever `draw_pill`'s comment says. */
+.branch-anchor {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 55%;
+}
+
+.branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 1.5px 5px 1.5px 7px;
+  border-radius: 5px;
+  background: linear-gradient(var(--control-bg), color-mix(in srgb, var(--control-bg) 91%, black));
+  border: 1px solid color-mix(in srgb, var(--separator) 32%, transparent);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.45);
+  color: var(--label);
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+
+.branch.static {
+  padding-right: 7px;
+}
+
+.branch:disabled {
+  color: var(--label);
+  opacity: 0.6;
+}
+
+.branch:not(:disabled):active {
+  background: linear-gradient(color-mix(in srgb, var(--control-bg) 88%, black), color-mix(in srgb, var(--control-bg) 80%, black));
+}
+
+.branch-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.branch .updown {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  color: var(--secondary-label);
+  stroke-width: 2;
+}
+
+@media (prefers-color-scheme: dark) {
+  .branch {
+    box-shadow: inset 0 1px rgb(255 255 255 / 0.12);
+  }
+}
+
+.mark {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* badge.rs: a tinted capsule, the hue's own colour on 16% of it. */
+.badge {
+  --hue: var(--gray);
+  padding: 1.5px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hue) 16%, transparent);
+  color: var(--hue);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.badge.accent { --hue: var(--accent); }
+.badge.gray { --hue: var(--gray); }
+.badge.red { --hue: var(--red); }
+.badge.green { --hue: var(--green); }
+.badge.blue { --hue: var(--blue); }
+.badge.orange { --hue: var(--orange); }
+.badge.purple { --hue: var(--purple); }
+.badge.teal { --hue: var(--teal); }
+.badge.yellow { --hue: var(--yellow); }
+
+/* Dark rations colour: against near-black a stack of rows turns hues into
+   a repeating pattern, so only uncommitted work and a missing folder get
+   any (badges.ts `Emphasis`). */
+@media (prefers-color-scheme: dark) {
+  .badge.quiet {
+    background: color-mix(in srgb, var(--label) 6%, transparent);
+    color: color-mix(in srgb, var(--label) 62%, transparent);
+  }
+  .badge.notable {
+    background: color-mix(in srgb, var(--label) 10%, transparent);
+    color: var(--label);
+  }
+  .badge.attention {
+    --hue: color-mix(in srgb, var(--orange) 70%, var(--label));
+    background: color-mix(in srgb, var(--hue) 14%, transparent);
+  }
+  .badge.alarm {
+    --hue: color-mix(in srgb, var(--red) 70%, var(--label));
+    background: color-mix(in srgb, var(--hue) 14%, transparent);
+  }
+}
+
+.busy-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--secondary-label);
+  font-size: 11px;
+}
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--secondary-label);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.actions .gap {
+  width: 8px;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--secondary-label);
+}
+
+.icon-button .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.icon-button.copy .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--label);
+}
+
+.icon-button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--label) 10%, transparent);
+}
+
+.icon-button:disabled {
+  color: var(--tertiary-label);
+}
+
+/* cells.rs: red in light. Dark keeps the other icons' grey, where a red
+   trash per row would be a column of the loudest colour in the window. */
+.icon-button.danger:not(:disabled) {
+  color: var(--red);
+}
+
+@media (prefers-color-scheme: dark) {
+  .icon-button.danger:not(:disabled) {
+    color: var(--secondary-label);
+  }
+  .icon-button.danger:hover:not(:disabled) {
+    color: var(--red);
+  }
+}
+
+.icon-button:focus-visible,
+.tool:focus-visible,
+.disclosure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* MARK: Keyboard selection */
+
+/* rowview.rs `draw_selection`: an accent outline with a glow, dimmed when
+   dark so it does not bloom. */
+.list:focus,
+.list:focus-visible {
+  outline: none;
+}
+
+.plate.selected,
+.band.selected {
+  outline: 2px solid color-mix(in srgb, var(--accent) 90%, transparent);
+  outline-offset: -1px;
+  box-shadow: var(--plate-shadow), 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.band.selected {
+  outline-offset: -2px;
+  border-radius: 9px 9px 0 0;
+}
+
+.card.closed .band.selected {
+  border-radius: 9px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .plate.selected,
+  .band.selected {
+    outline-color: color-mix(in srgb, var(--accent) 75%, transparent);
+    box-shadow: var(--plate-shadow), 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+}
+
+/* MARK: Branch picker */
+
+.popover {
+  position: fixed;
+  z-index: 10;
+  width: 300px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--control-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 20%, transparent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18), 0 1px 3px rgb(0 0 0 / 0.12);
+  font-size: 13px;
+}
+
+/* NSPopover's: it scales up out of its button as it fades in, and back. */
+.popover {
+  animation: popover-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+
+.popover.closing {
+  animation: popover-out 120ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes popover-out {
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popover,
+  .popover.closing {
+    animation-duration: 1ms;
+  }
+}
+
+.popover-field {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--separator) 25%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: inherit;
+  outline: none;
+}
+
+.popover-field:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.popover-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  /* Set by the picker to what fits the window (`LIST_MAX` at most). */
+  max-height: var(--list-max, 260px);
+  overflow-y: auto;
+}
+
+.popover-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 2px;
+  border-radius: 5px;
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+
+.popover-list li.selected {
+  background: var(--accent);
+  color: white;
+}
+
+.popover-list li b {
+  font-weight: 700;
+}
+
+.popover-list .check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+}
+
+.popover-list .check .icon {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2;
+}
+
+.branch-option {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Inline, so a long name still ends in an ellipsis. */
+.branch-option .mark {
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.popover-empty {
+  color: var(--secondary-label);
+  font-family: inherit !important;
+}
+
+/* MARK: Card header actions, moving cards */
+
+.band-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+}
+
+.band .icon-button .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.push.small {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--label) 8%, var(--control-bg));
+}
+
+.push:disabled {
+  color: var(--tertiary-label);
+}
+
+.card.dragging {
+  opacity: 0.45;
+}
+
+/* Where a dragged card would land: a bar in the gap, in the accent, drawn
+   as a shadow so the card keeps clipping its corners. */
+.card.drop-before {
+  box-shadow: var(--card-shadow), 0 -7px 0 -4px var(--accent);
+}
+
+.card.drop-after {
+  box-shadow: var(--card-shadow), 0 7px 0 -4px var(--accent);
+}
+
+/* Folders dragged over the window from outside: dropping adds them. */
+.list.files-over {
+  outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -3px;
+}
+
+.tool-group.single {
+  padding: 0 1px;
+}
+
+/* MARK: Sheets */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 52px;
+  background: rgb(0 0 0 / 0.12);
+}
+
+.sheet {
+  width: 360px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--window-bg);
+  border: 1px solid color-mix(in srgb, var(--separator) 18%, transparent);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.25);
+  text-align: center;
+  animation: sheet-in 0.18s ease-out;
+}
+
+.sheet-icon {
+  width: 40px;
+  height: 40px;
+  color: var(--orange);
+  margin-bottom: 6px;
+}
+
+.sheet h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sheet p {
+  margin: 0 0 18px;
+  font-size: 11px;
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+
+.sheet-buttons {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+
+.push {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 0;
+  background: color-mix(in srgb, var(--label) 9%, var(--control-bg));
+  box-shadow: 0 0.5px 1px rgb(0 0 0 / 0.15);
+  color: var(--label);
+  font-size: 13px;
+}
+
+.push.default {
+  background: var(--accent);
+  color: white;
+}
+
+.push.destructive {
+  background: color-mix(in srgb, var(--red) 12%, var(--control-bg));
+  color: var(--red);
+}
+
+.push:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 0;
+}
+
+/* Forms: labels right-aligned in one column, fields in the next, as an
+   NSAlert's accessory form is laid out (wtm-toolkit `Form`). */
+.form-sheet {
+  width: 520px;
+  text-align: left;
+}
+
+.form-sheet h2 {
+  margin-bottom: 4px;
+}
+
+.sheet-subtitle {
+  color: var(--secondary-label) !important;
+  font: 11px var(--mono) !important;
+  margin-bottom: 12px !important;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 10px;
+  align-items: start;
+  margin: 14px 0 18px;
+}
+
+.form-label {
+  padding-top: 4px;
+  text-align: right;
+  font-size: 13px;
+}
+
+.form-field {
+  min-width: 0;
+}
+
+.text-field {
+  width: 100%;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--separator) 22%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: 13px -apple-system, system-ui, sans-serif;
+  outline: none;
+}
+
+.text-field:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.text-field:disabled {
+  color: var(--tertiary-label);
+}
+
+#nw-branch,
+#nw-base {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.form-note,
+.form-hint {
+  margin: 4px 0 0 !important;
+  font-size: 11px !important;
+  color: var(--secondary-label) !important;
+}
+
+.form-note {
+  min-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.form-note.error {
+  color: var(--red) !important;
+}
+
+.field-with-button {
+  display: flex;
+  gap: 8px;
+}
+
+.field-with-button .push {
+  height: 24px;
+  flex: none;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--label) 8%, var(--control-bg));
+}
+
+.segmented button {
+  height: 20px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: 12px;
+}
+
+.segmented button.on {
+  background: var(--control-bg);
+  box-shadow: 0 0.5px 2px rgb(0 0 0 / 0.2);
+}
+
+.popup {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--separator) 22%, transparent);
+  background: var(--control-bg);
+  color: var(--label);
+  font: 13px -apple-system, system-ui, sans-serif;
+}
+
+.sheet-buttons.row {
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.sheet-buttons.row .push {
+  min-width: 80px;
+}
+
+.push.default:disabled {
+  background: color-mix(in srgb, var(--accent) 35%, var(--control-bg));
+  color: rgb(255 255 255 / 0.8);
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(-12px);
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .tool.spinning .icon {
+    animation-duration: 2.5s;
+  }
+}

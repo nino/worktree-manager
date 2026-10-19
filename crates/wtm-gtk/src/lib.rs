@@ -19,7 +19,6 @@ mod elements;
 mod list;
 mod menus;
 mod panels;
-mod platform;
 mod popover;
 mod rich;
 mod rows;
@@ -34,7 +33,7 @@ pub mod testing;
 #[doc(hidden)]
 pub use gtk;
 
-pub use platform::{app_dirs, LinuxPlatform};
+pub use wtm_os::{app_dirs, LinuxPlatform};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};

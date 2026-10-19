@@ -28,9 +28,7 @@ mod look;
 mod menu;
 mod pane;
 mod panel;
-mod platform;
 mod popover;
-mod shell;
 mod util;
 
 use std::rc::Rc;
@@ -46,7 +44,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use wtm_toolkit::{Program, Runtime, Toolkit};
 
-pub use platform::{app_dirs, WindowsPlatform};
+pub use wtm_os::{app_dirs, WindowsPlatform};
 
 /// The Win32 toolkit. `Win32.run(program)` never returns.
 pub struct Win32;

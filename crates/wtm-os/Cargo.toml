@@ -1,0 +1,13 @@
+[package]
+name = "wtm-os"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Each OS's wtm-platform services (terminals, file managers, app directories), free of any UI toolkit"
+
+[dependencies]
+wtm-platform = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+serde_json = { workspace = true }
