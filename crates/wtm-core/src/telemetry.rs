@@ -636,11 +636,24 @@ impl Reporter {
 
 static LOG_SINK: OnceLock<Arc<Reporter>> = OnceLock::new();
 
+/// Records logged before there was a reporter to take them: `App::new`
+/// reads the config and the snapshot before it builds one. Only a few are
+/// kept.
+static EARLY: Mutex<Vec<(log::Level, String, String)>> = Mutex::new(Vec::new());
+
+const MAX_EARLY: usize = 10;
+
 /// Pass the warnings and errors this app logs to `reporter` from now on
-/// (which still sends nothing unless reports are on). The executable's
-/// logger calls [`forward`] with every record.
+/// (which still sends nothing unless reports are on), starting with any
+/// logged before this call. The executable's logger calls [`forward`] with
+/// every record.
 pub fn forward_logs(reporter: Arc<Reporter>) {
-    let _ = LOG_SINK.set(reporter);
+    if LOG_SINK.set(reporter.clone()).is_err() {
+        return;
+    }
+    for (level, target, message) in std::mem::take(&mut *EARLY.lock()) {
+        reporter.log(level, &target, &message);
+    }
 }
 
 /// Whether a log record goes to PostHog: a warning or an error from one of
@@ -657,8 +670,15 @@ pub fn forward(record: &log::Record) {
     if !reportable(record.level(), record.target()) {
         return;
     }
-    if let Some(reporter) = LOG_SINK.get() {
-        reporter.log(record.level(), record.target(), &record.args().to_string());
+    let message = record.args().to_string();
+    match LOG_SINK.get() {
+        Some(reporter) => reporter.log(record.level(), record.target(), &message),
+        None => {
+            let mut early = EARLY.lock();
+            if early.len() < MAX_EARLY {
+                early.push((record.level(), record.target().to_string(), message));
+            }
+        }
     }
 }
 
