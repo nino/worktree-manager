@@ -156,7 +156,7 @@ impl Settings {
                     on_select: v.map(|i| Msg::Settings(SettingsMsg::Reports(i))),
                 },
             )
-            .hint("Sends crashes and the error messages this window shows (which can name branches and files) to the developer through PostHog, with your home folder shortened to ~, plus the app version and OS. Never your code or file contents.");
+            .hint("Sends crashes, the error messages this window shows and the app's own warnings (which can name branches and files) to the developer through PostHog, with your home folder shortened to ~, plus the app version and OS. Never your code or file contents.");
         Panel {
             key: KEY.into(),
             title: "Settings".into(),

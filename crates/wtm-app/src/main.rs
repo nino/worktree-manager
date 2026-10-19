@@ -9,13 +9,41 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// env_logger for the terminal, and every record also offered to the error
+/// reporter, which sends this app's warnings when reports are on. Warnings
+/// are always let through to it, whatever `RUST_LOG` hides from the terminal.
+struct Logger(env_logger::Logger);
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn || self.0.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.0.matches(record) {
+            self.0.log(record);
+        }
+        wtm_core::telemetry::forward(record);
+    }
+
+    fn flush(&self) {
+        self.0.flush();
+    }
+}
+
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    log::set_max_level(logger.filter().max(log::LevelFilter::Warn));
+    if log::set_boxed_logger(Box::new(Logger(logger))).is_err() {
+        eprintln!("Worktree Manager: a logger was already set");
+    }
 
     #[cfg(target_os = "macos")]
     {
         let app = wtm_core::App::new(Arc::new(wtm_macos::MacPlatform), wtm_macos::app_dirs());
         wtm_core::telemetry::install_panic_hook(app.reporter());
+        wtm_core::telemetry::forward_logs(app.reporter());
         // Versions before `ui-state.json` had AppKit keep the window's frame;
         // the first launch after the update opens it there.
         let state = app.ui_state();
@@ -35,6 +63,7 @@ fn main() {
     {
         let app = wtm_core::App::new(Arc::new(wtm_gtk::LinuxPlatform), wtm_gtk::app_dirs());
         wtm_core::telemetry::install_panic_hook(app.reporter());
+        wtm_core::telemetry::forward_logs(app.reporter());
         // Releases are built for macOS only, so there is nothing to update to.
         wtm_ui::run(wtm_gtk::Gtk, app, Rc::new(wtm_platform::NoUpdater));
     }
@@ -46,6 +75,7 @@ fn main() {
             wtm_windows::app_dirs(),
         );
         wtm_core::telemetry::install_panic_hook(app.reporter());
+        wtm_core::telemetry::forward_logs(app.reporter());
         wtm_ui::run(wtm_windows::Win32, app, Rc::new(wtm_platform::NoUpdater));
     }
 

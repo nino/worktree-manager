@@ -477,11 +477,18 @@ impl App {
         let repos = self.model().repos.clone();
         let path = self.inner.dirs.config_dir.join("snapshot.json");
         self.inner.rt.spawn(async move {
-            if let Ok(json) = serde_json::to_vec(&repos) {
-                let tmp = path.with_extension("json.tmp");
-                if tokio::fs::write(&tmp, json).await.is_ok() {
-                    let _ = tokio::fs::rename(&tmp, &path).await;
-                }
+            // A snapshot that fails to save costs only the next launch's
+            // instant list, so nothing is shown; the warning is the record.
+            let json = match serde_json::to_vec(&repos) {
+                Ok(json) => json,
+                Err(e) => return warn!("cannot serialise the snapshot: {e}"),
+            };
+            let tmp = path.with_extension("json.tmp");
+            if let Err(e) = tokio::fs::write(&tmp, json).await {
+                return warn!("cannot write {}: {e}", tmp.display());
+            }
+            if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+                warn!("cannot replace {}: {e}", path.display());
             }
         });
     }
@@ -562,9 +569,21 @@ impl App {
                 .reporter
                 .error(&format!("Listing failed: {error}"));
         }
-        let branches = branches.unwrap_or_default();
-        let (candidates, remote_branches) = refs.unwrap_or_default();
-        let remotes = remotes.unwrap_or_default();
+        // Only the worktree list's failure is shown. These leave the branch
+        // picker and the New Worktree sheet short of names, with nothing on
+        // screen to say why.
+        let branches = branches.unwrap_or_else(|e| {
+            warn!("listing branches failed: {}", e.detail());
+            Vec::new()
+        });
+        let (candidates, remote_branches) = refs.unwrap_or_else(|e| {
+            warn!("listing refs failed: {}", e.detail());
+            Default::default()
+        });
+        let remotes = remotes.unwrap_or_else(|e| {
+            warn!("listing remotes failed: {}", e.detail());
+            Vec::new()
+        });
         self.update(|m| {
             // A creation whose branch git now lists has landed.
             m.pending.retain(|p| {
@@ -914,8 +933,11 @@ impl App {
 }
 
 fn load_snapshot(dirs: &AppDirs) -> Option<Vec<RepoNode>> {
-    let text = std::fs::read_to_string(dirs.config_dir.join("snapshot.json")).ok()?;
-    serde_json::from_str(&text).ok()
+    let path = dirs.config_dir.join("snapshot.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text)
+        .map_err(|e| warn!("ignoring {}: {e}", path.display()))
+        .ok()
 }
 
 /// One line describing the outcome of adding repositories. Any rejected path

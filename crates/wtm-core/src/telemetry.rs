@@ -13,6 +13,12 @@
 //! anonymous id is a random UUID written beside the config the first time an
 //! event is actually sent, and deleted when the setting is turned off.
 //!
+//! Besides crashes and the errors the app shows, the warnings and errors this
+//! app's own crates log go too ([`forward`]): they are where the app says it
+//! could not do something the user never sees fail, such as saving the
+//! snapshot or listing a repo's branches, and are what a later look at
+//! PostHog has to go on.
+//!
 //! Every event sets `$process_person_profile: false`, so PostHog makes no
 //! person profiles, and there is no session replay: this is a desktop app
 //! with no web view to record.
@@ -47,6 +53,11 @@ pub const VERSION: &str = match option_env!("WTM_VERSION") {
 
 /// At most this many events leave in any rolling hour.
 pub const MAX_PER_HOUR: usize = 30;
+
+/// Logged warnings have their own, smaller allowance, so that a laptop
+/// offline for an hour, whose every background fetch warns, cannot use up
+/// the errors' one.
+pub const MAX_LOGGED_PER_HOUR: usize = 10;
 
 /// How long a panic report may hold up the crash.
 const PANIC_WAIT: Duration = Duration::from_secs(2);
@@ -404,6 +415,7 @@ pub struct Reporter {
     id_path: PathBuf,
     id: Mutex<Option<String>>,
     limiter: Mutex<RateLimiter>,
+    log_limiter: Mutex<RateLimiter>,
     home: String,
     transport: Arc<dyn Transport>,
 }
@@ -424,6 +436,10 @@ impl Reporter {
             id_path,
             id: Mutex::new(None),
             limiter: Mutex::new(RateLimiter::new(MAX_PER_HOUR, Duration::from_secs(3600))),
+            log_limiter: Mutex::new(RateLimiter::new(
+                MAX_LOGGED_PER_HOUR,
+                Duration::from_secs(3600),
+            )),
             home,
             transport,
         }
@@ -437,6 +453,17 @@ impl Reporter {
         let first = !self.synced.swap(true, Ordering::AcqRel);
         if on && !was && self.keys.is_some() {
             info!("error reports are on");
+            // At launch, `started` follows. Turned on while running, this is
+            // the event that shows reports arrive without a restart.
+            if !first {
+                self.send(
+                    "error reports turned on",
+                    Map::new(),
+                    "error reports turned on",
+                    &self.limiter,
+                    false,
+                );
+            }
         }
         if !on && (was || first) {
             // Under the id's lock, which `distinct_id` checks the setting
@@ -460,7 +487,13 @@ impl Reporter {
 
     /// The app has started.
     pub fn started(&self) {
-        self.send("app started", Map::new(), "app started", false);
+        self.send(
+            "app started",
+            Map::new(),
+            "app started",
+            &self.limiter,
+            false,
+        );
     }
 
     /// An error the user was shown.
@@ -475,8 +508,29 @@ impl Reporter {
             "$exception",
             exception_properties(&kind, &message, true),
             &fingerprint,
+            &self.limiter,
             false,
         );
+    }
+
+    /// A warning or error this app logged ([`forward`]). Grouped by the
+    /// module that logged it, since a logged message has no `Push failed:`
+    /// head to group by.
+    pub fn log(&self, level: log::Level, target: &str, message: &str) {
+        if self.active().is_none() {
+            return;
+        }
+        let message = scrub(message, &self.home);
+        let mut props = exception_properties(target, &message, true);
+        let level = if level == log::Level::Error {
+            "error"
+        } else {
+            "warning"
+        };
+        props.insert("$exception_level".into(), level.into());
+        props.insert("log_target".into(), target.into());
+        let fingerprint = format!("{target}\n{message}");
+        self.send("$exception", props, &fingerprint, &self.log_limiter, false);
     }
 
     /// A panic, from the panic hook: sent before returning, for at most
@@ -494,19 +548,26 @@ impl Reporter {
         if let Some(thread) = thread {
             props.insert("thread".into(), thread.into());
         }
-        self.send("$exception", props, &value, true);
+        self.send("$exception", props, &value, &self.limiter, true);
     }
 
-    fn send(&self, event: &str, props: Map<String, Value>, fingerprint: &str, panicking: bool) {
+    fn send(
+        &self,
+        event: &str,
+        props: Map<String, Value>,
+        fingerprint: &str,
+        limiter: &Mutex<RateLimiter>,
+        panicking: bool,
+    ) {
         let Some(keys) = self.active() else {
             return;
         };
         let allowed = if panicking {
-            self.limiter
+            limiter
                 .try_lock()
                 .is_some_and(|mut l| l.allow(fingerprint, Instant::now()))
         } else {
-            self.limiter.lock().allow(fingerprint, Instant::now())
+            limiter.lock().allow(fingerprint, Instant::now())
         };
         if !allowed {
             return;
@@ -568,6 +629,36 @@ impl Reporter {
         };
         *slot = Some(id.clone());
         Some(id)
+    }
+}
+
+// MARK: Logged warnings
+
+static LOG_SINK: OnceLock<Arc<Reporter>> = OnceLock::new();
+
+/// Pass the warnings and errors this app logs to `reporter` from now on
+/// (which still sends nothing unless reports are on). The executable's
+/// logger calls [`forward`] with every record.
+pub fn forward_logs(reporter: Arc<Reporter>) {
+    let _ = LOG_SINK.set(reporter);
+}
+
+/// Whether a log record goes to PostHog: a warning or an error from one of
+/// this app's crates. Not other crates', whose messages this app does not
+/// control, and not this module's own, which are about sending reports and
+/// would report themselves in a loop.
+pub fn reportable(level: log::Level, target: &str) -> bool {
+    level <= log::Level::Warn && target.starts_with("wtm_") && !target.starts_with(module_path!())
+}
+
+/// Hand one log record to the reporter set by [`forward_logs`], if it is
+/// [`reportable`].
+pub fn forward(record: &log::Record) {
+    if !reportable(record.level(), record.target()) {
+        return;
+    }
+    if let Some(reporter) = LOG_SINK.get() {
+        reporter.log(record.level(), record.target(), &record.args().to_string());
     }
 }
 
@@ -817,6 +908,71 @@ mod tests {
         assert_eq!(rec2.wait_for(1)[0].1["distinct_id"], id.as_str());
         again.set_enabled(false);
         assert!(!dir.join("analytics-id").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turning_reports_on_while_running_says_so_and_launching_does_not() {
+        let dir = scratch("toggle");
+        let (r, rec) = reporter(keys(), &dir);
+        // At launch: `started` is the event, not this.
+        r.set_enabled(true);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(rec.0.lock().is_empty());
+        r.set_enabled(false);
+        r.set_enabled(true);
+        let sent = rec.wait_for(1);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1["event"], "error reports turned on");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_this_apps_warnings_are_reported() {
+        use log::Level;
+        assert!(reportable(Level::Warn, "wtm_core::app"));
+        assert!(reportable(Level::Error, "wtm_macos::updater"));
+        assert!(!reportable(Level::Info, "wtm_core::app"));
+        assert!(!reportable(Level::Warn, "notify::fsevent"));
+        assert!(
+            !reportable(Level::Warn, "wtm_core::telemetry"),
+            "a failed send would report itself"
+        );
+    }
+
+    #[test]
+    fn a_logged_warning_is_sent_as_a_warning_named_by_its_module() {
+        let dir = scratch("log");
+        let (r, rec) = reporter(keys(), &dir);
+        r.log(log::Level::Warn, "wtm_core::app", "off: not sent");
+        r.set_enabled(true);
+        r.log(log::Level::Warn, "wtm_core::app", "cannot save /home/ada/x");
+        let sent = rec.wait_for(1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(rec.0.lock().len(), 1);
+        let p = &sent[0].1["properties"];
+        assert_eq!(p["$exception_level"], "warning");
+        assert_eq!(p["log_target"], "wtm_core::app");
+        assert_eq!(p["$exception_list"][0]["type"], "wtm_core::app");
+        assert_eq!(p["$exception_list"][0]["value"], "cannot save ~/x");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn warnings_cannot_use_up_the_errors_allowance() {
+        let dir = scratch("budget");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(true);
+        for i in 0..MAX_LOGGED_PER_HOUR + 5 {
+            r.log(log::Level::Warn, "wtm_core::fetcher", &format!("fetch {i}"));
+        }
+        r.error("Push failed: rejected");
+        let sent = rec.wait_for(MAX_LOGGED_PER_HOUR + 1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(rec.0.lock().len(), MAX_LOGGED_PER_HOUR + 1);
+        assert!(sent
+            .iter()
+            .any(|(_, b)| b["properties"]["$exception_list"][0]["type"] == "Push failed"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

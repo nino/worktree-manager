@@ -611,8 +611,14 @@ fn swap(new_app: &Path, installed: &Path) -> Result<(), String> {
     std::fs::rename(installed, &old)
         .map_err(|e| format!("could not move the installed app aside: {e}"))?;
     if let Err(e) = std::fs::rename(&staged, installed) {
-        // Put back what was there.
-        let _ = std::fs::rename(&old, installed);
+        // Put back what was there. If that fails too, the app is gone
+        // from where it was installed, which no notice can tell anyone.
+        if let Err(back) = std::fs::rename(&old, installed) {
+            log::error!(
+                "updates: could not put the old app back at {}: {back}",
+                installed.display()
+            );
+        }
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("could not install the update: {e}"));
     }
@@ -766,7 +772,10 @@ pub fn restart(mtm: MainThreadMarker) {
         pid = std::process::id(),
         app = shell_quote(&install.bundle.to_string_lossy()),
     );
-    let _ = Command::new("/bin/sh").args(["-c", &script]).spawn();
+    if let Err(e) = Command::new("/bin/sh").args(["-c", &script]).spawn() {
+        // The app still quits below; the new copy just has to be opened by hand.
+        log::warn!("updates: cannot schedule the relaunch: {e}");
+    }
     // On the next turn: this runs from the program's update, and quitting
     // there would leave `applicationWillTerminate:` unable to drain the
     // window state into the program before the process exits.
