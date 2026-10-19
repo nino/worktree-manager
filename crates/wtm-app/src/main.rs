@@ -20,9 +20,7 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
-        if self.0.matches(record) {
-            self.0.log(record);
-        }
+        self.0.log(record);
         wtm_core::telemetry::forward(record);
     }
 

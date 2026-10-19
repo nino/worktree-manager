@@ -23,7 +23,9 @@ pub async fn fetch_all(repos: Vec<RepoConfig>) -> usize {
             match fetch_repo(&repo.path).await {
                 Ok(()) => true,
                 Err(e) => {
-                    warn!("auto-fetch: {} failed: {e}", repo.name);
+                    // Outside `wtm_*`, so not an error report: offline,
+                    // every fetch fails.
+                    warn!(target: "fetch", "auto-fetch: {} failed: {e}", repo.name);
                     false
                 }
             }

@@ -456,10 +456,13 @@ impl Reporter {
             // At launch, `started` follows. Turned on while running, this is
             // the event that shows reports arrive without a restart.
             if !first {
+                // Each time, not once an hour: turning reports back on
+                // starts a new anonymous id, which is worth seeing arrive.
+                let nonce = uuid::Uuid::new_v4().to_string();
                 self.send(
                     "error reports turned on",
                     Map::new(),
-                    "error reports turned on",
+                    &format!("error reports turned on\n{nonce}"),
                     &self.limiter,
                     false,
                 );
@@ -477,6 +480,11 @@ impl Reporter {
                 Err(e) => warn!("cannot remove {}: {e}", self.id_path.display()),
             }
         }
+    }
+
+    /// Whether anything would be sent now.
+    pub fn is_on(&self) -> bool {
+        self.active().is_some()
     }
 
     fn active(&self) -> Option<&Keys> {
@@ -517,7 +525,7 @@ impl Reporter {
     /// module that logged it, since a logged message has no `Push failed:`
     /// head to group by.
     pub fn log(&self, level: log::Level, target: &str, message: &str) {
-        if self.active().is_none() {
+        if !self.is_on() {
             return;
         }
         let message = scrub(message, &self.home);
@@ -530,7 +538,14 @@ impl Reporter {
         props.insert("$exception_level".into(), level.into());
         props.insert("log_target".into(), target.into());
         let fingerprint = format!("{target}\n{message}");
-        self.send("$exception", props, &fingerprint, &self.log_limiter, false);
+        // Errors are rare and serious enough to share the errors' allowance
+        // rather than wait behind routine warnings.
+        let limiter = if level == "error" {
+            &self.limiter
+        } else {
+            &self.log_limiter
+        };
+        self.send("$exception", props, &fingerprint, limiter, false);
     }
 
     /// A panic, from the panic hook: sent before returning, for at most
@@ -651,7 +666,10 @@ pub fn forward_logs(reporter: Arc<Reporter>) {
     if LOG_SINK.set(reporter.clone()).is_err() {
         return;
     }
-    for (level, target, message) in std::mem::take(&mut *EARLY.lock()) {
+    // `forward` checks the sink again under this lock, so nothing can be
+    // pushed after this takes the buffer.
+    let early = std::mem::take(&mut *EARLY.lock());
+    for (level, target, message) in early {
         reporter.log(level, &target, &message);
     }
 }
@@ -670,15 +688,28 @@ pub fn forward(record: &log::Record) {
     if !reportable(record.level(), record.target()) {
         return;
     }
-    let message = record.args().to_string();
-    match LOG_SINK.get() {
-        Some(reporter) => reporter.log(record.level(), record.target(), &message),
-        None => {
-            let mut early = EARLY.lock();
-            if early.len() < MAX_EARLY {
-                early.push((record.level(), record.target().to_string(), message));
-            }
+    if let Some(reporter) = LOG_SINK.get() {
+        // Most people leave reports off; skip formatting the message then.
+        if reporter.is_on() {
+            reporter.log(record.level(), record.target(), &record.args().to_string());
         }
+        return;
+    }
+    let mut early = EARLY.lock();
+    match LOG_SINK.get() {
+        // Set while this waited for the lock: the buffer is already drained.
+        Some(reporter) => {
+            drop(early);
+            reporter.log(record.level(), record.target(), &record.args().to_string());
+        }
+        None if early.len() < MAX_EARLY => {
+            early.push((
+                record.level(),
+                record.target().to_string(),
+                record.args().to_string(),
+            ));
+        }
+        None => {}
     }
 }
 
@@ -993,6 +1024,80 @@ mod tests {
         assert!(sent
             .iter()
             .any(|(_, b)| b["properties"]["$exception_list"][0]["type"] == "Push failed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The only test that touches the global sink, which can be set once.
+    #[test]
+    fn records_logged_before_the_reporter_exists_are_sent_once_it_does() {
+        let record = |level, target: &str, text: &str| {
+            let args = format_args!("{text}");
+            forward(
+                &log::Record::builder()
+                    .level(level)
+                    .target(target)
+                    .args(args)
+                    .build(),
+            );
+        };
+        for i in 0..MAX_EARLY + 2 {
+            record(log::Level::Error, "wtm_core::app", &format!("early {i}"));
+        }
+        record(log::Level::Info, "wtm_core::app", "not a warning");
+        let dir = scratch("sink");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(true);
+        forward_logs(Arc::new(r));
+        record(log::Level::Error, "wtm_core::app", "late");
+        record(log::Level::Warn, "notify", "not ours");
+        let sent = rec.wait_for(MAX_EARLY + 1);
+        std::thread::sleep(Duration::from_millis(50));
+        let values: Vec<String> = rec
+            .0
+            .lock()
+            .iter()
+            .map(|(_, b)| b["properties"]["$exception_list"][0]["value"].to_string())
+            .collect();
+        assert_eq!(values.len(), MAX_EARLY + 1, "{values:?}");
+        assert!(values.iter().any(|v| v.contains("early 0")));
+        assert!(!values
+            .iter()
+            .any(|v| v.contains(&format!("early {MAX_EARLY}"))));
+        assert!(sent
+            .iter()
+            .any(|(_, b)| b["properties"]["$exception_level"] == "error"));
+        assert!(values.iter().any(|v| v.contains("late")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_logged_error_does_not_wait_behind_warnings() {
+        let dir = scratch("errors");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(true);
+        for i in 0..MAX_LOGGED_PER_HOUR {
+            r.log(log::Level::Warn, "wtm_core::fetcher", &format!("w {i}"));
+        }
+        r.log(log::Level::Error, "wtm_macos::updater", "lost the app");
+        rec.wait_for(MAX_LOGGED_PER_HOUR + 1);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(rec
+            .0
+            .lock()
+            .iter()
+            .any(|(_, b)| b["properties"]["$exception_list"][0]["value"] == "lost the app"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turning_reports_on_again_says_so_again() {
+        let dir = scratch("again");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(false);
+        r.set_enabled(true);
+        r.set_enabled(false);
+        r.set_enabled(true);
+        assert_eq!(rec.wait_for(2).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

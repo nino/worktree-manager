@@ -483,12 +483,21 @@ impl App {
                 Ok(json) => json,
                 Err(e) => return warn!("cannot serialise the snapshot: {e}"),
             };
-            let tmp = path.with_extension("json.tmp");
-            if let Err(e) = tokio::fs::write(&tmp, json).await {
-                return warn!("cannot write {}: {e}", tmp.display());
-            }
-            if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-                warn!("cannot replace {}: {e}", path.display());
+            // A refresh of every repo saves once per repo, concurrently, so
+            // each save writes its own file: sharing one would let a save
+            // rename away the file another is still writing.
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = path.with_extension(format!("json.{n}.tmp"));
+            let saved = match tokio::fs::write(&tmp, json).await {
+                Err(e) => Err(format!("cannot write {}: {e}", tmp.display())),
+                Ok(()) => tokio::fs::rename(&tmp, &path)
+                    .await
+                    .map_err(|e| format!("cannot replace {}: {e}", path.display())),
+            };
+            if let Err(message) = saved {
+                warn!("{message}");
+                let _ = tokio::fs::remove_file(&tmp).await;
             }
         });
     }
@@ -569,19 +578,27 @@ impl App {
                 .reporter
                 .error(&format!("Listing failed: {error}"));
         }
-        // Only the worktree list's failure is shown. These leave the branch
-        // picker and the New Worktree sheet short of names, with nothing on
-        // screen to say why.
+        // Only the worktree list's failure is shown. When it worked, these
+        // leave the branch picker and the New Worktree sheet short of names
+        // with nothing on screen to say why; when it failed, they fail for
+        // the same reason, already reported.
+        let unseen = error.is_none();
         let branches = branches.unwrap_or_else(|e| {
-            warn!("listing branches failed: {}", e.detail());
+            if unseen {
+                warn!("listing branches failed: {}", e.detail());
+            }
             Vec::new()
         });
         let (candidates, remote_branches) = refs.unwrap_or_else(|e| {
-            warn!("listing refs failed: {}", e.detail());
+            if unseen {
+                warn!("listing refs failed: {}", e.detail());
+            }
             Default::default()
         });
         let remotes = remotes.unwrap_or_else(|e| {
-            warn!("listing remotes failed: {}", e.detail());
+            if unseen {
+                warn!("listing remotes failed: {}", e.detail());
+            }
             Vec::new()
         });
         self.update(|m| {
@@ -905,7 +922,9 @@ impl App {
                 fetch_all_remotes(&repo.path).await
             };
             if let Err(e) = fetched {
-                warn!("fetching {}: {}", repo.name, e.detail());
+                // Outside `wtm_*`, so not an error report: offline, every
+                // fetch fails.
+                warn!(target: "fetch", "fetching {}: {}", repo.name, e.detail());
                 return;
             }
             // Most openings find nothing new, and a re-list costs a git

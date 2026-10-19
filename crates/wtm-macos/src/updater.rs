@@ -349,15 +349,13 @@ fn report(
             tone: Tone::Info,
         }),
         Ok(_) => {}
-        Err(message) => {
-            log::warn!("updates: {message}");
-            if announce {
-                app.dispatch(Action::ShowNotice {
-                    text: format!("Could not check for updates: {message}"),
-                    tone: Tone::Error,
-                });
-            }
-        }
+        // Announced, the notice is the report; a background check that
+        // fails is seen by nobody, so it is logged as a warning instead.
+        Err(message) if announce => app.dispatch(Action::ShowNotice {
+            text: format!("Could not check for updates: {message}"),
+            tone: Tone::Error,
+        }),
+        Err(message) => log::warn!("updates: {message}"),
     }
 }
 
@@ -670,7 +668,8 @@ pub fn install_or_restart(app: &App, mtm: MainThreadMarker) {
                     INSTALLING.set(false);
                     let cancelled = message == CANCELLED;
                     if !cancelled {
-                        log::warn!("updates: {message}");
+                        // Not a warning: the error notice below is reported.
+                        log::info!("updates: {message}");
                     }
                     // The download stays staged either way, so the button is
                     // still there to try again.
