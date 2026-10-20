@@ -13,13 +13,13 @@
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, Sel};
 use objc2::{
     define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSAccessibility, NSBezierPath, NSButton, NSColor, NSEvent, NSGradient, NSImage, NSTrackingArea,
-    NSTrackingAreaOptions, NSView,
+    NSAccessibility, NSActionCell, NSBezierPath, NSButton, NSButtonCell, NSCell, NSColor, NSEvent,
+    NSGradient, NSImage, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
@@ -144,6 +144,13 @@ define_class!(
     pub struct PillButton;
 
     impl PillButton {
+        /// AppKit makes the button's cell from this, including through
+        /// `buttonWithTitle:`.
+        #[unsafe(method(cellClass))]
+        fn cell_class() -> &'static AnyClass {
+            PillCell::class()
+        }
+
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, dirty: NSRect) {
             draw_pill(self.bounds(), self.isEnabled(), self.isHighlighted());
@@ -167,6 +174,31 @@ define_class!(
         fn intrinsic_content_size(&self) -> NSSize {
             let s: NSSize = unsafe { msg_send![super(self), intrinsicContentSize] };
             NSSize::new(s.width + 2.0 * PILL_PAD_X, s.height + 2.0 * PILL_PAD_Y)
+        }
+    }
+);
+
+define_class!(
+    #[unsafe(super(NSButtonCell, NSActionCell, NSCell, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "WTMPillCell"]
+    pub struct PillCell;
+
+    impl PillCell {
+        /// Lays the title and chevrons out inside the bezel's padding. The
+        /// padding is otherwise only room added to the intrinsic size, so a
+        /// row too narrow for a long branch name squeezes it away and the
+        /// name runs to the bezel's edges before it truncates.
+        #[unsafe(method(drawInteriorWithFrame:inView:))]
+        fn draw_interior(&self, frame: NSRect, view: &NSView) {
+            let inset = NSRect::new(
+                NSPoint::new(frame.origin.x + PILL_PAD_X, frame.origin.y + PILL_PAD_Y),
+                NSSize::new(
+                    (frame.size.width - 2.0 * PILL_PAD_X).max(0.0),
+                    (frame.size.height - 2.0 * PILL_PAD_Y).max(0.0),
+                ),
+            );
+            let _: () = unsafe { msg_send![super(self), drawInteriorWithFrame: inset, inView: view] };
         }
     }
 );
