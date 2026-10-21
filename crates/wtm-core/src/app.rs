@@ -774,7 +774,7 @@ impl App {
         let app = self.clone();
         self.inner.rt.spawn(async move {
             let model = app.model();
-            let root = model.config.worktrees_root.clone();
+            let root = model.worktrees_root();
             let copy_include = model.config.copy_worktree_include;
             let target = model.worktree_path(&repo, &params.branch);
             let lock = app.lock_for(&target.to_string_lossy());

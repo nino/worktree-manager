@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::worktree_path_for;
+use crate::paths::{expand_home, worktree_path_for};
 use crate::types::{AppConfig, RepoConfig, WorktreeInfo};
 
 /// What an in-flight operation is doing to a worktree, for row spinners and
@@ -188,7 +188,12 @@ impl Model {
     /// Where a worktree of `repo` for `branch` goes. The New Worktree sheet
     /// checks this folder and Create makes it, so both ask here.
     pub fn worktree_path(&self, repo: &RepoConfig, branch: &str) -> PathBuf {
-        worktree_path_for(&self.config.worktrees_root, &repo.name, branch.trim())
+        worktree_path_for(&self.worktrees_root(), &repo.name, branch.trim())
+    }
+
+    /// The configured worktrees root, with a leading `~` expanded.
+    pub fn worktrees_root(&self) -> String {
+        expand_home(&self.config.worktrees_root, &self.home)
     }
 
     pub fn repo(&self, repo_id: &str) -> Option<&RepoNode> {
@@ -252,6 +257,27 @@ mod tests {
                 commands: Vec::new(),
             })
         }
+    }
+
+    #[test]
+    fn a_worktree_under_a_tilde_root_goes_in_the_home_folder() {
+        let repo = node(&[], &[], &[]).repo;
+        let mut config = crate::config::defaults(std::path::Path::new("/home/me"));
+        config.worktrees_root = "~/wt".into();
+        let model = Model {
+            config,
+            repos: Vec::new(),
+            busy: Default::default(),
+            pending: Vec::new(),
+            notice: None,
+            refreshing: false,
+            fetching: false,
+            home: "/home/me".into(),
+        };
+        assert_eq!(
+            model.worktree_path(&repo, "feature/x"),
+            PathBuf::from("/home/me/wt/r/feature-x")
+        );
     }
 
     #[test]

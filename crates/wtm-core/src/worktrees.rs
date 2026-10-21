@@ -67,6 +67,14 @@ pub async fn create_worktree(
         }
     }
 
+    // git resolves a relative path against the repo it runs in, and this
+    // process against its own working folder, so the two would make the
+    // worktree and its parent folder in different places.
+    if !Path::new(worktrees_root).is_absolute() {
+        return Err(format!(
+            "The worktrees root must be a full path, not \"{worktrees_root}\". Change it in Settings."
+        ));
+    }
     let target = worktree_path_for(worktrees_root, &repo.name, branch);
     let target_str = target.to_string_lossy().into_owned();
     if tokio::fs::metadata(&target).await.is_ok() {
@@ -362,5 +370,34 @@ mod tests {
             err,
             "The repository folder is missing: /nonexistent/wtm-missing-repo"
         );
+    }
+
+    #[tokio::test]
+    async fn a_relative_worktrees_root_is_refused() {
+        // A real repository: the refusal comes after the checks that need one.
+        let dir = std::env::temp_dir().join(format!("wtm-relative-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        run_git(&dir, &["init", "--quiet"]).await.unwrap();
+        let repo = RepoConfig {
+            id: "r".into(),
+            name: "r".into(),
+            path: dir.to_string_lossy().into_owned(),
+            main_branch: "main".into(),
+            init_command: String::new(),
+            commands: Vec::new(),
+        };
+        let params = CreateWorktreeParams {
+            repo_id: "r".into(),
+            branch: "x".into(),
+            source: BranchSource::New { base_ref: None },
+        };
+        let err = create_worktree(&repo, "~/wt", &params).await.unwrap_err();
+        assert!(
+            err.starts_with("The worktrees root must be a full path"),
+            "{err}"
+        );
+        assert!(!dir.join("~").exists(), "nothing is made inside the repo");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
