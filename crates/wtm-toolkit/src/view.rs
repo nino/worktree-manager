@@ -1265,7 +1265,7 @@ impl View {
             })
     }
 
-    pub fn toolbar_button(&self, id: Id) -> Option<&Handler> {
+    pub fn toolbar_button(&self, id: &str) -> Option<&Handler> {
         self.window.toolbar.iter().find_map(|t| match t {
             ToolItem::Button {
                 id: i, on_press, ..

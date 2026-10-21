@@ -171,8 +171,8 @@ fn drive(inner: &Inner, step: &str) {
                 .window
                 .borrow()
                 .iter()
-                .chain(inner.dialogs.window().iter())
                 .chain(inner.panels.any_window().iter())
+                .chain(inner.dialogs.window().iter())
                 .filter_map(gtk::prelude::RootExt::focus)
                 .next_back();
             match focus {

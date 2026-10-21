@@ -32,7 +32,7 @@ use wtm_toolkit::{
 };
 
 use dialogs::{Kind, Open, Outcome};
-use feedback::{FeedbackForm, FeedbackMsg};
+use feedback::{FeedbackForm, FeedbackMsg, Landed};
 use list::{Item, Op};
 use picker::{Picker, PickerMsg};
 use settings::{Settings, SettingsMsg};
@@ -664,31 +664,13 @@ impl Ui {
     // MARK: Feedback
 
     fn feedback_msg(&mut self, msg: FeedbackMsg, cx: &mut Cx<Msg>) {
-        // The answer to a send can land after the window was closed: it is
-        // still the user's news.
-        if let FeedbackMsg::Sent(result) = msg {
-            if let Some(f) = self.feedback.as_mut() {
-                f.sending = false;
-                if let Err(e) = &result {
-                    f.error = Some(e.clone());
-                    return;
-                }
-            }
-            self.app.dispatch(match result {
-                Ok(()) => {
-                    self.feedback = None;
-                    Action::ShowNotice {
-                        text: feedback::THANKS.into(),
-                        tone: Tone::Info,
-                    }
-                }
-                Err(e) => Action::ShowNotice {
-                    text: e,
-                    tone: Tone::Error,
-                },
-            });
-            return;
+        if let FeedbackMsg::Sent(id, result) = msg {
+            return self.feedback_sent(id, result);
         }
+        let send_id = match msg {
+            FeedbackMsg::Send => self.next_id(),
+            _ => 0,
+        };
         let Some(f) = self.feedback.as_mut() else {
             return;
         };
@@ -703,16 +685,42 @@ impl Ui {
                 if !f.can_send() {
                     return;
                 }
-                f.sending = true;
+                let feedback = f.feedback();
+                f.sending = Some((send_id, feedback.clone()));
                 f.error = None;
+                f.note = None;
                 let proxy = cx.proxy();
                 self.app.dispatch(Action::SendFeedback(
-                    f.feedback(),
-                    Box::new(move |result| proxy.send(Msg::Feedback(FeedbackMsg::Sent(result)))),
+                    feedback,
+                    Box::new(move |result| {
+                        proxy.send(Msg::Feedback(FeedbackMsg::Sent(send_id, result)))
+                    }),
                 ));
             }
             FeedbackMsg::Closed => self.feedback = None,
-            FeedbackMsg::Sent(_) => unreachable!("handled above"),
+            FeedbackMsg::Sent(..) => unreachable!("handled above"),
+        }
+    }
+
+    /// The answer to send `id`. It can land after its window was closed, or
+    /// once another is open: the news is still the user's, but only the
+    /// window that sent it reacts.
+    fn feedback_sent(&mut self, id: u64, result: Result<(), String>) {
+        let landed = self
+            .feedback
+            .as_mut()
+            .map_or(Landed::NotMine, |f| f.landed(id, &result));
+        let notice = match (landed, result) {
+            (Landed::Sent, _) => {
+                self.feedback = None;
+                Some((feedback::THANKS.to_string(), Tone::Info))
+            }
+            (Landed::NotMine, Ok(())) => Some((feedback::THANKS.to_string(), Tone::Info)),
+            (Landed::NotMine, Err(e)) => Some((e, Tone::Error)),
+            (Landed::Failed | Landed::EditedSince, _) => None,
+        };
+        if let Some((text, tone)) = notice {
+            self.app.dispatch(Action::ShowNotice { text, tone });
         }
     }
 

@@ -1294,7 +1294,7 @@ pub fn pre_translate(m: &MSG) -> bool {
     }
     if root != main {
         // A panel: the menu's shortcuts work there too, then dialog keys.
-        if accelerate(m) {
+        if accelerate(m) || crate::controls::tab_out_of_text_area(root, m) {
             return true;
         }
         return unsafe { IsDialogMessageW(root, m) }.as_bool();

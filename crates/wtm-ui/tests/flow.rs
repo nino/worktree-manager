@@ -12,6 +12,7 @@ use wtm_core::{Action, App, AppSettings, Focus, UiState};
 use wtm_platform::{AppDirs, NoUpdater, Platform};
 use wtm_toolkit::headless::Harness;
 use wtm_toolkit::{Dialog, Effect, Element, Frame, HostEvent, RowContent, View};
+use wtm_ui::feedback::{self, FeedbackMsg};
 use wtm_ui::{Msg, Ui};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -704,7 +705,7 @@ impl Rows for Element {
 }
 
 #[test]
-fn feedback_keeps_the_draft_when_it_cannot_send_and_closes_once_sent() {
+fn feedback_keeps_the_draft_and_ignores_another_windows_answer() {
     let (_base, _repo, _app, h) = listed("feedback");
     let open = h.view().toolbar_button("feedback").unwrap().clone();
     h.fire(&open, ());
@@ -738,14 +739,17 @@ fn feedback_keeps_the_draft_when_it_cannot_send_and_closes_once_sent() {
     );
     assert!(body.button("send").unwrap().enabled, "can try again");
 
-    // Sent: the window goes and the notice bar thanks the user.
-    h.send(Msg::Feedback(wtm_ui::feedback::FeedbackMsg::Sent(Ok(()))));
+    // An answer to an earlier send, after the window was closed and
+    // opened again, leaves the new draft alone.
+    let close = v.panel("feedback").unwrap().on_close.clone();
+    h.fire(&close, ());
+    h.fire(&open, ());
+    h.send(Msg::Feedback(FeedbackMsg::Sent(1, Ok(()))));
     let v = h.wait_for(WAIT, "the thanks", |v| {
-        v.window.notice.as_ref().is_some_and(|n| {
-            n.texts()
-                .iter()
-                .any(|t| t.contains(wtm_ui::feedback::THANKS))
-        })
+        v.window
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.texts().iter().any(|t| t.contains(feedback::THANKS)))
     });
-    assert!(v.panel("feedback").is_none());
+    assert!(v.panel("feedback").is_some(), "the new window stayed");
 }

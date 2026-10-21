@@ -334,6 +334,16 @@ impl RateLimiter {
         self.seen.insert(fingerprint.to_string(), now);
         true
     }
+
+    /// Give back what [`allow`](Self::allow) counted for `fingerprint`: an
+    /// event that could not be sent after all.
+    pub fn forget(&mut self, fingerprint: &str) {
+        if let Some(at) = self.seen.remove(fingerprint) {
+            if let Some(i) = self.sent.iter().position(|t| *t == at) {
+                self.sent.remove(i);
+            }
+        }
+    }
 }
 
 // MARK: Transport
@@ -499,7 +509,8 @@ pub struct Reporter {
     id: Mutex<Option<String>>,
     limiter: Mutex<RateLimiter>,
     log_limiter: Mutex<RateLimiter>,
-    feedback_limiter: Mutex<RateLimiter>,
+    /// Shared with the thread that sends, which gives a failed send back.
+    feedback_limiter: Arc<Mutex<RateLimiter>>,
     home: String,
     transport: Arc<dyn Transport>,
 }
@@ -524,10 +535,10 @@ impl Reporter {
                 MAX_LOGGED_PER_HOUR,
                 Duration::from_secs(3600),
             )),
-            feedback_limiter: Mutex::new(RateLimiter::new(
+            feedback_limiter: Arc::new(Mutex::new(RateLimiter::new(
                 MAX_FEEDBACK_PER_HOUR,
                 Duration::from_secs(3600),
-            )),
+            ))),
             home,
             transport,
         }
@@ -678,13 +689,12 @@ impl Reporter {
                 "{MAX_FEEDBACK_PER_HOUR} messages have been sent in the last hour. Try again later."
             )));
         }
-        let reports_on = self.is_on();
         // Off, an anonymous id that is never written down: nothing ties this
-        // message to anything else this copy sends.
-        let id = reports_on
-            .then(|| self.distinct_id(false))
-            .flatten()
-            .unwrap_or(nonce);
+        // message to anything else this copy sends. Whether reports are on
+        // is read from the id, as the setting can change in between.
+        let lasting = self.is_on().then(|| self.distinct_id(false)).flatten();
+        let reports_on = lasting.is_some();
+        let id = lasting.unwrap_or_else(|| nonce.clone());
         let props = feedback_properties(feedback, &self.home, reports_on);
         let body = event_body(&keys.key, FEEDBACK_EVENT, &id, props, SystemTime::now());
         let body = match serde_json::to_vec(&body) {
@@ -703,11 +713,18 @@ impl Reporter {
             }
         };
         let theirs = done.clone();
+        let limiter = self.feedback_limiter.clone();
+        let fingerprint = nonce.clone();
         let post = move || {
             let result = transport.post(&url, &body, SEND_TIMEOUT);
             match &result {
                 Ok(()) => info!("sent feedback"),
-                Err(e) => warn!("could not send feedback: {e}"),
+                Err(e) => {
+                    warn!("could not send feedback: {e}");
+                    // Only what arrived counts: a try while offline must
+                    // not use up the hour.
+                    limiter.lock().forget(&nonce);
+                }
             }
             finish(
                 &theirs,
@@ -719,6 +736,7 @@ impl Reporter {
             .spawn(post)
         {
             warn!("cannot start the feedback thread: {e}");
+            self.feedback_limiter.lock().forget(&fingerprint);
             finish(&done, Err(format!("Could not send feedback: {e}")));
         }
     }
@@ -1369,8 +1387,22 @@ mod tests {
             String::new(),
             Arc::new(Offline),
         );
-        let err = send_feedback(&r, &feedback("hi")).unwrap_err();
-        assert!(err.starts_with("Could not send feedback: "), "{err}");
+        // A failed try does not count against the hour.
+        for _ in 0..MAX_FEEDBACK_PER_HOUR + 1 {
+            let err = send_feedback(&r, &feedback("hi")).unwrap_err();
+            assert!(err.starts_with("Could not send feedback: "), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_limiter_gives_back_what_it_forgets() {
+        let mut l = RateLimiter::new(1, Duration::from_secs(3600));
+        let t = Instant::now();
+        assert!(l.allow("a", t));
+        assert!(!l.allow("b", t));
+        l.forget("a");
+        l.forget("never counted");
+        assert!(l.allow("b", t));
     }
 
     #[test]

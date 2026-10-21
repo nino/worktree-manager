@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSBezelStyle, NSButton, NSCellImagePosition, NSColor, NSComboBox,
@@ -85,7 +85,12 @@ define_class!(
         }
     }
 
-    unsafe impl NSTextViewDelegate for Callback {}
+    unsafe impl NSTextViewDelegate for Callback {
+        #[unsafe(method(textView:doCommandBySelector:))]
+        fn text_view_do_command(&self, text_view: &NSTextView, command: Sel) -> bool {
+            tab_out(text_view, command)
+        }
+    }
 
     unsafe impl NSComboBoxDelegate for Callback {
         #[unsafe(method(comboBoxSelectionDidChange:))]
@@ -721,6 +726,25 @@ fn patch_button(button: &NSButton, target: &Callback, b: &ButtonEl) {
 /// neither rewritten nor taken away by disabling it.
 fn editing(field: &NSTextField) -> bool {
     field.currentEditor().is_some()
+}
+
+/// Tab and Shift-Tab move on from a text view as from any other control,
+/// where it would otherwise type a tab and keep the keyboard; Option-Tab
+/// (`insertTabIgnoringFieldEditor:`) still types one. `true`: handled.
+fn tab_out(text_view: &NSTextView, command: Sel) -> bool {
+    let forward = command == sel!(insertTab:);
+    if !forward && command != sel!(insertBacktab:) {
+        return false;
+    }
+    let Some(window) = text_view.window() else {
+        return false;
+    };
+    if forward {
+        window.selectNextKeyView(None);
+    } else {
+        window.selectPreviousKeyView(None);
+    }
+    true
 }
 
 /// Whether `view` is its window's first responder: a text view being typed

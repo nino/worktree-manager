@@ -303,15 +303,21 @@ mod linux {
             view.is_sensitive(),
             "a field with the keyboard was disabled"
         );
-        // Without the keyboard, the view's text wins.
-        p.render(&plain());
+        // Without the keyboard, the view's text wins, written in place and
+        // not reported.
+        view.root().unwrap().set_focus(None::<&gtk::Widget>);
         p.render(&text_area_view("fresh", true, on_change.clone()));
-        let view = p
-            .dialog_element("message")
-            .and_then(|w| w.downcast::<gtk::TextView>().ok())
-            .unwrap();
         let b = view.buffer();
         assert_eq!(b.text(&b.start_iter(), &b.end_iter(), false), "fresh");
+        assert_eq!(
+            changes.borrow().len(),
+            1,
+            "the backend reported its own write"
+        );
+        let same = p
+            .dialog_element("message")
+            .is_some_and(|w| &w == view.upcast_ref::<gtk::Widget>());
+        assert!(same, "the text area was rebuilt");
     }
 
     fn testing_has_focus(p: &Probe, w: &impl IsA<gtk::Widget>) -> bool {

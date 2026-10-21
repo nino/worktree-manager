@@ -196,7 +196,8 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   assistive technology (`setAccessibilityLabel`).
 - **Error reports** (`wtm_core::telemetry`) are strictly opt-in — the app has
   a few professional users: Settings → "Error reports", off by default (`sendErrorReports` in the config), and nothing is
-  sent while it is off, nor ever asked about. When on, panics (a hook in
+  sent while it is off (feedback the user writes and sends is the one
+  exception; see below), nor ever asked about. When on, panics (a hook in
   `wtm-app` that waits up to 2 s for the send), the errors the app shows
   (error notices, failed creations, deletes and listings) and the warnings
   and errors the `wtm_*` crates log (`warn!`, `error!`; level `warning` or
