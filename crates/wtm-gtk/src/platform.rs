@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 
-use log::info;
+use log::{info, warn};
 use wtm_platform::{AppDirs, Platform};
 
 pub struct LinuxPlatform;
@@ -33,7 +33,13 @@ fn launching_disabled(what: &str) -> bool {
 /// children would otherwise share its controlling terminal and be hung up
 /// with it when that terminal closes, taking an editor or a terminal window
 /// the user opened from the app with them.
-fn spawn(mut cmd: Command) -> std::io::Result<()> {
+///
+/// With `report`, a failed exit is logged under its name (and whether the
+/// app chose that program; see `wtm_platform::launch_failure`): nothing else says
+/// that an editor command was not found or `xdg-open` had no handler. A
+/// terminal is not reported, since its status is that of the last command
+/// typed into it.
+fn spawn(mut cmd: Command, report: Option<(String, bool)>) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     extern "C" {
         fn setsid() -> i32;
@@ -52,13 +58,35 @@ fn spawn(mut cmd: Command) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    std::thread::Builder::new()
+    reap(child, report);
+    Ok(())
+}
+
+/// Wait for `child` on a thread of its own, and log a failed exit under
+/// `report` (see `wtm_platform::launch_failure`).
+fn reap(mut child: Child, report: Option<(String, bool)>) {
+    let spawned = std::thread::Builder::new()
         .name("wtm-reap".into())
         .spawn(move || {
-            let mut child = child;
-            let _ = child.wait();
-        })?;
-    Ok(())
+            let status = child.wait();
+            let Some((program, own_tool)) = report else {
+                return;
+            };
+            match status {
+                Ok(status) => match wtm_platform::launch_failure(&program, status.code(), own_tool)
+                {
+                    Some(f) if f.worth_warning => warn!("{}", f.message),
+                    Some(f) => info!("{}", f.message),
+                    None => {}
+                },
+                Err(e) => warn!("cannot wait for `{program}`: {e}"),
+            }
+        });
+    // The program is running, so the launch worked; only its exit goes
+    // unseen and unreaped.
+    if let Err(e) = spawned {
+        warn!("cannot start a thread to wait for a launched program: {e}");
+    }
 }
 
 impl Platform for LinuxPlatform {
@@ -77,7 +105,7 @@ impl Platform for LinuxPlatform {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        spawn(cmd)
+        spawn(cmd, Some((wtm_platform::program_name(command_line), false)))
     }
 
     fn open_in_terminal(&self, path: &Path) -> std::io::Result<()> {
@@ -107,7 +135,7 @@ impl Platform for LinuxPlatform {
             // when it has no flag for one (xterm), and it costs nothing for
             // the ones that do.
             cmd.current_dir(path);
-            match spawn(cmd) {
+            match spawn(cmd, None) {
                 Ok(()) => return Ok(()),
                 Err(e) => last = e,
             }
@@ -128,7 +156,7 @@ impl Platform for LinuxPlatform {
         };
         let mut cmd = Command::new("xdg-open");
         cmd.arg(target);
-        spawn(cmd)
+        spawn(cmd, Some(("xdg-open".into(), true)))
     }
 
     fn terminal_note(&self) -> &'static str {
@@ -468,7 +496,7 @@ mod tests {
         let _ = std::fs::remove_file(&out);
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "cat /proc/$$/stat > \"$0\"", out.to_str().unwrap()]);
-        spawn(cmd).unwrap();
+        spawn(cmd, None).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let child = loop {
             match std::fs::read_to_string(&out) {

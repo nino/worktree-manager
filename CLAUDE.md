@@ -76,7 +76,7 @@ Environment switches, all dev-only:
 | `WTM_USER_DATA=<dir>` | config, snapshot + window state live there instead of the real profile |
 | `WTM_APPEARANCE=dark\|light` | force an appearance without changing the system setting |
 | `WTM_NO_LAUNCH=1` | Open in Terminal, Reveal and Open in Editor (and a repo's init command) log instead of opening anything |
-| `RUST_LOG=info` | timings for refreshes and git runs |
+| `RUST_LOG=info` | timings for refreshes and for git runs over a second; `wtm_core::git=debug` times every git run, `wtm_core::watcher=debug` names the file change behind each refresh |
 | `WTM_SCREENSHOT=<png>` | Linux: write the window to a PNG once the first listing settles (`WTM_SCREENSHOT_STEPS`, `WTM_SCREENSHOT_QUIT`; see the `screenshot` skill) |
 
 Read at build time, not at run time:

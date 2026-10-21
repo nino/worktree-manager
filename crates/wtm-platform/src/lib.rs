@@ -62,6 +62,77 @@ pub fn posix_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// The program a command line starts, by file name: `code` for
+/// `GH_HOST=x "/usr/local/bin/code" --wait {path}`. A launch failure is
+/// logged under this rather than the line itself, which holds whatever the
+/// user typed into a setting: leading `NAME=value` words are skipped, since
+/// they may hold a token, and a folder may name the user. Quotes anywhere in
+/// a word keep its spaces in it, as the shell would.
+pub fn program_name(command_line: &str) -> String {
+    let mut chars = command_line.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.peek().is_none() {
+            return String::new();
+        }
+        let mut word = String::new();
+        let mut quote = None;
+        while let Some(c) = chars.next() {
+            match (quote, c) {
+                (None, '"' | '\'') => quote = Some(c),
+                (Some(q), _) if c == q => quote = None,
+                (None, _) if c.is_whitespace() => break,
+                _ => word.push(c),
+            }
+        }
+        if !word.contains('=') {
+            return word.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+        }
+    }
+}
+
+/// A program the app launched without waiting for it finished with a
+/// failure.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LaunchFailure {
+    pub message: String,
+    /// Whether the user's action did not happen: the shell could not find
+    /// or run a command (a setting that does not work), or a tool the app
+    /// runs itself (`open`, `xdg-open`) failed. Worth a warning. Anything
+    /// else is a program's own failure (a repo's init command's `npm ci`, an
+    /// editor closed at logout): not the app's fault, only worth `info`.
+    pub worth_warning: bool,
+}
+
+/// What to log when `program` (see [`program_name`]) exited with `code`,
+/// `None` when a signal ended it; `None` when it succeeded. `own_tool` says
+/// the app chose the program, so any failure means it did not do its job.
+/// The shells' own codes for a command they could not find or run are spelt
+/// out, since those are what a mistyped editor command or a `PATH` without
+/// it come back as. They belong to the whole line, not only its first word.
+pub fn launch_failure(program: &str, code: Option<i32>, own_tool: bool) -> Option<LaunchFailure> {
+    let (why, not_run) = match code {
+        Some(0) => return None,
+        None => {
+            return Some(LaunchFailure {
+                message: format!("`{program}` was ended by a signal"),
+                worth_warning: own_tool,
+            })
+        }
+        // sh, bash and zsh; cmd's "is not recognized".
+        Some(127) | Some(9009) => (" (a command was not found)", true),
+        Some(126) => (" (a command could not be run)", true),
+        Some(_) => ("", false),
+    };
+    Some(LaunchFailure {
+        message: format!(
+            "`{program}` exited with status {}{why}",
+            code.unwrap_or_default()
+        ),
+        worth_warning: own_tool || not_run,
+    })
+}
+
 /// The self-updater, where a platform has one (macOS today). Lives on the
 /// main thread; every method returns at once and does its work in the
 /// background, telling the UI through the callback given to `start` when
@@ -116,10 +187,69 @@ impl Updater for NoUpdater {
 
 #[cfg(test)]
 mod tests {
-    use super::posix_quote;
+    use super::*;
 
     #[test]
     fn quotes_single_quotes() {
         assert_eq!(posix_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn a_launch_names_only_its_program() {
+        assert_eq!(program_name("  code --wait '/tmp/x'"), "code");
+        assert_eq!(program_name("GH_TOKEN=ghp_x A=b code {path}"), "code");
+        assert_eq!(program_name("API_TOKEN=\"abc secret\" code {path}"), "code");
+        assert_eq!(program_name("A='x y'B=\"z w\" code"), "code");
+        assert_eq!(
+            program_name("\"/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl\" x"),
+            "subl"
+        );
+        assert_eq!(program_name("'/opt/my editor/ed'"), "ed");
+        assert_eq!(program_name(r"C:\Tools\npp.exe {path}"), "npp.exe");
+        assert_eq!(program_name("\"unterminated"), "unterminated");
+        assert_eq!(program_name("TOKEN=x"), "");
+        assert_eq!(program_name(""), "");
+    }
+
+    #[test]
+    fn launch_failures_say_what_the_shell_meant() {
+        let failure = |program, code, own| {
+            launch_failure(program, code, own).map(|f| (f.message, f.worth_warning))
+        };
+        assert_eq!(failure("code", Some(0), false), None);
+        assert_eq!(
+            failure("code", Some(127), false),
+            Some((
+                "`code` exited with status 127 (a command was not found)".into(),
+                true
+            ))
+        );
+        assert_eq!(
+            failure("code", Some(9009), false),
+            Some((
+                "`code` exited with status 9009 (a command was not found)".into(),
+                true
+            ))
+        );
+        assert_eq!(
+            failure("x", Some(126), false),
+            Some((
+                "`x` exited with status 126 (a command could not be run)".into(),
+                true
+            ))
+        );
+        assert_eq!(
+            failure("npm", Some(1), false),
+            Some(("`npm` exited with status 1".into(), false))
+        );
+        assert_eq!(
+            failure("npm", None, false),
+            Some(("`npm` was ended by a signal".into(), false))
+        );
+        // xdg-open's "no handler", `open -b` with an unknown bundle id.
+        assert_eq!(
+            failure("xdg-open", Some(3), true),
+            Some(("`xdg-open` exited with status 3".into(), true))
+        );
     }
 }

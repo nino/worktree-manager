@@ -172,11 +172,25 @@ impl ConfigStore {
 /// Read a JSON file, or `None` when there is none or it does not parse (a
 /// file from a future version, or one edited by hand).
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path, what: &str) -> Option<T> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = read_if_present(path, what)?;
     match serde_json::from_str(&text) {
         Ok(v) => Some(v),
         Err(e) => {
             warn!("ignoring unreadable {what} {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// A file's text, or `None` when there is none. A file that is there but
+/// cannot be read (permissions, not UTF-8) is logged, since what follows
+/// treats it as missing.
+fn read_if_present(path: &Path, what: &str) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warn!("cannot read {what} {}: {e}", path.display());
             None
         }
     }

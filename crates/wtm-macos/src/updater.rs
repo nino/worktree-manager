@@ -233,8 +233,12 @@ fn installation(mtm: MainThreadMarker) -> Option<Installation> {
     if version == "0.1.0" {
         return None;
     }
+    let Some(team) = team_id(&path) else {
+        log::info!("updates: {version} has no Team ID to match (ad-hoc signed?)");
+        return None;
+    };
     Some(Installation {
-        team: team_id(&path)?,
+        team,
         bundle: path,
         version,
     })
@@ -246,6 +250,8 @@ fn team_id(app: &Path) -> Option<String> {
         .args(["--display", "--verbose=4"])
         .arg(app)
         .output()
+        // Without it the updater never runs, and nothing else says so.
+        .map_err(|e| log::warn!("updates: cannot run codesign: {e}"))
         .ok()?;
     // codesign writes its report to stderr.
     let text = String::from_utf8_lossy(&out.stderr);
