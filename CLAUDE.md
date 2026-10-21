@@ -214,6 +214,16 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   for why not a Rust HTTP client), off the UI thread; a failure is only
   logged. Only a release build with `POSTHOG_KEY` and `POSTHOG_HOST` compiled
   in sends; `release.yml` sets both.
+- **Feedback** (toolbar button beside Settings, and "Send Feedback…" in the
+  app menu) opens a window for a bug report, feature request or question,
+  sent as a PostHog `feedback` event (`feedback_kind`, `message`, optional
+  `email`, `error_reports_on`). It is the one thing sent with error reports
+  off: pressing Send is consent for that message. It still needs the
+  compiled-in keys, carries the reports' anonymous id only when reports are
+  on (otherwise a one-off UUID nothing records), has the home folder
+  shortened to `~` but keeps addresses typed on purpose, and at most 5 leave
+  an hour. The window keeps the draft if sending fails; the notice bar
+  thanks the user once it has gone.
 - **Releases**: pushing to `main` builds, signs, notarises and publishes a
   rolling `latest` release; installed copies update themselves from it. See
   "Releases" below.

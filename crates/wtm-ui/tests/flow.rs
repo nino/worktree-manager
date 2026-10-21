@@ -702,3 +702,50 @@ impl Rows for Element {
         out
     }
 }
+
+#[test]
+fn feedback_keeps_the_draft_when_it_cannot_send_and_closes_once_sent() {
+    let (_base, _repo, _app, h) = listed("feedback");
+    let open = h.view().toolbar_button("feedback").unwrap().clone();
+    h.fire(&open, ());
+    let v = h.view();
+    let panel = v.panel("feedback").expect("the feedback window");
+    assert_eq!(panel.focus, Some("message"));
+    let send = panel.body.button("send").unwrap();
+    assert!(!send.enabled, "nothing written yet");
+    let message = panel.body.text_area("message").unwrap().on_change.clone();
+    h.fire(&message, "The list\nflickers".to_string());
+    let send = h
+        .view()
+        .panel("feedback")
+        .unwrap()
+        .body
+        .button("send")
+        .unwrap()
+        .clone();
+    assert!(send.enabled);
+    h.fire(&send.on_press, ());
+    // A debug build has no keys: the window says so and keeps the draft.
+    let v = h.wait_for(WAIT, "the send to fail", |v| {
+        v.panel("feedback")
+            .and_then(|p| p.body.text("status"))
+            .is_some_and(|t| t.content.to_plain().contains("released builds"))
+    });
+    let body = &v.panel("feedback").unwrap().body;
+    assert_eq!(
+        body.text_area("message").unwrap().value,
+        "The list\nflickers"
+    );
+    assert!(body.button("send").unwrap().enabled, "can try again");
+
+    // Sent: the window goes and the notice bar thanks the user.
+    h.send(Msg::Feedback(wtm_ui::feedback::FeedbackMsg::Sent(Ok(()))));
+    let v = h.wait_for(WAIT, "the thanks", |v| {
+        v.window.notice.as_ref().is_some_and(|n| {
+            n.texts()
+                .iter()
+                .any(|t| t.contains(wtm_ui::feedback::THANKS))
+        })
+    });
+    assert!(v.panel("feedback").is_none());
+}

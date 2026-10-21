@@ -49,6 +49,7 @@ pub fn menus(e: &Enabled, v: &ViewCx<Msg>) -> Vec<Menu> {
     app.extend([
         Separator,
         action("Settings…", key(','), true, Msg::OpenSettings, v),
+        action("Send Feedback…", None, true, Msg::OpenFeedback, v),
         Separator,
         Std(Standard::Services),
         Separator,

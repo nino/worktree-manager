@@ -777,6 +777,7 @@ pub fn glyph(icon: Icon) -> char {
         Icon::Delete => '\u{E74D}',
         Icon::Close => '\u{E711}',
         Icon::Chevrons => '\u{E70D}',
+        Icon::Feedback => '\u{ED15}',
     }
 }
 
@@ -796,6 +797,7 @@ pub fn icon_label(icon: Icon) -> &'static str {
         Icon::Delete => "Delete",
         Icon::Close => "\u{00D7}",
         Icon::Chevrons => "\u{25BE}",
+        Icon::Feedback => "Feedback",
     }
 }
 

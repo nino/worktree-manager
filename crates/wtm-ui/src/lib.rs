@@ -8,6 +8,7 @@
 //! Nothing here names a toolkit or an operating system.
 
 pub mod dialogs;
+pub mod feedback;
 pub mod list;
 pub mod menus;
 pub mod picker;
@@ -31,6 +32,7 @@ use wtm_toolkit::{
 };
 
 use dialogs::{Kind, Open, Outcome};
+use feedback::{FeedbackForm, FeedbackMsg};
 use list::{Item, Op};
 use picker::{Picker, PickerMsg};
 use settings::{Settings, SettingsMsg};
@@ -67,6 +69,7 @@ pub enum Msg {
     PickedRepos(Vec<PathBuf>),
     Refresh,
     OpenSettings,
+    OpenFeedback,
     /// ⌘N: in the selected repo.
     NewWorktree,
     /// ⌘T: the picker for the selected worktree.
@@ -118,6 +121,7 @@ pub enum Msg {
     },
 
     Settings(SettingsMsg),
+    Feedback(FeedbackMsg),
 }
 
 pub struct Ui {
@@ -162,6 +166,7 @@ pub struct Ui {
     pick_waiting: bool,
     picker: Option<Picker>,
     settings: Option<Settings>,
+    feedback: Option<FeedbackForm>,
     next_id: u64,
 
     /// Whether something was at each worktree folder a sheet asked about,
@@ -199,6 +204,7 @@ impl Ui {
             pick_waiting: false,
             picker: None,
             settings: None,
+            feedback: None,
             next_id: 1,
             folders: HashMap::new(),
             looking: HashSet::new(),
@@ -655,6 +661,61 @@ impl Ui {
         }
     }
 
+    // MARK: Feedback
+
+    fn feedback_msg(&mut self, msg: FeedbackMsg, cx: &mut Cx<Msg>) {
+        // The answer to a send can land after the window was closed: it is
+        // still the user's news.
+        if let FeedbackMsg::Sent(result) = msg {
+            if let Some(f) = self.feedback.as_mut() {
+                f.sending = false;
+                if let Err(e) = &result {
+                    f.error = Some(e.clone());
+                    return;
+                }
+            }
+            self.app.dispatch(match result {
+                Ok(()) => {
+                    self.feedback = None;
+                    Action::ShowNotice {
+                        text: feedback::THANKS.into(),
+                        tone: Tone::Info,
+                    }
+                }
+                Err(e) => Action::ShowNotice {
+                    text: e,
+                    tone: Tone::Error,
+                },
+            });
+            return;
+        }
+        let Some(f) = self.feedback.as_mut() else {
+            return;
+        };
+        match msg {
+            FeedbackMsg::Kind(i) => f.kind = i,
+            FeedbackMsg::Message(s) => {
+                f.message = s;
+                f.error = None;
+            }
+            FeedbackMsg::Email(s) => f.email = s,
+            FeedbackMsg::Send => {
+                if !f.can_send() {
+                    return;
+                }
+                f.sending = true;
+                f.error = None;
+                let proxy = cx.proxy();
+                self.app.dispatch(Action::SendFeedback(
+                    f.feedback(),
+                    Box::new(move |result| proxy.send(Msg::Feedback(FeedbackMsg::Sent(result)))),
+                ));
+            }
+            FeedbackMsg::Closed => self.feedback = None,
+            FeedbackMsg::Sent(_) => unreachable!("handled above"),
+        }
+    }
+
     // MARK: Building the view
 
     fn toolbar(&self, v: &ViewCx<Msg>) -> Vec<ToolItem> {
@@ -674,6 +735,12 @@ impl Ui {
                 placeholder: "Search worktrees".into(),
                 on_change: v.map(Msg::Query),
             },
+            button(
+                "feedback",
+                "Send Feedback",
+                Icon::Feedback,
+                Msg::OpenFeedback,
+            ),
             button("settings", "Settings", Icon::Settings, Msg::OpenSettings),
         ]
     }
@@ -864,6 +931,12 @@ impl Program for Ui {
                 }
                 cx.effect(Effect::PresentPanel(settings::KEY.into()));
             }
+            Msg::OpenFeedback => {
+                if self.feedback.is_none() {
+                    self.feedback = Some(FeedbackForm::default());
+                }
+                cx.effect(Effect::PresentPanel(feedback::KEY.into()));
+            }
             Msg::NewWorktree => {
                 if let Some(repo_id) = self.creatable_repo_id() {
                     self.open_new_worktree(&repo_id, cx);
@@ -964,6 +1037,7 @@ impl Program for Ui {
             }
 
             Msg::Settings(m) => self.settings_msg(m, cx),
+            Msg::Feedback(m) => self.feedback_msg(m, cx),
         }
         self.pick_repos_if_free(cx);
     }
@@ -1077,6 +1151,7 @@ impl Program for Ui {
                 .settings
                 .iter()
                 .map(|s| s.view(self.terminal_note, v))
+                .chain(self.feedback.iter().map(|f| f.view(v)))
                 .collect(),
         }
     }

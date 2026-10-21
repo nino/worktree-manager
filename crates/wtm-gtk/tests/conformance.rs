@@ -29,8 +29,8 @@ mod linux {
     use wtm_toolkit::{
         Badge, Dialog, DialogButton, DialogStyle, Effect, Element, Emphasis, Field, FilterList,
         Form, Handler, Hue, Icon, ListItem, Menu, MenuItem, MenuRole, Popover, RepoHeader, Rich,
-        Role, Row, RowAction, RowContent, Section, Standard, Tint, ToolItem, TreeList, View,
-        WorktreeRow, BRANCH_BUTTON,
+        Role, Row, RowAction, RowContent, Section, Standard, TextArea, Tint, ToolItem, TreeList,
+        View, WorktreeRow, BRANCH_BUTTON,
     };
 
     type Calls<A> = Rc<RefCell<Vec<A>>>;
@@ -260,6 +260,58 @@ mod linux {
             "a field with the keyboard was disabled"
         );
         assert_eq!(entry.position(), 3, "the cursor moved");
+    }
+
+    fn text_area_view(value: &str, enabled: bool, on_change: Handler<String>) -> View {
+        let mut v = dialog_view(8, "", true, Handler::none());
+        v.dialogs[0].body = Some(Element::Form(Form::default().row(
+            "Message:",
+            TextArea {
+                id: "message",
+                value: value.into(),
+                lines: 4,
+                enabled,
+                on_change,
+            },
+        )));
+        v.dialogs[0].focus = Some("message");
+        v
+    }
+
+    fn a_focused_text_area_is_not_rewritten() {
+        let p = Probe::default();
+        let (on_change, changes) = rec::<String>();
+        p.render(&text_area_view("", true, on_change.clone()));
+        let view = p
+            .dialog_element("message")
+            .and_then(|w| w.downcast::<gtk::TextView>().ok())
+            .expect("message field");
+        assert!(changes.borrow().is_empty(), "opening reported a change");
+        assert!(testing_has_focus(&p, &view), "it did not get the keyboard");
+        view.buffer().set_text("one\ntwo");
+        testing::pump();
+        assert_eq!(*changes.borrow(), ["one\ntwo"]);
+        p.render(&text_area_view("one\ntw", false, on_change.clone()));
+        let b = view.buffer();
+        assert_eq!(b.text(&b.start_iter(), &b.end_iter(), false), "one\ntwo");
+        assert_eq!(
+            changes.borrow().len(),
+            1,
+            "the backend reported its own write"
+        );
+        assert!(
+            view.is_sensitive(),
+            "a field with the keyboard was disabled"
+        );
+        // Without the keyboard, the view's text wins.
+        p.render(&plain());
+        p.render(&text_area_view("fresh", true, on_change.clone()));
+        let view = p
+            .dialog_element("message")
+            .and_then(|w| w.downcast::<gtk::TextView>().ok())
+            .unwrap();
+        let b = view.buffer();
+        assert_eq!(b.text(&b.start_iter(), &b.end_iter(), false), "fresh");
     }
 
     fn testing_has_focus(p: &Probe, w: &impl IsA<gtk::Widget>) -> bool {
@@ -775,7 +827,7 @@ mod linux {
             eprintln!("conformance: no display, skipped (run under xvfb-run)");
             return;
         }
-        let cases: [(&str, fn()); 14] = [
+        let cases: [(&str, fn()); 15] = [
             (
                 "equal rows keep their widgets",
                 equal_rows_keep_their_widgets,
@@ -787,6 +839,10 @@ mod linux {
             (
                 "a focused field is not rewritten",
                 a_focused_field_is_not_rewritten,
+            ),
+            (
+                "a focused text area is not rewritten",
+                a_focused_text_area_is_not_rewritten,
             ),
             (
                 "selection from the view is not reported",

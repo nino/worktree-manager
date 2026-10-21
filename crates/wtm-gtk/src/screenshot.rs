@@ -7,8 +7,9 @@
 //!   (Settings) is written on its own.
 //! - `WTM_SCREENSHOT_STEPS=<step>,<step>…` first drives the UI through the
 //!   view's own handlers, as a click would: `new-worktree`, `repo-settings`,
-//!   `picker`, `settings`, `collapse:<card>`, `select:<row>`,
-//!   `query:<text>`, `type:<text>` (into the field with the keyboard).
+//!   `picker`, `settings`, `feedback`, `collapse:<card>`, `select:<row>`,
+//!   `query:<text>`, `type:<text>` (into the field with the keyboard; `\n`
+//!   is a line break in a multi-line one).
 //! - `WTM_SCREENSHOT_QUIT=1` quits once it is written.
 
 use std::cell::{Cell, RefCell};
@@ -140,8 +141,13 @@ fn drive(inner: &Inner, step: &str) {
                 s.header.on_settings.call(());
             }
         }
-        "settings" => {
-            if let Some(h) = view.toolbar_button("settings") {
+        "settings" | "feedback" => {
+            let id = if name == "settings" {
+                "settings"
+            } else {
+                "feedback"
+            };
+            if let Some(h) = view.toolbar_button(id) {
                 h.call(());
             }
         }
@@ -166,11 +172,22 @@ fn drive(inner: &Inner, step: &str) {
                 .borrow()
                 .iter()
                 .chain(inner.dialogs.window().iter())
+                .chain(inner.panels.any_window().iter())
                 .filter_map(gtk::prelude::RootExt::focus)
                 .next_back();
-            if let Some(e) = focus.and_then(|f| f.dynamic_cast::<gtk::Editable>().ok()) {
-                e.set_text(arg);
-                e.set_position(-1);
+            match focus {
+                Some(f) if f.is::<gtk::TextView>() => {
+                    if let Ok(t) = f.dynamic_cast::<gtk::TextView>() {
+                        t.buffer().set_text(&arg.replace("\\n", "\n"));
+                    }
+                }
+                Some(f) => {
+                    if let Ok(e) = f.dynamic_cast::<gtk::Editable>() {
+                        e.set_text(arg);
+                        e.set_position(-1);
+                    }
+                }
+                None => {}
             }
         }
         "picker" => {

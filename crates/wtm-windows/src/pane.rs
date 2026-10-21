@@ -30,6 +30,7 @@ enum Leaf {
     Badge,
     Spinner,
     Field,
+    Lines,
     Combo,
     Choice,
     Block,
@@ -73,6 +74,7 @@ fn shape_of(e: &Element) -> Vec<String> {
             Element::Badge(_) => "badge".into(),
             Element::Spinner(_) => "spinner".into(),
             Element::Field(f) => format!("field {}", f.id),
+            Element::TextArea(t) => format!("lines {}", t.id),
             Element::Combo(c) => format!("combo {}", c.id),
             Element::Segmented(s) => format!("segments {} {}", s.id, s.options.len()),
             Element::Choice(c) => format!("choice {}", c.id),
@@ -150,6 +152,7 @@ impl Pane {
         e.walk(&mut |x| {
             let hit = match x {
                 Element::Field(f) => f.id == id,
+                Element::TextArea(t) => t.id == id,
                 Element::Combo(c) => c.id == id,
                 Element::Choice(c) => c.id == id,
                 Element::Segmented(s) => s.id == id,
@@ -328,6 +331,24 @@ impl Pane {
                     );
                     set_font(h, Font::Body);
                     Node::One(h, Leaf::Field)
+                }
+                Element::TextArea(_) => {
+                    // Return starts a line rather than pressing a default
+                    // button; Tab still moves on, as in any dialog.
+                    let h = create(
+                        w!("EDIT"),
+                        "",
+                        WS_CHILD_
+                            | WS_TABSTOP_
+                            | WS_VSCROLL.0
+                            | ES_MULTILINE_
+                            | ES_AUTOVSCROLL_
+                            | ES_WANTRETURN_,
+                        WS_EX_CLIENTEDGE,
+                        parent,
+                    );
+                    set_font(h, Font::Body);
+                    Node::One(h, Leaf::Lines)
                 }
                 Element::Combo(_) => {
                     let h = create(
@@ -521,6 +542,12 @@ impl Pane {
                 }
                 enable_field(h, f.enabled);
                 reg.bind(h, Bind::Text(f.on_change.clone()));
+            }
+            (Node::One(h, _), Element::TextArea(t)) => {
+                let h = *h;
+                set_field_text(h, &crlf(&t.value));
+                enable_field(h, t.enabled);
+                reg.bind(h, Bind::Lines(t.on_change.clone()));
             }
             (Node::One(h, _), Element::Combo(c)) => {
                 let h = *h;
@@ -740,6 +767,10 @@ impl Measure for Measurer {
                 Size::new(w as f64, px(23.0))
             }
             Element::TextBlock(_) => Size::new(px(560.0), px(280.0)),
+            Element::TextArea(t) => {
+                let line = look::line_height(Font::Body) as f64;
+                Size::new(px(320.0), line * t.lines.max(1) as f64 + px(8.0))
+            }
             _ => Size::default(),
         }
     }

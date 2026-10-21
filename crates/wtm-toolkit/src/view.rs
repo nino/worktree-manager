@@ -269,6 +269,8 @@ pub enum Element {
     Badge(Badge),
     Spinner(Spinner),
     Field(Field),
+    /// A multi-line text field.
+    TextArea(TextArea),
     Combo(Combo),
     Segmented(Segmented),
     Choice(Choice),
@@ -576,6 +578,8 @@ pub enum Icon {
     Close,
     /// Up-and-down chevrons: "this opens a list".
     Chevrons,
+    /// A speech bubble: "tell us something".
+    Feedback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -741,6 +745,21 @@ pub struct Field {
     pub on_change: Handler<String>,
 }
 
+/// A multi-line text field that scrolls, for prose: Return starts a new
+/// line. It has no placeholder (none of the three toolkits' multi-line
+/// fields has one), so a hint beside it says what goes in it. Line breaks
+/// are `\n` both ways.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextArea {
+    pub id: Id,
+    pub value: String,
+    /// How tall it is, in lines of body text.
+    pub lines: u32,
+    /// As for [`Field`]: never taken away from a field with the keyboard.
+    pub enabled: bool,
+    pub on_change: Handler<String>,
+}
+
 /// A text field with a list of suggestions it completes from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Combo {
@@ -829,7 +848,7 @@ macro_rules! element_from {
         }
     )*};
 }
-element_from!(Stack, Text, Button, Badge, Spinner, Field, Combo, Segmented, Choice, Form);
+element_from!(Stack, Text, Button, Badge, Spinner, Field, TextArea, Combo, Segmented, Choice, Form);
 
 // MARK: Dialogs, popovers, panels
 
@@ -1089,6 +1108,18 @@ impl Element {
         let mut found = None;
         self.walk(&mut |e| {
             if let Element::Field(x) = e {
+                if x.id == id && found.is_none() {
+                    found = Some(x);
+                }
+            }
+        });
+        found
+    }
+
+    pub fn text_area(&self, id: Id) -> Option<&TextArea> {
+        let mut found = None;
+        self.walk(&mut |e| {
+            if let Element::TextArea(x) = e {
                 if x.id == id && found.is_none() {
                     found = Some(x);
                 }

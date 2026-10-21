@@ -48,7 +48,7 @@ throwaway directory: demo repos, the config, the window state, and a fake
 
 3. To photograph a dialog, the picker or Settings, drive the UI first with
    `WTM_SCREENSHOT_STEPS`, a comma-separated list run through the view's own
-   handlers: `new-worktree`, `repo-settings`, `picker`, `settings`,
+   handlers: `new-worktree`, `repo-settings`, `picker`, `settings`, `feedback`,
    `collapse:<card>`, `select:<row>`, `query:<text>`, `type:<text>`. Row and
    card keys are `r:<repo id>`, `w:<path>`. See `crates/wtm-gtk/src/screenshot.rs`.
 

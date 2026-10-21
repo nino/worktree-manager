@@ -19,6 +19,12 @@
 //! snapshot or listing a repo's branches, and are what a later look at
 //! PostHog has to go on.
 //!
+//! Feedback ([`Reporter::feedback`]) is the exception to the opt-in: the
+//! user writes it and presses Send, which is consent for that one message,
+//! so it goes whether error reports are on or not. It still needs a release
+//! build with the keys, carries no lasting id unless reports are on, and
+//! has its own hourly allowance.
+//!
 //! Every event sets `$process_person_profile: false`, so PostHog makes no
 //! person profiles, and there is no session replay: this is a desktop app
 //! with no web view to record.
@@ -58,6 +64,18 @@ pub const MAX_PER_HOUR: usize = 30;
 /// offline for an hour, whose every background fetch warns, cannot use up
 /// the errors' one.
 pub const MAX_LOGGED_PER_HOUR: usize = 10;
+
+/// At most this many feedback messages leave in any rolling hour: plenty
+/// for a person, and a bound on a stuck button.
+pub const MAX_FEEDBACK_PER_HOUR: usize = 5;
+
+/// Feedback is cut to this many characters, and an email address to
+/// [`MAX_EMAIL`].
+pub const MAX_FEEDBACK: usize = 5000;
+const MAX_EMAIL: usize = 200;
+
+/// The PostHog event a feedback message is sent as.
+pub const FEEDBACK_EVENT: &str = "feedback";
 
 /// How long a panic report may hold up the crash.
 const PANIC_WAIT: Duration = Duration::from_secs(2);
@@ -211,8 +229,30 @@ pub fn exception_type(message: &str) -> String {
 /// a URL's `user:token@` goes, and email addresses become `<email>`. Cut to
 /// [`MAX_MESSAGE`] characters.
 pub fn scrub(message: &str, home: &str) -> String {
-    static USERINFO: OnceLock<Regex> = OnceLock::new();
     static EMAIL: OnceLock<Regex> = OnceLock::new();
+    let text = scrub_paths(message, home);
+    let email = EMAIL.get_or_init(|| {
+        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+            .expect("regex")
+    });
+    let text = email
+        .replace_all(&text, |c: &regex::Captures| {
+            // `git@github.com:owner/repo` is an SSH remote, not an address.
+            if c[0].starts_with("git@") {
+                c[0].to_string()
+            } else {
+                "<email>".to_string()
+            }
+        })
+        .into_owned();
+    cut(text, MAX_MESSAGE)
+}
+
+/// The home folder as `~` and URL credentials taken out, but email
+/// addresses kept: what feedback gets, since an address in it was typed on
+/// purpose.
+fn scrub_paths(message: &str, home: &str) -> String {
+    static USERINFO: OnceLock<Regex> = OnceLock::new();
     let mut text = message.to_string();
     let home = home.trim_end_matches(['/', '\\']);
     if !home.is_empty() {
@@ -224,25 +264,16 @@ pub fn scrub(message: &str, home: &str) -> String {
     }
     let userinfo = USERINFO
         .get_or_init(|| Regex::new(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@").expect("regex"));
-    text = userinfo.replace_all(&text, "$1").into_owned();
-    let email = EMAIL.get_or_init(|| {
-        Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
-            .expect("regex")
-    });
-    text = email
-        .replace_all(&text, |c: &regex::Captures| {
-            // `git@github.com:owner/repo` is an SSH remote, not an address.
-            if c[0].starts_with("git@") {
-                c[0].to_string()
-            } else {
-                "<email>".to_string()
-            }
-        })
-        .into_owned();
-    if text.chars().count() > MAX_MESSAGE {
-        text = text.chars().take(MAX_MESSAGE).collect::<String>() + "…";
+    userinfo.replace_all(&text, "$1").into_owned()
+}
+
+/// `text` cut to `max` characters, with an ellipsis if anything went.
+fn cut(text: String, max: usize) -> String {
+    if text.chars().count() > max {
+        text.chars().take(max).collect::<String>() + "…"
+    } else {
+        text
     }
-    text
 }
 
 /// Every `home` in `text` that is a whole path component (not `/home/ada`
@@ -399,6 +430,58 @@ impl Transport for Curl {
     }
 }
 
+// MARK: Feedback
+
+/// What a feedback message is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackKind {
+    Bug,
+    Feature,
+    Question,
+    Other,
+}
+
+impl FeedbackKind {
+    /// The `feedback_kind` property, which a PostHog query filters on.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeedbackKind::Bug => "bug",
+            FeedbackKind::Feature => "feature",
+            FeedbackKind::Question => "question",
+            FeedbackKind::Other => "other",
+        }
+    }
+}
+
+/// A message the user wrote in the Feedback window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feedback {
+    pub kind: FeedbackKind,
+    pub message: String,
+    /// Where a reply can go; empty for none.
+    pub email: String,
+}
+
+/// The properties of a feedback event. The message keeps any email address
+/// in it (the user typed it there) but loses the home folder and URL
+/// credentials, as a pasted error message or path would carry them.
+pub fn feedback_properties(f: &Feedback, home: &str, reports_on: bool) -> Map<String, Value> {
+    let mut p = Map::new();
+    p.insert("feedback_kind".into(), f.kind.as_str().into());
+    p.insert(
+        "message".into(),
+        cut(scrub_paths(f.message.trim(), home), MAX_FEEDBACK).into(),
+    );
+    let email = f.email.trim();
+    if !email.is_empty() {
+        p.insert("email".into(), cut(email.to_string(), MAX_EMAIL).into());
+    }
+    // With reports on, the event carries the same id as this copy's errors,
+    // so a bug report can be read beside them.
+    p.insert("error_reports_on".into(), reports_on.into());
+    p
+}
+
 // MARK: Reporter
 
 /// Decides what is sent, and sends it off the caller's thread.
@@ -416,6 +499,7 @@ pub struct Reporter {
     id: Mutex<Option<String>>,
     limiter: Mutex<RateLimiter>,
     log_limiter: Mutex<RateLimiter>,
+    feedback_limiter: Mutex<RateLimiter>,
     home: String,
     transport: Arc<dyn Transport>,
 }
@@ -438,6 +522,10 @@ impl Reporter {
             limiter: Mutex::new(RateLimiter::new(MAX_PER_HOUR, Duration::from_secs(3600))),
             log_limiter: Mutex::new(RateLimiter::new(
                 MAX_LOGGED_PER_HOUR,
+                Duration::from_secs(3600),
+            )),
+            feedback_limiter: Mutex::new(RateLimiter::new(
+                MAX_FEEDBACK_PER_HOUR,
                 Duration::from_secs(3600),
             )),
             home,
@@ -564,6 +652,75 @@ impl Reporter {
             props.insert("thread".into(), thread.into());
         }
         self.send("$exception", props, &value, &self.limiter, true);
+    }
+
+    /// Send a message the user wrote, whether error reports are on or not:
+    /// pressing Send is the consent. `done` hears how it went, on another
+    /// thread, with a sentence the window can show if it failed.
+    pub fn feedback(
+        &self,
+        feedback: &Feedback,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let Some(keys) = &self.keys else {
+            return done(Err(
+                "This build cannot send feedback; only released builds can.".into(),
+            ));
+        };
+        if feedback.message.trim().is_empty() {
+            return done(Err("There is no message to send.".into()));
+        }
+        // Each message counts, a repeat included: sending the same words
+        // twice is the user's call, and the window is busy while one sends.
+        let nonce = uuid::Uuid::new_v4().to_string();
+        if !self.feedback_limiter.lock().allow(&nonce, Instant::now()) {
+            return done(Err(format!(
+                "{MAX_FEEDBACK_PER_HOUR} messages have been sent in the last hour. Try again later."
+            )));
+        }
+        let reports_on = self.is_on();
+        // Off, an anonymous id that is never written down: nothing ties this
+        // message to anything else this copy sends.
+        let id = reports_on
+            .then(|| self.distinct_id(false))
+            .flatten()
+            .unwrap_or(nonce);
+        let props = feedback_properties(feedback, &self.home, reports_on);
+        let body = event_body(&keys.key, FEEDBACK_EVENT, &id, props, SystemTime::now());
+        let body = match serde_json::to_vec(&body) {
+            Ok(b) => b,
+            Err(e) => return done(Err(format!("Could not send feedback: {e}"))),
+        };
+        let url = endpoint(&keys.host);
+        let transport = self.transport.clone();
+        // Shared with this thread, so that a thread that cannot start still
+        // gets an answer to the window.
+        type Done = Box<dyn FnOnce(Result<(), String>) + Send>;
+        let done: Arc<Mutex<Option<Done>>> = Arc::new(Mutex::new(Some(Box::new(done))));
+        let finish = move |done: &Mutex<Option<Done>>, result| {
+            if let Some(done) = done.lock().take() {
+                done(result);
+            }
+        };
+        let theirs = done.clone();
+        let post = move || {
+            let result = transport.post(&url, &body, SEND_TIMEOUT);
+            match &result {
+                Ok(()) => info!("sent feedback"),
+                Err(e) => warn!("could not send feedback: {e}"),
+            }
+            finish(
+                &theirs,
+                result.map_err(|e| format!("Could not send feedback: {e}")),
+            );
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("wtm-feedback".into())
+            .spawn(post)
+        {
+            warn!("cannot start the feedback thread: {e}");
+            finish(&done, Err(format!("Could not send feedback: {e}")));
+        }
     }
 
     fn send(
@@ -1114,6 +1271,115 @@ mod tests {
         assert_eq!(r.distinct_id(false), None);
         assert!(!id_path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn feedback(message: &str) -> Feedback {
+        Feedback {
+            kind: FeedbackKind::Bug,
+            message: message.into(),
+            email: String::new(),
+        }
+    }
+
+    /// Sends `f` and waits for the answer.
+    fn send_feedback(r: &Reporter, f: &Feedback) -> Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        r.feedback(f, move |result| {
+            let _ = tx.send(result);
+        });
+        rx.recv_timeout(Duration::from_secs(5)).expect("an answer")
+    }
+
+    #[test]
+    fn feedback_goes_with_reports_off_and_leaves_no_id() {
+        let dir = scratch("feedback-off");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(false);
+        let f = Feedback {
+            kind: FeedbackKind::Feature,
+            message: "  Crashes in /home/ada/src; mail ada@example.com  ".into(),
+            email: " ada@example.com ".into(),
+        };
+        assert_eq!(send_feedback(&r, &f), Ok(()));
+        let sent = rec.wait_for(1);
+        let body = &sent[0].1;
+        assert_eq!(body["event"], FEEDBACK_EVENT);
+        let p = &body["properties"];
+        assert_eq!(p["feedback_kind"], "feature");
+        assert_eq!(
+            p["message"], "Crashes in ~/src; mail ada@example.com",
+            "trimmed, home shortened, the address typed on purpose kept"
+        );
+        assert_eq!(p["email"], "ada@example.com");
+        assert_eq!(p["error_reports_on"], false);
+        assert_eq!(p["$process_person_profile"], false);
+        assert!(
+            !dir.join("analytics-id").exists(),
+            "no lasting id while off"
+        );
+        assert!(uuid::Uuid::parse_str(body["distinct_id"].as_str().unwrap()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn feedback_with_reports_on_carries_the_reports_id() {
+        let dir = scratch("feedback-on");
+        let (r, rec) = reporter(keys(), &dir);
+        r.set_enabled(true);
+        assert_eq!(send_feedback(&r, &feedback("hello")), Ok(()));
+        let body = &rec.wait_for(1)[0].1;
+        let id = std::fs::read_to_string(dir.join("analytics-id")).unwrap();
+        assert_eq!(body["distinct_id"], id.as_str());
+        assert_eq!(body["properties"]["error_reports_on"], true);
+        assert!(body["properties"].get("email").is_none(), "none given");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn feedback_says_why_it_was_not_sent() {
+        let dir = scratch("feedback-refused");
+        let (unkeyed, rec) = reporter(None, &dir);
+        assert!(send_feedback(&unkeyed, &feedback("hi"))
+            .unwrap_err()
+            .contains("only released builds"));
+        let (r, rec2) = reporter(keys(), &dir);
+        assert!(send_feedback(&r, &feedback(" \n ")).is_err());
+        for _ in 0..MAX_FEEDBACK_PER_HOUR {
+            assert_eq!(send_feedback(&r, &feedback("same words")), Ok(()));
+        }
+        assert!(send_feedback(&r, &feedback("one more"))
+            .unwrap_err()
+            .contains("last hour"));
+        assert!(rec.0.lock().is_empty());
+        assert_eq!(rec2.0.lock().len(), MAX_FEEDBACK_PER_HOUR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn feedback_that_fails_to_send_says_so() {
+        struct Offline;
+        impl Transport for Offline {
+            fn post(&self, _: &str, _: &[u8], _: Duration) -> Result<(), String> {
+                Err("curl exit status: 6: Could not resolve host".into())
+            }
+        }
+        let r = Reporter::new(
+            keys(),
+            scratch("feedback-offline").join("id"),
+            String::new(),
+            Arc::new(Offline),
+        );
+        let err = send_feedback(&r, &feedback("hi")).unwrap_err();
+        assert!(err.starts_with("Could not send feedback: "), "{err}");
+    }
+
+    #[test]
+    fn long_feedback_is_cut() {
+        let p = feedback_properties(&feedback(&"x".repeat(MAX_FEEDBACK + 50)), "", false);
+        assert_eq!(
+            p["message"].as_str().unwrap().chars().count(),
+            MAX_FEEDBACK + 1
+        );
     }
 
     #[test]

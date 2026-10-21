@@ -20,8 +20,8 @@ use objc2_app_kit::{
     NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow, NSLayoutPriorityRequired,
     NSLineBreakMode, NSPopUpButton, NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView,
     NSSegmentSwitchTracking, NSSegmentedControl, NSStackView, NSStackViewDistribution,
-    NSTextAlignment, NSTextField, NSTextFieldDelegate, NSTextView,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindowDelegate,
+    NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSTextViewDelegate, NSUserInterfaceLayoutOrientation, NSView, NSWindowDelegate,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -51,8 +51,8 @@ pub struct CallbackIvars {
 
 define_class!(
     /// An `NSObject` whose `invoke:` action runs a Rust closure: the target
-    /// of a control, the delegate of a text field (run on every keystroke)
-    /// or of a combo box (also run on a pick from its list), or of a window
+    /// of a control, the delegate of a text field or text view (run on
+    /// every keystroke) or of a combo box (also run on a pick from its list), or of a window
     /// (run when it closes).
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -77,6 +77,15 @@ define_class!(
     }
 
     unsafe impl NSTextFieldDelegate for Callback {}
+
+    unsafe impl NSTextDelegate for Callback {
+        #[unsafe(method(textDidChange:))]
+        fn text_did_change(&self, _n: &NSNotification) {
+            self.call();
+        }
+    }
+
+    unsafe impl NSTextViewDelegate for Callback {}
 
     unsafe impl NSComboBoxDelegate for Callback {
         #[unsafe(method(comboBoxSelectionDidChange:))]
@@ -183,6 +192,7 @@ pub fn symbol_name(icon: Icon) -> &'static str {
         Icon::Delete => "trash",
         Icon::Close => "xmark",
         Icon::Chevrons => "chevron.up.chevron.down",
+        Icon::Feedback => "exclamationmark.bubble",
     }
 }
 
@@ -224,6 +234,7 @@ enum Node {
     Badge(Retained<Badge>),
     Spinner(Retained<NSProgressIndicator>),
     Field(Retained<NSTextField>, Retained<Callback>),
+    TextArea(Retained<NSTextView>, Retained<Callback>),
     Combo(Retained<NSComboBox>, Retained<Callback>),
     Segmented(Retained<NSSegmentedControl>, Retained<Callback>),
     Choice(Retained<NSPopUpButton>, Retained<Callback>),
@@ -285,6 +296,11 @@ impl Built {
                 .zip(&f.rows)
                 .find_map(|((_, b), r)| b.find(id, &r.content)),
             (Node::Field(v, _), Element::Field(f)) if f.id == id => {
+                Some(v.clone().into_super().into_super())
+            }
+            // The text view, not its scroll view: it is what takes the
+            // keyboard.
+            (Node::TextArea(v, _), Element::TextArea(t)) if t.id == id => {
                 Some(v.clone().into_super().into_super())
             }
             (Node::Combo(v, _), Element::Combo(c)) if c.id == id => {
@@ -406,6 +422,37 @@ fn build(element: &Element, form: Option<()>, mtm: MainThreadMarker) -> Built {
                 Node::Field(field, target),
             )
         }
+        Element::TextArea(t) => {
+            // Body text, wrapping at the scroll view's width, which the form
+            // row sets; `lines` sets the height.
+            let height = t.lines.max(1) as f64 * 17.0 + 8.0;
+            let size = NSSize::new(FORM_WIDTH - LABEL_WIDTH - 8.0, height);
+            let scroll = NSScrollView::initWithFrame(mtm.alloc(), NSRect::new(NSPoint::ZERO, size));
+            scroll.setHasVerticalScroller(true);
+            scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
+            scroll
+                .heightAnchor()
+                .constraintEqualToConstant(height)
+                .setActive(true);
+            let tv = NSTextView::initWithFrame(mtm.alloc(), NSRect::new(NSPoint::ZERO, size));
+            tv.setRichText(false);
+            tv.setAllowsUndo(true);
+            tv.setVerticallyResizable(true);
+            tv.setHorizontallyResizable(false);
+            tv.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
+            tv.setMaxSize(NSSize::new(f64::MAX, f64::MAX));
+            tv.setTextContainerInset(NSSize::new(2.0, 4.0));
+            tv.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+            // Typed text should look like the font set above, and smart
+            // quotes would turn a pasted command into one that cannot run.
+            tv.setAutomaticQuoteSubstitutionEnabled(false);
+            tv.setAutomaticDashSubstitutionEnabled(false);
+            tv.setString(&ns(&t.value));
+            let target = Callback::new(mtm);
+            tv.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+            scroll.setDocumentView(Some(&tv));
+            (scroll.into_super(), Node::TextArea(tv, target))
+        }
         Element::Combo(c) => {
             let combo = NSComboBox::initWithFrame(
                 mtm.alloc(),
@@ -491,7 +538,8 @@ fn build(element: &Element, form: Option<()>, mtm: MainThreadMarker) -> Built {
             let mut rows = Vec::new();
             for r in &f.rows {
                 let content = build(&r.content, Some(()), mtm);
-                let row = form_row(&r.caption, &content.view, mtm);
+                let tall = matches!(r.content, Element::TextArea(_));
+                let row = form_row(&r.caption, &content.view, tall, mtm);
                 stack.addArrangedSubview(&row);
                 rows.push((row, content));
             }
@@ -529,11 +577,21 @@ fn build(element: &Element, form: Option<()>, mtm: MainThreadMarker) -> Built {
     built
 }
 
-/// A caption in the left column, `control` in the right.
-fn form_row(caption: &str, control: &NSView, mtm: MainThreadMarker) -> Retained<NSStackView> {
+/// A caption in the left column, `control` in the right. A `tall` control
+/// (a scroll view, which has no baseline) has the caption level with its top.
+fn form_row(
+    caption: &str,
+    control: &NSView,
+    tall: bool,
+    mtm: MainThreadMarker,
+) -> Retained<NSStackView> {
     let r = NSStackView::new(mtm);
     r.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    r.setAlignment(NSLayoutAttribute::FirstBaseline);
+    r.setAlignment(if tall {
+        NSLayoutAttribute::Top
+    } else {
+        NSLayoutAttribute::FirstBaseline
+    });
     r.setSpacing(8.0);
     let l = NSTextField::labelWithString(&ns(caption), mtm);
     l.setAlignment(NSTextAlignment::Right);
@@ -665,6 +723,18 @@ fn editing(field: &NSTextField) -> bool {
     field.currentEditor().is_some()
 }
 
+/// Whether `view` is its window's first responder: a text view being typed
+/// in, whose text is the user's.
+fn has_keyboard(view: &NSView) -> bool {
+    let Some(r) = view.window().and_then(|w| w.firstResponder()) else {
+        return false;
+    };
+    std::ptr::eq(
+        Retained::as_ptr(&r).cast::<()>(),
+        (view as *const NSView).cast::<()>(),
+    )
+}
+
 fn patch(built: &Built, old: &Element, new: &Element, form: Option<()>) {
     let _ = form;
     match (&built.node, new) {
@@ -712,6 +782,19 @@ fn patch(built: &Built, old: &Element, new: &Element, form: Option<()>) {
             }
             let (h, me) = (f.on_change.clone(), field.clone());
             target.set(move || h.call(me.stringValue().to_string()));
+        }
+        (Node::TextArea(tv, target), Element::TextArea(t)) => {
+            // Never under the user's cursor: the view can lag a keystroke.
+            let typing = has_keyboard(tv);
+            if !typing && tv.string().to_string() != t.value {
+                tv.setString(&ns(&t.value));
+            }
+            if t.enabled || !typing {
+                tv.setEditable(t.enabled);
+                tv.setSelectable(true);
+            }
+            let (h, me) = (t.on_change.clone(), tv.clone());
+            target.set(move || h.call(me.string().to_string()));
         }
         (Node::Combo(combo, target), Element::Combo(c)) => {
             let old_options = match old {

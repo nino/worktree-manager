@@ -47,6 +47,7 @@ pub const ES_AUTOHSCROLL_: u32 = 0x80;
 pub const ES_AUTOVSCROLL_: u32 = 0x40;
 pub const ES_READONLY_: u32 = 0x800;
 pub const ES_NOHIDESEL_: u32 = 0x100;
+pub const ES_WANTRETURN_: u32 = 0x1000;
 pub const CBS_DROPDOWN_: u32 = 2;
 pub const CBS_DROPDOWNLIST_: u32 = 3;
 pub const CBS_AUTOHSCROLL_: u32 = 0x40;
