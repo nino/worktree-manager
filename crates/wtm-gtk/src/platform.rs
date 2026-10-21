@@ -34,11 +34,12 @@ fn launching_disabled(what: &str) -> bool {
 /// with it when that terminal closes, taking an editor or a terminal window
 /// the user opened from the app with them.
 ///
-/// With `report`, a failed exit is logged under that name: nothing else says
+/// With `report`, a failed exit is logged under its name (and whether the
+/// app chose that program; see `wtm_platform::launch_failure`): nothing else says
 /// that an editor command was not found or `xdg-open` had no handler. A
 /// terminal is not reported, since its status is that of the last command
 /// typed into it.
-fn spawn(mut cmd: Command, report: Option<String>) -> std::io::Result<()> {
+fn spawn(mut cmd: Command, report: Option<(String, bool)>) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     extern "C" {
         fn setsid() -> i32;
@@ -63,15 +64,18 @@ fn spawn(mut cmd: Command, report: Option<String>) -> std::io::Result<()> {
 
 /// Wait for `child` on a thread of its own, and log a failed exit under
 /// `report` (see `wtm_platform::launch_failure`).
-fn reap(mut child: Child, report: Option<String>) {
+fn reap(mut child: Child, report: Option<(String, bool)>) {
     let spawned = std::thread::Builder::new()
         .name("wtm-reap".into())
         .spawn(move || {
             let status = child.wait();
-            let Some(program) = report else { return };
+            let Some((program, own_tool)) = report else {
+                return;
+            };
             match status {
-                Ok(status) => match wtm_platform::launch_failure(&program, status.code()) {
-                    Some(f) if f.not_run => warn!("{}", f.message),
+                Ok(status) => match wtm_platform::launch_failure(&program, status.code(), own_tool)
+                {
+                    Some(f) if f.worth_warning => warn!("{}", f.message),
                     Some(f) => info!("{}", f.message),
                     None => {}
                 },
@@ -101,7 +105,7 @@ impl Platform for LinuxPlatform {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        spawn(cmd, Some(wtm_platform::program_name(command_line)))
+        spawn(cmd, Some((wtm_platform::program_name(command_line), false)))
     }
 
     fn open_in_terminal(&self, path: &Path) -> std::io::Result<()> {
@@ -152,7 +156,7 @@ impl Platform for LinuxPlatform {
         };
         let mut cmd = Command::new("xdg-open");
         cmd.arg(target);
-        spawn(cmd, Some("xdg-open".into()))
+        spawn(cmd, Some(("xdg-open".into(), true)))
     }
 
     fn terminal_note(&self) -> &'static str {

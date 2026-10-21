@@ -78,11 +78,11 @@ impl Watcher {
         *self.prefixes.write() = prefixes;
 
         for old in self.watched.iter().filter(|p| !want.contains(p)) {
-            // A deleted worktree's folder is gone, and its watch with it.
+            // Not a warning: a deleted worktree's watch goes with its
+            // folder, and inotify keeps dead watches for deleted subfolders,
+            // which make unwatching an existing folder fail too.
             if let Err(e) = self.inner.unwatch(old) {
-                if old.exists() {
-                    warn!("cannot stop watching {}: {e}", old.display());
-                }
+                debug!("cannot stop watching {}: {e}", old.display());
             }
         }
         for new in want.iter().filter(|p| !self.watched.contains(p)) {
@@ -141,9 +141,11 @@ fn debounce_loop(
             .map(|t| t.saturating_duration_since(Instant::now()))
             .unwrap_or(Duration::from_secs(3600));
         match rx.recv_timeout(timeout) {
-            Ok(Ok(event)) if event.need_rescan() => {
-                // Events were dropped (inotify's queue overflowed), and
-                // which worktrees they were for is unknown.
+            // Events were dropped (inotify's queue overflowed), and which
+            // worktrees they were for is unknown. A rescan that names a
+            // path (FSEvents coalescing a busy folder) is handled below
+            // like any change to that path.
+            Ok(Ok(event)) if event.need_rescan() && event.paths.is_empty() => {
                 warn!("file events were lost; refreshing every worktree");
                 let when = Instant::now() + DEBOUNCE;
                 for (_, key) in prefixes.read().iter() {

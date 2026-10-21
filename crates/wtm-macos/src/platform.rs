@@ -31,8 +31,9 @@ fn launching_disabled(what: &str) -> bool {
 /// own: the caller must never wait on what it launched, and an unreaped
 /// child stays a zombie for as long as the app runs. A failed exit is logged
 /// under `program`, since nothing on screen says that an editor command was
-/// not found or `open` had no app for a bundle id.
-fn spawn(mut command: Command, program: String) -> std::io::Result<()> {
+/// not found or `open` had no app for a bundle id. `own_tool`: see
+/// `wtm_platform::launch_failure`.
+fn spawn(mut command: Command, program: String, own_tool: bool) -> std::io::Result<()> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -41,8 +42,8 @@ fn spawn(mut command: Command, program: String) -> std::io::Result<()> {
     let spawned = std::thread::Builder::new()
         .name("wtm-reap".into())
         .spawn(move || match child.wait() {
-            Ok(status) => match wtm_platform::launch_failure(&program, status.code()) {
-                Some(f) if f.not_run => warn!("{}", f.message),
+            Ok(status) => match wtm_platform::launch_failure(&program, status.code(), own_tool) {
+                Some(f) if f.worth_warning => warn!("{}", f.message),
                 Some(f) => info!("{}", f.message),
                 None => {}
             },
@@ -67,7 +68,7 @@ impl Platform for MacPlatform {
             command.current_dir(dir);
         }
         command.args(["-lc", command_line]);
-        spawn(command, wtm_platform::program_name(command_line))
+        spawn(command, wtm_platform::program_name(command_line), false)
     }
 
     /// Hand the folder to the default terminal's bundle via `open -b`
@@ -82,7 +83,7 @@ impl Platform for MacPlatform {
         command.arg("-b").arg(&terminal).arg(path);
         // `open` returns once the terminal has the folder, so its status is
         // whether the bundle id led anywhere.
-        spawn(command, format!("open -b {terminal}"))
+        spawn(command, format!("open -b {terminal}"), true)
     }
 
     fn reveal(&self, path: &Path) -> std::io::Result<()> {
@@ -91,7 +92,7 @@ impl Platform for MacPlatform {
         }
         let mut command = Command::new("open");
         command.arg(path);
-        spawn(command, "open".into())
+        spawn(command, "open".into(), true)
     }
 
     fn file_manager_name(&self) -> &'static str {

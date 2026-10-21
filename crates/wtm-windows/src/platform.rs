@@ -17,7 +17,7 @@ use crate::shell;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// A console of its own, for the terminal fallback.
 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-/// Not killed with this process's console group, and not waited on.
+/// Not killed with this process's console group.
 const DETACHED_PROCESS_GROUP: u32 = 0x0000_0200;
 
 pub struct WindowsPlatform;
@@ -65,11 +65,13 @@ impl Platform for WindowsPlatform {
             std::thread::Builder::new()
                 .name("wtm-reap".into())
                 .spawn(move || match child.wait() {
-                    Ok(status) => match wtm_platform::launch_failure(&program, status.code()) {
-                        Some(f) if f.not_run => warn!("{}", f.message),
-                        Some(f) => info!("{}", f.message),
-                        None => {}
-                    },
+                    Ok(status) => {
+                        match wtm_platform::launch_failure(&program, status.code(), false) {
+                            Some(f) if f.worth_warning => warn!("{}", f.message),
+                            Some(f) => info!("{}", f.message),
+                            None => {}
+                        }
+                    }
                     Err(e) => warn!("cannot wait for `{program}`: {e}"),
                 });
         // The program is running, so the launch worked; only its exit goes

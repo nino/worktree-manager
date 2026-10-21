@@ -486,10 +486,18 @@ pub async fn worktree_info(
     let status = if w.prunable {
         None
     } else {
-        // The row says "no status", and nothing says why.
+        // The row says "no status", and nothing says why. A folder that is
+        // not there (a locked worktree on an unplugged drive, or one being
+        // deleted) is expected to have none.
         worktree_status(&w.path, trunk_ref)
             .await
-            .map_err(|e| warn!("no status for {}: {}", w.path, e.detail()))
+            .map_err(|e| {
+                if Path::new(&w.path).exists() {
+                    warn!("no status for {}: {}", w.path, e.detail());
+                } else {
+                    debug!("no status for missing {}: {}", w.path, e.detail());
+                }
+            })
             .ok()
     };
     WorktreeInfo {
