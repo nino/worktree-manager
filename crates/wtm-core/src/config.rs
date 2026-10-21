@@ -21,6 +21,9 @@ const CONFIG_FILE: &str = "config.json";
 pub struct ConfigStore {
     path: PathBuf,
     config: AppConfig,
+    /// Where an unreadable config file was copied at this launch, for the
+    /// app to tell the user.
+    set_aside: Option<PathBuf>,
 }
 
 impl ConfigStore {
@@ -33,6 +36,7 @@ impl ConfigStore {
         // hand, written by a newer version) is about to be replaced by the
         // save below. Keep a copy, or the user's repo list is gone for good.
         let mut keep_file = false;
+        let mut set_aside = None;
         if read.is_none() && path.exists() {
             let backup = path.with_extension(format!(
                 "unreadable-{}.json",
@@ -42,11 +46,14 @@ impl ConfigStore {
                     .unwrap_or_default()
             ));
             match std::fs::copy(&path, &backup) {
-                Ok(_) => warn!(
-                    "{} could not be read; it was copied to {} and the settings start afresh",
-                    path.display(),
-                    backup.display()
-                ),
+                Ok(_) => {
+                    warn!(
+                        "{} could not be read; it was copied to {}",
+                        path.display(),
+                        backup.display()
+                    );
+                    set_aside = Some(backup);
+                }
                 Err(e) => {
                     warn!(
                         "{} could not be read, nor copied aside ({e}); leaving it as it is",
@@ -72,11 +79,20 @@ impl ConfigStore {
         for repo in &mut config.repos {
             repo.name = sanitize_repo_name(&repo.name);
         }
-        let store = Self { path, config };
+        let store = Self {
+            path,
+            config,
+            set_aside,
+        };
         if !keep_file {
             store.save();
         }
         store
+    }
+
+    /// The copy of a config file this launch could not read, if there was one.
+    pub fn set_aside(&self) -> Option<&Path> {
+        self.set_aside.as_deref()
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -256,6 +272,10 @@ mod tests {
             .filter(|n| n.starts_with("config.unreadable-"))
             .collect();
         assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            store.set_aside(),
+            Some(dirs.config_dir.join(&kept[0]).as_path())
+        );
         assert_eq!(
             std::fs::read_to_string(dirs.config_dir.join(&kept[0])).unwrap(),
             bad

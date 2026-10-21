@@ -181,7 +181,16 @@ impl App {
             repos: Vec::new(),
             busy: Default::default(),
             pending: Vec::new(),
-            notice: None,
+            // Said once, at the launch that set the file aside: the list is
+            // empty and nothing else on screen would say why.
+            notice: store.set_aside().map(|copy| Notice {
+                tone: Tone::Error,
+                text: format!(
+                    "The settings file could not be read, so the app started without it. A copy is at {}.",
+                    tildify(&crate::paths::normalise(&copy.to_string_lossy()), &home)
+                ),
+                id: 0,
+            }),
             refreshing: false,
             fetching: false,
             home,
