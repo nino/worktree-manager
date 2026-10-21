@@ -57,22 +57,32 @@ fn spawn(mut cmd: Command, report: Option<String>) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    std::thread::Builder::new()
+    reap(child, report);
+    Ok(())
+}
+
+/// Wait for `child` on a thread of its own, and log a failed exit under
+/// `report` (see `wtm_platform::launch_failure`).
+fn reap(mut child: Child, report: Option<String>) {
+    let spawned = std::thread::Builder::new()
         .name("wtm-reap".into())
         .spawn(move || {
-            let mut child = child;
             let status = child.wait();
             let Some(program) = report else { return };
             match status {
-                Ok(status) => {
-                    if let Some(problem) = wtm_platform::launch_failure(&program, status.code()) {
-                        warn!("{problem}");
-                    }
-                }
+                Ok(status) => match wtm_platform::launch_failure(&program, status.code()) {
+                    Some(f) if f.not_run => warn!("{}", f.message),
+                    Some(f) => info!("{}", f.message),
+                    None => {}
+                },
                 Err(e) => warn!("cannot wait for `{program}`: {e}"),
             }
-        })?;
-    Ok(())
+        });
+    // The program is running, so the launch worked; only its exit goes
+    // unseen and unreaped.
+    if let Err(e) = spawned {
+        warn!("cannot start a thread to wait for a launched program: {e}");
+    }
 }
 
 impl Platform for LinuxPlatform {
@@ -91,10 +101,7 @@ impl Platform for LinuxPlatform {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        spawn(
-            cmd,
-            Some(wtm_platform::program_name(command_line).to_string()),
-        )
+        spawn(cmd, Some(wtm_platform::program_name(command_line)))
     }
 
     fn open_in_terminal(&self, path: &Path) -> std::io::Result<()> {

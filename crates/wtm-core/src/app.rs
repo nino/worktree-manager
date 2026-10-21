@@ -328,6 +328,7 @@ impl App {
                     // The settings sheet saved a repo the config no longer
                     // has; the edit is dropped without a word on screen.
                     warn!("repo settings saved for an unknown repo {id}");
+                    return;
                 }
                 self.apply_config();
                 if changed_trunk {
@@ -871,9 +872,9 @@ impl App {
                 app.refresh_repo(repo.id.clone()).await;
                 app.rewatch();
             } else if result.reason == Some(DeleteRefusal::Dirty) {
+                // The ladder working, not a fault: the UI asks again.
                 info!("not deleting {path} yet: it has changes");
             } else {
-                // A dirty tree is the ladder working, not a fault.
                 app.inner
                     .reporter
                     .error(&format!("Delete failed: {}", result.message));
@@ -972,11 +973,7 @@ impl App {
 }
 
 fn load_snapshot(dirs: &AppDirs) -> Option<Vec<RepoNode>> {
-    let path = dirs.config_dir.join("snapshot.json");
-    let text = crate::config::read_if_present(&path, "snapshot")?;
-    serde_json::from_str(&text)
-        .map_err(|e| warn!("ignoring {}: {e}", path.display()))
-        .ok()
+    crate::config::read_json(&dirs.config_dir.join("snapshot.json"), "snapshot")
 }
 
 /// One line describing the outcome of adding repositories. Any rejected path

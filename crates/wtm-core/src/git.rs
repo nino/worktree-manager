@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use log::{debug, info, warn};
+use log::{debug, log, warn};
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -131,23 +131,19 @@ pub async fn run_git_bytes(
     };
     let took = started.elapsed();
     let waited = started - queued;
-    if took >= SLOW_GIT {
-        info!(
-            "git {} in {}: {} ms (after {} ms queued)",
-            args.join(" "),
-            cwd.display(),
-            took.as_millis(),
-            waited.as_millis()
-        );
+    let level = if took >= SLOW_GIT {
+        log::Level::Info
     } else {
-        debug!(
-            "git {} in {}: {} ms (after {} ms queued)",
-            args.join(" "),
-            cwd.display(),
-            took.as_millis(),
-            waited.as_millis()
-        );
-    }
+        log::Level::Debug
+    };
+    log!(
+        level,
+        "git {} in {}: {} ms (after {} ms queued)",
+        args.join(" "),
+        cwd.display(),
+        took.as_millis(),
+        waited.as_millis()
+    );
     let mk = |message: String, stderr: String| GitError {
         message,
         cwd: cwd.to_string_lossy().into_owned(),

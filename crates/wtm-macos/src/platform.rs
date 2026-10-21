@@ -38,16 +38,21 @@ fn spawn(mut command: Command, program: String) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("wtm-reap".into())
         .spawn(move || match child.wait() {
-            Ok(status) => {
-                if let Some(problem) = wtm_platform::launch_failure(&program, status.code()) {
-                    warn!("{problem}");
-                }
-            }
+            Ok(status) => match wtm_platform::launch_failure(&program, status.code()) {
+                Some(f) if f.not_run => warn!("{}", f.message),
+                Some(f) => info!("{}", f.message),
+                None => {}
+            },
             Err(e) => warn!("cannot wait for `{program}`: {e}"),
-        })?;
+        });
+    // The program is running, so the launch worked; only its exit goes
+    // unseen and unreaped.
+    if let Err(e) = spawned {
+        warn!("cannot start a thread to wait for a launched program: {e}");
+    }
     Ok(())
 }
 
@@ -62,10 +67,7 @@ impl Platform for MacPlatform {
             command.current_dir(dir);
         }
         command.args(["-lc", command_line]);
-        spawn(
-            command,
-            wtm_platform::program_name(command_line).to_string(),
-        )
+        spawn(command, wtm_platform::program_name(command_line))
     }
 
     /// Hand the folder to the default terminal's bundle via `open -b`

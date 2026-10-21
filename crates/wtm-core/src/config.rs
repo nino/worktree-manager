@@ -139,7 +139,7 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path, what: &str) -> Option<
 /// A file's text, or `None` when there is none. A file that is there but
 /// cannot be read (permissions, not UTF-8) is logged, since what follows
 /// treats it as missing.
-pub(crate) fn read_if_present(path: &Path, what: &str) -> Option<String> {
+fn read_if_present(path: &Path, what: &str) -> Option<String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

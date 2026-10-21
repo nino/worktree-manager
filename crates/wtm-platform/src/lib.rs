@@ -62,31 +62,67 @@ pub fn posix_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// The program a command line starts: its first word. A launch failure is
-/// logged under this rather than the whole line, which holds whatever the
-/// user typed into a setting.
-pub fn program_name(command_line: &str) -> &str {
-    command_line.split_whitespace().next().unwrap_or("")
+/// The program a command line starts, by file name: `code` for
+/// `GH_HOST=x "/usr/local/bin/code" --wait {path}`. A launch failure is
+/// logged under this rather than the line itself, which holds whatever the
+/// user typed into a setting: leading `NAME=value` words are skipped, since
+/// they may hold a token, and a folder may name the user.
+pub fn program_name(command_line: &str) -> String {
+    let mut rest = command_line.trim_start();
+    loop {
+        let (word, after) = match rest.chars().next() {
+            Some(q @ ('"' | '\'')) => match rest[1..].find(q) {
+                Some(end) => (&rest[1..end + 1], &rest[end + 2..]),
+                None => (&rest[1..], ""),
+            },
+            Some(_) => rest.split_once(char::is_whitespace).unwrap_or((rest, "")),
+            None => return String::new(),
+        };
+        if word.contains('=') {
+            rest = after.trim_start();
+            continue;
+        }
+        return word.rsplit(['/', '\\']).next().unwrap_or(word).to_string();
+    }
 }
 
-/// What to log when a program the app launched without waiting for it
-/// finishes with a failure; `None` when it succeeded. `code` is the exit
-/// code, `None` when a signal ended it. The shells' own codes for a command
-/// they could not find or run are spelt out, since those are what a
-/// mistyped editor command or a `PATH` without it come back as.
-pub fn launch_failure(program: &str, code: Option<i32>) -> Option<String> {
-    let why = match code {
+/// A program the app launched without waiting for it finished with a
+/// failure.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LaunchFailure {
+    pub message: String,
+    /// The shell could not find or run the program: a setting that does not
+    /// work, worth a warning. Anything else is the program's own failure (a
+    /// repo's init command's `npm ci`, an editor closed at logout), which is
+    /// not the app's fault and is only worth an `info` line.
+    pub not_run: bool,
+}
+
+/// What to log when `program` (see [`program_name`]) exited with `code`,
+/// `None` when a signal ended it; `None` when it succeeded. The shells' own
+/// codes for a command they could not find or run are spelt out, since those
+/// are what a mistyped editor command or a `PATH` without it come back as.
+pub fn launch_failure(program: &str, code: Option<i32>) -> Option<LaunchFailure> {
+    let (why, not_run) = match code {
         Some(0) => return None,
-        None => return Some(format!("`{program}` was ended by a signal")),
+        None => {
+            return Some(LaunchFailure {
+                message: format!("`{program}` was ended by a signal"),
+                not_run: false,
+            })
+        }
         // sh, bash and zsh; cmd's "is not recognized".
-        Some(127) | Some(9009) => " (command not found)",
-        Some(126) => " (not executable)",
-        Some(_) => "",
+        Some(127) | Some(9009) => (" (command not found)", true),
+        Some(126) => (" (not executable)", true),
+        Some(_) => ("", false),
     };
-    Some(format!(
-        "`{program}` exited with status {}{why}",
-        code.unwrap_or_default()
-    ))
+    Some(LaunchFailure {
+        message: format!(
+            "`{program}` exited with status {}{why}",
+            code.unwrap_or_default()
+        ),
+        not_run,
+    })
 }
 
 /// The self-updater, where a platform has one (macOS today). Lives on the
@@ -153,31 +189,47 @@ mod tests {
     #[test]
     fn a_launch_names_only_its_program() {
         assert_eq!(program_name("  code --wait '/tmp/x'"), "code");
+        assert_eq!(program_name("GH_TOKEN=ghp_x A=b code {path}"), "code");
+        assert_eq!(
+            program_name("\"/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl\" x"),
+            "subl"
+        );
+        assert_eq!(program_name("'/opt/my editor/ed'"), "ed");
+        assert_eq!(program_name(r"C:\Tools\npp.exe {path}"), "npp.exe");
+        assert_eq!(program_name("\"unterminated"), "unterminated");
+        assert_eq!(program_name("TOKEN=x"), "");
         assert_eq!(program_name(""), "");
     }
 
     #[test]
     fn launch_failures_say_what_the_shell_meant() {
-        assert_eq!(launch_failure("code", Some(0)), None);
+        let failure = |program, code| launch_failure(program, code).map(|f| (f.message, f.not_run));
+        assert_eq!(failure("code", Some(0)), None);
         assert_eq!(
-            launch_failure("code", Some(127)).as_deref(),
-            Some("`code` exited with status 127 (command not found)")
+            failure("code", Some(127)),
+            Some((
+                "`code` exited with status 127 (command not found)".into(),
+                true
+            ))
         );
         assert_eq!(
-            launch_failure("code", Some(9009)).as_deref(),
-            Some("`code` exited with status 9009 (command not found)")
+            failure("code", Some(9009)),
+            Some((
+                "`code` exited with status 9009 (command not found)".into(),
+                true
+            ))
         );
         assert_eq!(
-            launch_failure("x", Some(126)).as_deref(),
-            Some("`x` exited with status 126 (not executable)")
+            failure("x", Some(126)),
+            Some(("`x` exited with status 126 (not executable)".into(), true))
         );
         assert_eq!(
-            launch_failure("npm", Some(1)).as_deref(),
-            Some("`npm` exited with status 1")
+            failure("npm", Some(1)),
+            Some(("`npm` exited with status 1".into(), false))
         );
         assert_eq!(
-            launch_failure("npm", None).as_deref(),
-            Some("`npm` was ended by a signal")
+            failure("npm", None),
+            Some(("`npm` was ended by a signal".into(), false))
         );
     }
 }

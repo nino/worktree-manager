@@ -141,6 +141,15 @@ fn debounce_loop(
             .map(|t| t.saturating_duration_since(Instant::now()))
             .unwrap_or(Duration::from_secs(3600));
         match rx.recv_timeout(timeout) {
+            Ok(Ok(event)) if event.need_rescan() => {
+                // Events were dropped (inotify's queue overflowed), and
+                // which worktrees they were for is unknown.
+                warn!("file events were lost; refreshing every worktree");
+                let when = Instant::now() + DEBOUNCE;
+                for (_, key) in prefixes.read().iter() {
+                    due.insert(key.clone(), when);
+                }
+            }
             Ok(Ok(event)) if !changes_something(&event.kind) => {}
             Ok(Ok(event)) => {
                 let prefixes = prefixes.read();
