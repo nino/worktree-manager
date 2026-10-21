@@ -159,7 +159,9 @@ fn grows(e: &Element, axis: Axis) -> bool {
         Element::Text(t) => t.grow,
         // Fields stretch along a row, the way a text field's low hugging
         // priority makes it on macOS; nothing makes one taller.
-        Element::Field(_) | Element::Combo(_) | Element::TextBlock(_) => axis == Axis::Horizontal,
+        Element::Field(_) | Element::Combo(_) | Element::TextBlock(_) | Element::TextArea(_) => {
+            axis == Axis::Horizontal
+        }
         _ => false,
     }
 }
@@ -167,7 +169,11 @@ fn grows(e: &Element, axis: Axis) -> bool {
 /// Takes the whole width it is offered, across a column or in a form.
 fn fills_width(e: &Element) -> bool {
     match e {
-        Element::Field(_) | Element::Combo(_) | Element::TextBlock(_) | Element::Form(_) => true,
+        Element::Field(_)
+        | Element::Combo(_)
+        | Element::TextBlock(_)
+        | Element::TextArea(_)
+        | Element::Form(_) => true,
         Element::Text(t) => t.wrap,
         Element::Stack(s) => {
             s.grow
@@ -507,7 +513,7 @@ impl Engine<'_> {
             // A caption sits level with a control, and with the first line
             // of text.
             let caption_y = match row.content {
-                Element::Text(_) | Element::TextBlock(_) => y,
+                Element::Text(_) | Element::TextBlock(_) | Element::TextArea(_) => y,
                 _ => y + ((h - caption.height) / 2.0).max(0.0),
             };
             out.captions.push((!row.caption.is_empty()).then(|| {

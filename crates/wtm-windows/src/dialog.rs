@@ -396,6 +396,9 @@ fn class_is(h: HWND, name: &str) -> bool {
 
 /// Return, Escape and Tab for the dialog `root`.
 pub fn pre_translate(root: HWND, m: &MSG) -> bool {
+    if crate::controls::tab_out_of_text_area(root, m) {
+        return true;
+    }
     if m.message == WM_KEYDOWN {
         let vk = VIRTUAL_KEY(m.wParam.0 as u16);
         let focus = unsafe { GetFocus() };
@@ -407,7 +410,8 @@ pub fn pre_translate(root: HWND, m: &MSG) -> bool {
             cancel();
             return true;
         }
-        if vk == VK_RETURN {
+        // Return in a text area starts a line (`ES_WANTRETURN`).
+        if vk == VK_RETURN && !crate::controls::is_text_area(focus) {
             let i = with_state(|s| {
                 let d = s.dialog.as_ref()?;
                 Some(d.index_of(focus).unwrap_or(0))

@@ -25,6 +25,7 @@ pub fn icon_name(icon: Icon) -> Option<&'static str> {
         Icon::Folder => "folder-symbolic",
         Icon::Delete => "user-trash-symbolic",
         Icon::Close => "window-close-symbolic",
+        Icon::Feedback => "mail-message-new-symbolic",
         Icon::Merge | Icon::Editor | Icon::Terminal | Icon::Chevrons => return None,
     })
 }
