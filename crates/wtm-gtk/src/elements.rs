@@ -11,7 +11,7 @@ use gtk::prelude::*;
 
 use wtm_toolkit::{
     Align, Axis, Badge, Button, ButtonKind, Choice, Combo, Element, Field, Id, Segmented, Shrink,
-    Spinner, Stack, Text, TextAlign, Tint,
+    Spinner, Stack, Text, TextAlign, TextArea, Tint,
 };
 
 use crate::draw;
@@ -46,6 +46,7 @@ enum Kind {
         s: gtk::Spinner,
     },
     Field(FieldNode),
+    TextArea(TextAreaNode),
     Combo(ComboNode),
     Segmented(SegmentedNode),
     Choice(ChoiceNode),
@@ -119,6 +120,10 @@ impl Node {
             Element::Field(f) => {
                 let node = FieldNode::new(f);
                 (Some(node.entry.clone().upcast()), Kind::Field(node))
+            }
+            Element::TextArea(t) => {
+                let node = TextAreaNode::new(t);
+                (Some(node.scroll.clone().upcast()), Kind::TextArea(node))
             }
             Element::Combo(c) => {
                 let node = ComboNode::new(c);
@@ -242,6 +247,7 @@ impl Node {
                 true
             }
             (Kind::Field(n), Element::Field(f)) => n.patch(f),
+            (Kind::TextArea(n), Element::TextArea(t)) => n.patch(t),
             (Kind::Combo(n), Element::Combo(c)) => n.patch(c),
             (Kind::Segmented(n), Element::Segmented(s)) => n.patch(s),
             (Kind::Choice(n), Element::Choice(c)) => n.patch(c),
@@ -290,6 +296,7 @@ impl Node {
             Kind::Badge { .. } => matches!(el, Element::Badge(_)),
             Kind::Spinner { .. } => matches!(el, Element::Spinner(_)),
             Kind::Field(_) => matches!(el, Element::Field(_)),
+            Kind::TextArea(_) => matches!(el, Element::TextArea(_)),
             Kind::Combo(_) => matches!(el, Element::Combo(_)),
             Kind::Segmented(_) => matches!(el, Element::Segmented(_)),
             Kind::Choice(_) => matches!(el, Element::Choice(_)),
@@ -309,7 +316,9 @@ impl Node {
             Element::Text(t) => (t.grow, t.hidden),
             Element::Button(b) => (false, b.hidden),
             Element::Flex => (true, false),
-            Element::Field(_) | Element::Combo(_) => (axis == Axis::Horizontal, false),
+            Element::Field(_) | Element::Combo(_) | Element::TextArea(_) => {
+                (axis == Axis::Horizontal, false)
+            }
             _ => (false, false),
         };
         match axis {
@@ -370,6 +379,7 @@ impl Node {
             Kind::Stack { children, .. } => children.iter().find_map(|c| c.find(id)),
             Kind::Form { rows, .. } => rows.iter().find_map(|r| r.content.find(id)),
             Kind::Field(n) if n.id == id => Some(n.entry.clone().upcast()),
+            Kind::TextArea(n) if n.id == id => Some(n.view.clone().upcast()),
             Kind::Combo(n) if n.id == id => Some(n.entry.clone().upcast()),
             Kind::Segmented(n) if n.id == id => n.buttons.first().map(|b| b.clone().upcast()),
             Kind::Choice(n) if n.id == id => Some(n.dropdown.clone().upcast()),
@@ -644,6 +654,61 @@ pub fn set_entry(entry: &gtk::Entry, value: &str, placeholder: &str, enabled: bo
     set_sensitive(entry, enabled || typing);
 }
 
+pub struct TextAreaNode {
+    pub id: Id,
+    pub scroll: gtk::ScrolledWindow,
+    pub view: gtk::TextView,
+    on_change: Slot<String>,
+}
+
+impl TextAreaNode {
+    fn new(t: &TextArea) -> TextAreaNode {
+        let view = gtk::TextView::new();
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        view.set_accepts_tab(false);
+        view.set_left_margin(6);
+        view.set_right_margin(6);
+        view.set_top_margin(6);
+        view.set_bottom_margin(6);
+        let on_change = slot(&t.on_change);
+        let s = on_change.clone();
+        view.buffer().connect_changed(move |b| {
+            let text = b.text(&b.start_iter(), &b.end_iter(), false);
+            fire(&s, text.to_string());
+        });
+        let scroll = gtk::ScrolledWindow::new();
+        scroll.set_child(Some(&view));
+        scroll.set_has_frame(true);
+        scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scroll.set_min_content_width(320);
+        // A body line is about 20 pixels in the default themes.
+        scroll.set_min_content_height(t.lines.max(1) as i32 * 20 + 12);
+        let mut n = TextAreaNode {
+            id: t.id,
+            scroll,
+            view,
+            on_change,
+        };
+        n.patch(t);
+        n
+    }
+
+    fn patch(&mut self, t: &TextArea) -> bool {
+        if t.id != self.id {
+            return false;
+        }
+        put(&self.on_change, &t.on_change);
+        // The field rules, as for an entry (`set_entry`).
+        let typing = has_keyboard(&self.view);
+        let buffer = self.view.buffer();
+        if !typing && buffer.text(&buffer.start_iter(), &buffer.end_iter(), false) != t.value {
+            buffer.set_text(&t.value);
+        }
+        set_sensitive(&self.view, t.enabled || typing);
+        true
+    }
+}
+
 pub struct ComboNode {
     pub id: Id,
     pub root: gtk::Box,
@@ -844,7 +909,13 @@ impl FormRowNode {
             let l = gtk::Label::new(Some(&r.caption));
             l.set_xalign(1.0);
             l.set_halign(gtk::Align::End);
-            l.set_valign(gtk::Align::Center);
+            // Level with a tall field's first line, not its middle.
+            if matches!(r.content, Element::TextArea(_)) {
+                l.set_valign(gtk::Align::Start);
+                l.set_margin_top(6);
+            } else {
+                l.set_valign(gtk::Align::Center);
+            }
             grid.attach(&l, 0, row, 1, 1);
             l
         });
@@ -855,7 +926,10 @@ impl FormRowNode {
             if !wraps
                 && !matches!(
                     r.content,
-                    Element::Field(_) | Element::Combo(_) | Element::Stack(_)
+                    Element::Field(_)
+                        | Element::TextArea(_)
+                        | Element::Combo(_)
+                        | Element::Stack(_)
                 )
             {
                 w.set_halign(gtk::Align::Start);

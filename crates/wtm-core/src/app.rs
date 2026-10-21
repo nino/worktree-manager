@@ -36,7 +36,7 @@ use crate::git::{
 use crate::model::{Busy, Model, Notice, PendingCreation, RepoNode, Tone};
 use crate::paths::tildify;
 use crate::repos::{describe_add_failure, inspect_repo};
-use crate::telemetry::{Curl, Reporter};
+use crate::telemetry::{Curl, Feedback, Reporter};
 use crate::types::*;
 use crate::ui_state::{UiState, UiStateStore};
 use crate::watcher::{linked_gitdir, WatchKey, Watcher};
@@ -102,6 +102,9 @@ pub enum Action {
         text: String,
         tone: Tone,
     },
+    /// Send what the user wrote in the Feedback window, whether error
+    /// reports are on or not (see `telemetry`). The reply says how it went.
+    SendFeedback(Feedback, Reply<Result<(), String>>),
 }
 
 /// How long after the first change of a burst the window state is written.
@@ -407,6 +410,7 @@ impl App {
             }
             Action::ClearNotice => self.update(|m| m.notice = None),
             Action::ShowNotice { text, tone } => self.notify(tone, text),
+            Action::SendFeedback(feedback, reply) => self.inner.reporter.feedback(&feedback, reply),
         }
     }
 

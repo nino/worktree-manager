@@ -139,6 +139,8 @@ pub enum Bind {
     Press(Handler),
     /// A field: reports each edit.
     Text(Handler<String>),
+    /// A multi-line field: reports each edit, with `\n` line breaks.
+    Lines(Handler<String>),
     /// An editable combo box: typing and picks from its list.
     Combo(Handler<String>),
     /// A drop-down list.
@@ -1209,6 +1211,7 @@ pub fn command(ctl: HWND, code: u32) {
     match bind {
         Bind::Press(h) if code == BN_CLICKED => h.call(()),
         Bind::Text(h) if code == EN_CHANGE => h.call(text_of(ctl)),
+        Bind::Lines(h) if code == EN_CHANGE => h.call(text_of(ctl).replace("\r\n", "\n")),
         Bind::Combo(h) => match code {
             CBN_EDITCHANGE => h.call(text_of(ctl)),
             CBN_SELCHANGE => {
@@ -1291,7 +1294,7 @@ pub fn pre_translate(m: &MSG) -> bool {
     }
     if root != main {
         // A panel: the menu's shortcuts work there too, then dialog keys.
-        if accelerate(m) {
+        if accelerate(m) || crate::controls::tab_out_of_text_area(root, m) {
             return true;
         }
         return unsafe { IsDialogMessageW(root, m) }.as_bool();

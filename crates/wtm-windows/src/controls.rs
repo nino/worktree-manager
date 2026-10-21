@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, IsWindowEnabled, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, TrackMouseEvent, TME_LEAVE,
+    TRACKMOUSEEVENT, VK_CONTROL, VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -47,6 +48,7 @@ pub const ES_AUTOHSCROLL_: u32 = 0x80;
 pub const ES_AUTOVSCROLL_: u32 = 0x40;
 pub const ES_READONLY_: u32 = 0x800;
 pub const ES_NOHIDESEL_: u32 = 0x100;
+pub const ES_WANTRETURN_: u32 = 0x1000;
 pub const CBS_DROPDOWN_: u32 = 2;
 pub const CBS_DROPDOWNLIST_: u32 = 3;
 pub const CBS_AUTOHSCROLL_: u32 = 0x40;
@@ -136,6 +138,42 @@ pub fn enable(h: HWND, on: bool) {
 pub fn has_focus(h: HWND) -> bool {
     let f = unsafe { GetFocus() };
     !f.is_invalid() && (f == h || unsafe { IsChild(h, f).as_bool() })
+}
+
+/// Whether `h` is an editable multi-line edit: a `TextArea`.
+pub fn is_text_area(h: HWND) -> bool {
+    if h.is_invalid() {
+        return false;
+    }
+    let style = unsafe { GetWindowLongW(h, GWL_STYLE) } as u32;
+    let mut class = [0u16; 16];
+    let n = unsafe { GetClassNameW(h, &mut class) };
+    style & ES_MULTILINE_ != 0
+        && style & ES_READONLY_ == 0
+        && String::from_utf16_lossy(&class[..n.max(0) as usize]).eq_ignore_ascii_case("Edit")
+}
+
+/// Tab and Shift-Tab out of a text area in the window `root`, for the
+/// message loop to run before `IsDialogMessage`. A multi-line edit asks for
+/// every key, and in a dialog-like window answers Tab by sending
+/// `WM_NEXTDLGCTL` to its parent, which only a real dialog acts on; the
+/// panels and dialogs here are plain windows, so Tab would do nothing.
+/// Ctrl-Tab still types a tab. `true`: handled.
+pub fn tab_out_of_text_area(root: HWND, m: &MSG) -> bool {
+    if m.message != WM_KEYDOWN || m.wParam.0 as u16 != VK_TAB.0 {
+        return false;
+    }
+    let focus = unsafe { GetFocus() };
+    if !is_text_area(focus) || unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0 {
+        return false;
+    }
+    let back = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+    if let Ok(next) = unsafe { GetNextDlgTabItem(root, Some(focus), back) } {
+        unsafe {
+            let _ = SetFocus(Some(next));
+        }
+    }
+    true
 }
 
 /// Enable a field unless it would take the keyboard away from someone

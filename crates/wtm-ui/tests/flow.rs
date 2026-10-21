@@ -12,6 +12,7 @@ use wtm_core::{Action, App, AppSettings, Focus, UiState};
 use wtm_platform::{AppDirs, NoUpdater, Platform};
 use wtm_toolkit::headless::Harness;
 use wtm_toolkit::{Dialog, Effect, Element, Frame, HostEvent, RowContent, View};
+use wtm_ui::feedback::{self, FeedbackMsg};
 use wtm_ui::{Msg, Ui};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -701,4 +702,54 @@ impl Rows for Element {
         });
         out
     }
+}
+
+#[test]
+fn feedback_keeps_the_draft_and_ignores_another_windows_answer() {
+    let (_base, _repo, _app, h) = listed("feedback");
+    let open = h.view().toolbar_button("feedback").unwrap().clone();
+    h.fire(&open, ());
+    let v = h.view();
+    let panel = v.panel("feedback").expect("the feedback window");
+    assert_eq!(panel.focus, Some("message"));
+    let send = panel.body.button("send").unwrap();
+    assert!(!send.enabled, "nothing written yet");
+    let message = panel.body.text_area("message").unwrap().on_change.clone();
+    h.fire(&message, "The list\nflickers".to_string());
+    let send = h
+        .view()
+        .panel("feedback")
+        .unwrap()
+        .body
+        .button("send")
+        .unwrap()
+        .clone();
+    assert!(send.enabled);
+    h.fire(&send.on_press, ());
+    // A debug build has no keys: the window says so and keeps the draft.
+    let v = h.wait_for(WAIT, "the send to fail", |v| {
+        v.panel("feedback")
+            .and_then(|p| p.body.text("status"))
+            .is_some_and(|t| t.content.to_plain().contains("released builds"))
+    });
+    let body = &v.panel("feedback").unwrap().body;
+    assert_eq!(
+        body.text_area("message").unwrap().value,
+        "The list\nflickers"
+    );
+    assert!(body.button("send").unwrap().enabled, "can try again");
+
+    // An answer to an earlier send, after the window was closed and
+    // opened again, leaves the new draft alone.
+    let close = v.panel("feedback").unwrap().on_close.clone();
+    h.fire(&close, ());
+    h.fire(&open, ());
+    h.send(Msg::Feedback(FeedbackMsg::Sent(1, Ok(()))));
+    let v = h.wait_for(WAIT, "the thanks", |v| {
+        v.window
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.texts().iter().any(|t| t.contains(feedback::THANKS)))
+    });
+    assert!(v.panel("feedback").is_some(), "the new window stayed");
 }
