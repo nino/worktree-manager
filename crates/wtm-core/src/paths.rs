@@ -40,6 +40,32 @@ pub fn tildify(path: &str, home: &str) -> String {
     path.to_string()
 }
 
+/// The worktrees root as a folder: a leading `~` is the home folder, as the
+/// Settings field's placeholder suggests. Nothing else is expanded, and a
+/// path that is still relative is returned as it is; see
+/// [`worktrees::create_worktree`](crate::worktrees::create_worktree) for why
+/// that is refused.
+pub fn expand_home(path: &str, home: &str) -> String {
+    expand_home_for(path, home, cfg!(windows))
+}
+
+/// [`expand_home`], for Windows or not: elsewhere a backslash is part of a
+/// file name, so `~\\x` is not inside the home folder.
+pub fn expand_home_for(path: &str, home: &str, windows: bool) -> String {
+    let path = path.trim();
+    if home.is_empty() {
+        return path.to_string();
+    }
+    match path.strip_prefix('~') {
+        Some("") => home.to_string(),
+        Some(rest) if rest.starts_with('/') || (windows && rest.starts_with('\\')) => {
+            format!("{}{rest}", home.trim_end_matches(['/', '\\']))
+        }
+        // `~bob` is another user's home, which is not ours to guess.
+        _ => path.to_string(),
+    }
+}
+
 /// Turn a branch name into a filesystem-safe directory segment.
 pub fn slugify_branch(branch: &str) -> String {
     let mut out = String::with_capacity(branch.len());
@@ -128,6 +154,22 @@ mod tests {
         assert_eq!(normalise_for(r"\\server\share", true), "//server/share");
         // A backslash in a Unix name is part of the name.
         assert_eq!(normalise_for(r"/tmp/a\b", false), r"/tmp/a\b");
+    }
+
+    #[test]
+    fn a_tilde_in_the_worktrees_root_is_the_home_folder() {
+        assert_eq!(expand_home("~", "/Users/me"), "/Users/me");
+        assert_eq!(expand_home("~/wt", "/Users/me"), "/Users/me/wt");
+        assert_eq!(expand_home(" ~/wt ", "/Users/me/"), "/Users/me/wt");
+        assert_eq!(
+            expand_home_for(r"~\wt", "C:/Users/me", true),
+            r"C:/Users/me\wt"
+        );
+        assert_eq!(expand_home_for(r"~\wt", "/Users/me", false), r"~\wt");
+        assert_eq!(expand_home("/srv/wt", "/Users/me"), "/srv/wt");
+        assert_eq!(expand_home("~bob/wt", "/Users/me"), "~bob/wt");
+        assert_eq!(expand_home("/a/~/b", "/Users/me"), "/a/~/b");
+        assert_eq!(expand_home("~/wt", ""), "~/wt");
     }
 
     #[test]

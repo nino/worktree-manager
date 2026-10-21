@@ -181,7 +181,16 @@ impl App {
             repos: Vec::new(),
             busy: Default::default(),
             pending: Vec::new(),
-            notice: None,
+            // Said once, at the launch that set the file aside: the list is
+            // empty and nothing else on screen would say why.
+            notice: store.set_aside().map(|copy| Notice {
+                tone: Tone::Error,
+                text: format!(
+                    "The settings file could not be read, so the app started without it. A copy is at {}.",
+                    tildify(&crate::paths::normalise(&copy.to_string_lossy()), &home)
+                ),
+                id: 0,
+            }),
             refreshing: false,
             fetching: false,
             home,
@@ -778,7 +787,7 @@ impl App {
         let app = self.clone();
         self.inner.rt.spawn(async move {
             let model = app.model();
-            let root = model.config.worktrees_root.clone();
+            let root = model.worktrees_root();
             let copy_include = model.config.copy_worktree_include;
             let target = model.worktree_path(&repo, &params.branch);
             let lock = app.lock_for(&target.to_string_lossy());

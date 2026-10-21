@@ -633,3 +633,23 @@ fn worktreeinclude_copies_ignored_files_only_when_turned_on() {
         .map_or(true, |n| !n.text.contains("worktreeinclude")));
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn an_unreadable_config_is_set_aside_and_the_window_says_where() {
+    let base = temp_dir("unreadable-config");
+    std::fs::create_dir_all(base.join("config")).unwrap();
+    std::fs::write(base.join("config/config.json"), "{\"repos\": [").unwrap();
+    let dirs = AppDirs {
+        config_dir: base.join("config"),
+        home: base.to_path_buf(),
+        legacy_config_files: vec![],
+    };
+    let app = App::new(Arc::new(StubPlatform), dirs);
+    let notice = app.model().notice.clone().expect("a notice");
+    assert_eq!(notice.tone, wtm_core::model::Tone::Error);
+    assert!(
+        notice.text.contains("~/config/config.unreadable-"),
+        "{}",
+        notice.text
+    );
+}

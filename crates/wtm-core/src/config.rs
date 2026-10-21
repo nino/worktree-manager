@@ -21,6 +21,9 @@ const CONFIG_FILE: &str = "config.json";
 pub struct ConfigStore {
     path: PathBuf,
     config: AppConfig,
+    /// Where an unreadable config file was copied at this launch, for the
+    /// app to tell the user.
+    set_aside: Option<PathBuf>,
 }
 
 impl ConfigStore {
@@ -28,7 +31,39 @@ impl ConfigStore {
     /// falling back to defaults when nothing is readable.
     pub fn load(dirs: &AppDirs) -> Self {
         let path = dirs.config_dir.join(CONFIG_FILE);
-        let mut config: AppConfig = read_json(&path, "config")
+        let read = read_json(&path, "config");
+        // A file that is there but cannot be read (cut short, edited by
+        // hand, written by a newer version) is about to be replaced by the
+        // save below. Keep a copy, or the user's repo list is gone for good.
+        let mut keep_file = false;
+        let mut set_aside = None;
+        if read.is_none() && path.exists() {
+            let backup = path.with_extension(format!(
+                "unreadable-{}.json",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default()
+            ));
+            match std::fs::copy(&path, &backup) {
+                Ok(_) => {
+                    warn!(
+                        "{} could not be read; it was copied to {}",
+                        path.display(),
+                        backup.display()
+                    );
+                    set_aside = Some(backup);
+                }
+                Err(e) => {
+                    warn!(
+                        "{} could not be read, nor copied aside ({e}); leaving it as it is",
+                        path.display()
+                    );
+                    keep_file = true;
+                }
+            }
+        }
+        let mut config: AppConfig = read
             .or_else(|| {
                 dirs.legacy_config_files.iter().find_map(|legacy| {
                     let c = read_json(legacy, "config")?;
@@ -44,9 +79,20 @@ impl ConfigStore {
         for repo in &mut config.repos {
             repo.name = sanitize_repo_name(&repo.name);
         }
-        let store = Self { path, config };
-        store.save();
+        let store = Self {
+            path,
+            config,
+            set_aside,
+        };
+        if !keep_file {
+            store.save();
+        }
         store
+    }
+
+    /// The copy of a config file this launch could not read, if there was one.
+    pub fn set_aside(&self) -> Option<&Path> {
+        self.set_aside.as_deref()
     }
 
     pub fn config(&self) -> &AppConfig {
@@ -201,6 +247,39 @@ mod tests {
             .map(|r| r.name.as_str())
             .collect();
         assert_eq!(names, ["repo", "-", "x---y"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_config_is_kept_before_defaults_replace_it() {
+        let dir = std::env::temp_dir().join(format!("wtm-config-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dirs = AppDirs {
+            config_dir: dir.join("config"),
+            home: dir.clone(),
+            legacy_config_files: Vec::new(),
+        };
+        std::fs::create_dir_all(&dirs.config_dir).unwrap();
+        // Cut short mid-write by something other than this app.
+        let bad = r#"{"worktreesRoot":"/w","editorCommand":"c","repos":[{"id":"1""#;
+        std::fs::write(dirs.config_dir.join(CONFIG_FILE), bad).unwrap();
+        let store = ConfigStore::load(&dirs);
+        assert!(store.config().repos.is_empty());
+        let kept: Vec<String> = std::fs::read_dir(&dirs.config_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("config.unreadable-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            store.set_aside(),
+            Some(dirs.config_dir.join(&kept[0]).as_path())
+        );
+        assert_eq!(
+            std::fs::read_to_string(dirs.config_dir.join(&kept[0])).unwrap(),
+            bad
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
