@@ -78,7 +78,12 @@ impl Watcher {
         *self.prefixes.write() = prefixes;
 
         for old in self.watched.iter().filter(|p| !want.contains(p)) {
-            let _ = self.inner.unwatch(old);
+            // A deleted worktree's folder is gone, and its watch with it.
+            if let Err(e) = self.inner.unwatch(old) {
+                if old.exists() {
+                    warn!("cannot stop watching {}: {e}", old.display());
+                }
+            }
         }
         for new in want.iter().filter(|p| !self.watched.contains(p)) {
             if let Err(e) = self.inner.watch(new, RecursiveMode::Recursive) {
@@ -86,6 +91,20 @@ impl Watcher {
             }
         }
         self.watched = want;
+    }
+}
+
+/// Whether an event can change what a row shows. inotify also reports files
+/// being opened and read, and every refresh reads the index, `HEAD` and the
+/// refs: counting those had each refresh schedule the next, so on Linux
+/// every listed worktree was refreshed about three times a second for as
+/// long as the app ran. A closed write still counts.
+fn changes_something(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    match kind {
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        notify::EventKind::Access(_) => false,
+        _ => true,
     }
 }
 
@@ -122,6 +141,7 @@ fn debounce_loop(
             .map(|t| t.saturating_duration_since(Instant::now()))
             .unwrap_or(Duration::from_secs(3600));
         match rx.recv_timeout(timeout) {
+            Ok(Ok(event)) if !changes_something(&event.kind) => {}
             Ok(Ok(event)) => {
                 let prefixes = prefixes.read();
                 for path in &event.paths {
@@ -129,11 +149,16 @@ fn debounce_loop(
                         continue;
                     }
                     if let Some((_, key)) = prefixes.iter().find(|(p, _)| path.starts_with(p)) {
+                        // `RUST_LOG=wtm_core::watcher=debug` says what keeps
+                        // a row refreshing.
+                        debug!("{:?} {}", event.kind, path.display());
                         due.insert(key.clone(), Instant::now() + DEBOUNCE);
                     }
                 }
             }
-            Ok(Err(e)) => debug!("watch error: {e}"),
+            // A lost or overflowing watch means rows stop following the
+            // disk until the next refresh, with nothing on screen to say so.
+            Ok(Err(e)) => warn!("watch error: {e}"),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
@@ -181,5 +206,24 @@ mod tests {
         assert!(!is_noise(Path::new("/r/.git/index")));
         assert!(!is_noise(Path::new("/r/.git/worktrees/x/index")));
         assert!(!is_noise(Path::new("/r/src/main.rs")));
+    }
+
+    #[test]
+    fn reading_a_file_is_not_a_change() {
+        use notify::event::{AccessKind, AccessMode, DataChange, ModifyKind};
+        use notify::EventKind;
+        assert!(!changes_something(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!changes_something(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+        assert!(changes_something(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+        assert!(changes_something(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(changes_something(&EventKind::Any));
     }
 }

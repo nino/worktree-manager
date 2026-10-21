@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-use log::info;
+use log::{info, warn};
 use wtm_platform::{AppDirs, Platform};
 
 use crate::shell;
@@ -57,8 +57,21 @@ impl Platform for WindowsPlatform {
         if let (Some(dir), None) = (cwd, &unc) {
             c.current_dir(dir);
         }
-        // The child is not waited for; dropping the handle leaves it running.
-        c.spawn().map(|_| ())
+        // Waited for on a thread of its own, only to log a failed exit:
+        // nothing on screen says that an editor command was not found.
+        let mut child = c.spawn()?;
+        let program = wtm_platform::program_name(command_line).to_string();
+        std::thread::Builder::new()
+            .name("wtm-reap".into())
+            .spawn(move || match child.wait() {
+                Ok(status) => {
+                    if let Some(problem) = wtm_platform::launch_failure(&program, status.code()) {
+                        warn!("{problem}");
+                    }
+                }
+                Err(e) => warn!("cannot wait for `{program}`: {e}"),
+            })?;
+        Ok(())
     }
 
     fn quote(&self, value: &str) -> String {

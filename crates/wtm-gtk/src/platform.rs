@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 
-use log::info;
+use log::{info, warn};
 use wtm_platform::{AppDirs, Platform};
 
 pub struct LinuxPlatform;
@@ -33,7 +33,12 @@ fn launching_disabled(what: &str) -> bool {
 /// children would otherwise share its controlling terminal and be hung up
 /// with it when that terminal closes, taking an editor or a terminal window
 /// the user opened from the app with them.
-fn spawn(mut cmd: Command) -> std::io::Result<()> {
+///
+/// With `report`, a failed exit is logged under that name: nothing else says
+/// that an editor command was not found or `xdg-open` had no handler. A
+/// terminal is not reported, since its status is that of the last command
+/// typed into it.
+fn spawn(mut cmd: Command, report: Option<String>) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     extern "C" {
         fn setsid() -> i32;
@@ -56,7 +61,16 @@ fn spawn(mut cmd: Command) -> std::io::Result<()> {
         .name("wtm-reap".into())
         .spawn(move || {
             let mut child = child;
-            let _ = child.wait();
+            let status = child.wait();
+            let Some(program) = report else { return };
+            match status {
+                Ok(status) => {
+                    if let Some(problem) = wtm_platform::launch_failure(&program, status.code()) {
+                        warn!("{problem}");
+                    }
+                }
+                Err(e) => warn!("cannot wait for `{program}`: {e}"),
+            }
         })?;
     Ok(())
 }
@@ -77,7 +91,10 @@ impl Platform for LinuxPlatform {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        spawn(cmd)
+        spawn(
+            cmd,
+            Some(wtm_platform::program_name(command_line).to_string()),
+        )
     }
 
     fn open_in_terminal(&self, path: &Path) -> std::io::Result<()> {
@@ -107,7 +124,7 @@ impl Platform for LinuxPlatform {
             // when it has no flag for one (xterm), and it costs nothing for
             // the ones that do.
             cmd.current_dir(path);
-            match spawn(cmd) {
+            match spawn(cmd, None) {
                 Ok(()) => return Ok(()),
                 Err(e) => last = e,
             }
@@ -128,7 +145,7 @@ impl Platform for LinuxPlatform {
         };
         let mut cmd = Command::new("xdg-open");
         cmd.arg(target);
-        spawn(cmd)
+        spawn(cmd, Some("xdg-open".into()))
     }
 
     fn terminal_note(&self) -> &'static str {
@@ -468,7 +485,7 @@ mod tests {
         let _ = std::fs::remove_file(&out);
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "cat /proc/$$/stat > \"$0\"", out.to_str().unwrap()]);
-        spawn(cmd).unwrap();
+        spawn(cmd, None).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let child = loop {
             match std::fs::read_to_string(&out) {

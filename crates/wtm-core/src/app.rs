@@ -324,13 +324,18 @@ impl App {
                     .repo(&id)
                     .map(|n| n.repo.main_branch != repo.main_branch)
                     .unwrap_or(true);
-                self.inner.store.lock().update_repo(repo);
+                if !self.inner.store.lock().update_repo(repo) {
+                    // The settings sheet saved a repo the config no longer
+                    // has; the edit is dropped without a word on screen.
+                    warn!("repo settings saved for an unknown repo {id}");
+                }
                 self.apply_config();
                 if changed_trunk {
                     self.spawn_refresh_repo(id);
                 }
             }
             Action::RemoveRepo(id) => {
+                info!("removing repo {id}");
                 self.inner.store.lock().remove_repo(&id);
                 self.apply_config();
                 self.rewatch();
@@ -718,6 +723,7 @@ impl App {
                         let added = app.inner.store.lock().add_repo(root.clone(), main);
                         match added {
                             Some(name) => {
+                                info!("added repo {name} at {root}");
                                 result.added.push(name);
                                 if let Some(r) = app
                                     .inner
@@ -761,6 +767,8 @@ impl App {
 
     fn create_worktree(&self, params: CreateWorktreeParams) {
         let Some(repo) = self.repo_config(&params.repo_id) else {
+            // No placeholder row appears, so the sheet just closes.
+            warn!("create: unknown repo {}", params.repo_id);
             return;
         };
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
@@ -808,6 +816,7 @@ impl App {
             };
             match outcome {
                 Ok((path, warning)) => {
+                    info!("created worktree {path}");
                     if let Some(warning) = warning {
                         app.notify(Tone::Error, warning);
                     }
@@ -858,9 +867,12 @@ impl App {
                 worktrees::delete_worktree(&repo, &params).await
             };
             if result.ok {
+                info!("deleted worktree {path}");
                 app.refresh_repo(repo.id.clone()).await;
                 app.rewatch();
-            } else if result.reason != Some(DeleteRefusal::Dirty) {
+            } else if result.reason == Some(DeleteRefusal::Dirty) {
+                info!("not deleting {path} yet: it has changes");
+            } else {
                 // A dirty tree is the ladder working, not a fault.
                 app.inner
                     .reporter
@@ -884,6 +896,11 @@ impl App {
             + 'static,
     {
         let Some(repo) = self.repo_config(&repo_id) else {
+            // The button does nothing, and no spinner or notice says why.
+            warn!(
+                "{}: unknown repo {repo_id}",
+                busy.label().trim_end_matches('…')
+            );
             return;
         };
         self.update(|m| {
@@ -901,8 +918,10 @@ impl App {
             app.update(|m| {
                 m.busy.remove(&path);
             });
-            if !result.ok {
-                let label = busy.label().trim_end_matches('…');
+            let label = busy.label().trim_end_matches('…');
+            if result.ok {
+                info!("{label}: done in {path}");
+            } else {
                 app.notify(Tone::Error, format!("{label} failed: {}", result.message));
             }
         });
@@ -912,6 +931,7 @@ impl App {
 
     fn spawn_fetch_repo(&self, repo_id: String) {
         let Some(repo) = self.repo_config(&repo_id) else {
+            warn!("fetch: unknown repo {repo_id}");
             return;
         };
         let app = self.clone();
@@ -953,7 +973,7 @@ impl App {
 
 fn load_snapshot(dirs: &AppDirs) -> Option<Vec<RepoNode>> {
     let path = dirs.config_dir.join("snapshot.json");
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = crate::config::read_if_present(&path, "snapshot")?;
     serde_json::from_str(&text)
         .map_err(|e| warn!("ignoring {}: {e}", path.display()))
         .ok()

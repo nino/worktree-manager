@@ -9,6 +9,9 @@ use std::fmt;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use log::{debug, info, warn};
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -18,6 +21,11 @@ use crate::types::{WorktreeInfo, WorktreeStatus};
 
 /// Maximum number of git processes in flight at once.
 const MAX_CONCURRENT_GIT: usize = 12;
+
+/// A git run at least this long is logged at `info`, the rest at `debug`:
+/// `RUST_LOG=info` then shows what makes a refresh slow without a line for
+/// every one of its hundreds of calls.
+const SLOW_GIT: Duration = Duration::from_secs(1);
 
 fn gate() -> &'static Semaphore {
     static GATE: OnceLock<Semaphore> = OnceLock::new();
@@ -86,7 +94,9 @@ pub async fn run_git_bytes(
     also_ok: &[i32],
 ) -> GitResult<Vec<u8>> {
     let cwd = cwd.as_ref();
+    let queued = Instant::now();
     let _permit = gate().acquire().await.expect("git gate never closes");
+    let started = Instant::now();
     let mut command = Command::new("git");
     if let Some(f) = configure().get() {
         f(command.as_std_mut());
@@ -119,6 +129,25 @@ pub async fn run_git_bytes(
         }
         Err(e) => Err(e),
     };
+    let took = started.elapsed();
+    let waited = started - queued;
+    if took >= SLOW_GIT {
+        info!(
+            "git {} in {}: {} ms (after {} ms queued)",
+            args.join(" "),
+            cwd.display(),
+            took.as_millis(),
+            waited.as_millis()
+        );
+    } else {
+        debug!(
+            "git {} in {}: {} ms (after {} ms queued)",
+            args.join(" "),
+            cwd.display(),
+            took.as_millis(),
+            waited.as_millis()
+        );
+    }
     let mk = |message: String, stderr: String| GitError {
         message,
         cwd: cwd.to_string_lossy().into_owned(),
@@ -414,7 +443,12 @@ async fn ahead_behind_trunk(worktree_path: &str, trunk_ref: &str) -> (Option<u32
             let (behind, ahead) = parse_left_right_count(&out);
             (Some(ahead), Some(behind))
         }
-        Err(_) => (None, None),
+        Err(e) => {
+            // The row shows no ahead/behind counts. Not a warning: a repo
+            // whose configured trunk does not exist fails here every time.
+            debug!("no ahead/behind for {worktree_path}: {}", e.detail());
+            (None, None)
+        }
     }
 }
 
@@ -456,7 +490,11 @@ pub async fn worktree_info(
     let status = if w.prunable {
         None
     } else {
-        worktree_status(&w.path, trunk_ref).await.ok()
+        // The row says "no status", and nothing says why.
+        worktree_status(&w.path, trunk_ref)
+            .await
+            .map_err(|e| warn!("no status for {}: {}", w.path, e.detail()))
+            .ok()
     };
     WorktreeInfo {
         path: w.path.clone(),
@@ -484,8 +522,11 @@ pub async fn list_worktrees(repo_path: &str, trunk_ref: &str) -> GitResult<Vec<W
     }
     let mut results: Vec<Option<WorktreeInfo>> = (0..order.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
-        if let Ok((i, info)) = joined {
-            results[i] = Some(info);
+        match joined {
+            Ok((i, info)) => results[i] = Some(info),
+            // The panic itself is reported by the panic hook; this says
+            // what it cost.
+            Err(e) => warn!("a worktree of {repo_path} is missing from its listing: {e}"),
         }
     }
     Ok(results.into_iter().flatten().collect())

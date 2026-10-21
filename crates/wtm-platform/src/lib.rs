@@ -62,6 +62,33 @@ pub fn posix_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// The program a command line starts: its first word. A launch failure is
+/// logged under this rather than the whole line, which holds whatever the
+/// user typed into a setting.
+pub fn program_name(command_line: &str) -> &str {
+    command_line.split_whitespace().next().unwrap_or("")
+}
+
+/// What to log when a program the app launched without waiting for it
+/// finishes with a failure; `None` when it succeeded. `code` is the exit
+/// code, `None` when a signal ended it. The shells' own codes for a command
+/// they could not find or run are spelt out, since those are what a
+/// mistyped editor command or a `PATH` without it come back as.
+pub fn launch_failure(program: &str, code: Option<i32>) -> Option<String> {
+    let why = match code {
+        Some(0) => return None,
+        None => return Some(format!("`{program}` was ended by a signal")),
+        // sh, bash and zsh; cmd's "is not recognized".
+        Some(127) | Some(9009) => " (command not found)",
+        Some(126) => " (not executable)",
+        Some(_) => "",
+    };
+    Some(format!(
+        "`{program}` exited with status {}{why}",
+        code.unwrap_or_default()
+    ))
+}
+
 /// The self-updater, where a platform has one (macOS today). Lives on the
 /// main thread; every method returns at once and does its work in the
 /// background, telling the UI through the callback given to `start` when
@@ -116,10 +143,41 @@ impl Updater for NoUpdater {
 
 #[cfg(test)]
 mod tests {
-    use super::posix_quote;
+    use super::*;
 
     #[test]
     fn quotes_single_quotes() {
         assert_eq!(posix_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn a_launch_names_only_its_program() {
+        assert_eq!(program_name("  code --wait '/tmp/x'"), "code");
+        assert_eq!(program_name(""), "");
+    }
+
+    #[test]
+    fn launch_failures_say_what_the_shell_meant() {
+        assert_eq!(launch_failure("code", Some(0)), None);
+        assert_eq!(
+            launch_failure("code", Some(127)).as_deref(),
+            Some("`code` exited with status 127 (command not found)")
+        );
+        assert_eq!(
+            launch_failure("code", Some(9009)).as_deref(),
+            Some("`code` exited with status 9009 (command not found)")
+        );
+        assert_eq!(
+            launch_failure("x", Some(126)).as_deref(),
+            Some("`x` exited with status 126 (not executable)")
+        );
+        assert_eq!(
+            launch_failure("npm", Some(1)).as_deref(),
+            Some("`npm` exited with status 1")
+        );
+        assert_eq!(
+            launch_failure("npm", None).as_deref(),
+            Some("`npm` was ended by a signal")
+        );
     }
 }

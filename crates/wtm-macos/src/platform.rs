@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-use log::info;
+use log::{info, warn};
 use wtm_platform::{AppDirs, Platform};
 
 /// Bundle id macOS uses when no default terminal override has been set.
@@ -27,6 +27,30 @@ fn launching_disabled(what: &str) -> bool {
     disabled
 }
 
+/// Start `command` with nothing attached and wait for it on a thread of its
+/// own: the caller must never wait on what it launched, and an unreaped
+/// child stays a zombie for as long as the app runs. A failed exit is logged
+/// under `program`, since nothing on screen says that an editor command was
+/// not found or `open` had no app for a bundle id.
+fn spawn(mut command: Command, program: String) -> std::io::Result<()> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::Builder::new()
+        .name("wtm-reap".into())
+        .spawn(move || match child.wait() {
+            Ok(status) => {
+                if let Some(problem) = wtm_platform::launch_failure(&program, status.code()) {
+                    warn!("{problem}");
+                }
+            }
+            Err(e) => warn!("cannot wait for `{program}`: {e}"),
+        })?;
+    Ok(())
+}
+
 impl Platform for MacPlatform {
     fn spawn_detached(&self, command_line: &str, cwd: Option<&Path>) -> std::io::Result<()> {
         if launching_disabled(command_line) {
@@ -37,13 +61,11 @@ impl Platform for MacPlatform {
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
-        command
-            .args(["-lc", command_line])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
+        command.args(["-lc", command_line]);
+        spawn(
+            command,
+            wtm_platform::program_name(command_line).to_string(),
+        )
     }
 
     /// Hand the folder to the default terminal's bundle via `open -b`
@@ -53,28 +75,21 @@ impl Platform for MacPlatform {
         if launching_disabled(&format!("a terminal in {}", path.display())) {
             return Ok(());
         }
-        Command::new("open")
-            .arg("-b")
-            .arg(default_terminal_bundle_id())
-            .arg(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
+        let terminal = default_terminal_bundle_id();
+        let mut command = Command::new("open");
+        command.arg("-b").arg(&terminal).arg(path);
+        // `open` returns once the terminal has the folder, so its status is
+        // whether the bundle id led anywhere.
+        spawn(command, format!("open -b {terminal}"))
     }
 
     fn reveal(&self, path: &Path) -> std::io::Result<()> {
         if launching_disabled(&format!("{} in Finder", path.display())) {
             return Ok(());
         }
-        Command::new("open")
-            .arg(path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
+        let mut command = Command::new("open");
+        command.arg(path);
+        spawn(command, "open".into())
     }
 
     fn file_manager_name(&self) -> &'static str {
