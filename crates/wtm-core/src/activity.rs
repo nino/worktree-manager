@@ -242,18 +242,17 @@ mod tests {
         // A new folder is dated by the newest file in it, however deep.
         fs::create_dir_all(wt.join("notes/deep")).unwrap();
         fs::write(wt.join("notes/deep/plan.md"), "x").unwrap();
-        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
-        fs::File::open(wt.join("notes"))
+        // Dated later than any folder could be, so only reading the file
+        // gives this time. (Windows cannot open a folder to date it.)
+        let later = now() + 1000;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(wt.join("notes/deep/plan.md"))
             .unwrap()
-            .set_modified(old)
-            .unwrap();
-        fs::File::open(wt.join("notes/deep"))
-            .unwrap()
-            .set_modified(old)
+            .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(later))
             .unwrap();
         fs::remove_file(wt.join("edited.txt")).unwrap();
-        let t = last_activity(&wt, &["notes/".into()]).unwrap();
-        assert!(t >= now() - 60, "{t}");
+        assert_eq!(last_activity(&wt, &["notes/".into()]), Some(later));
 
         // No git dir to be found and no files: nothing.
         assert_eq!(last_activity(&dir.join("nowhere"), &[]), None);
