@@ -193,8 +193,9 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   app record for it (`<app data>/Claude/claude-code-sessions/**/local_*.json`,
   `isArchived`) is archived. Transcripts are found as
   `~/.claude/projects/<path with every non-alphanumeric as ->`
-  (`CLAUDE_CONFIG_DIR` moves `~/.claude`). `ClaudeIndex` reads all of it once
-  per listing; no extra git process.
+  (`CLAUDE_CONFIG_DIR` moves `~/.claude`). `ClaudeIndex` reads all of it,
+  with one `ps` for the pids, at most every 3 s; no extra git process. All
+  of it is under `HOME`, so a throwaway `HOME` sandboxes it.
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
   and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then

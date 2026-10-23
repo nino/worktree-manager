@@ -567,11 +567,13 @@ pub async fn worktree_info(
 /// task per worktree, bounded by the git gate).
 pub async fn list_worktrees(repo_path: &str, trunk_ref: &str) -> GitResult<Vec<WorktreeInfo>> {
     let all = list_worktrees_raw(repo_path).await?;
-    let claude = Arc::new(
-        tokio::task::spawn_blocking(crate::activity::ClaudeIndex::load)
-            .await
-            .unwrap_or_default(),
-    );
+    let claude = tokio::task::spawn_blocking(crate::activity::ClaudeIndex::shared)
+        .await
+        .unwrap_or_else(|e| {
+            // The panic itself is reported by the panic hook.
+            warn!("no Claude Code sessions for {repo_path}: {e}");
+            Default::default()
+        });
     let primary = all.first().filter(|w| !w.bare).map(|w| w.path.clone());
     let mut set = tokio::task::JoinSet::new();
     let mut order = Vec::new();

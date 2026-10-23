@@ -170,43 +170,62 @@ pub fn parse_running_session(json: &str) -> Option<(u32, String)> {
     Some((pid, v.get("cwd")?.as_str()?.to_string()))
 }
 
-/// One of the desktop app's session records: the folders it names (where it
-/// ran, and the worktree it made, if any) and whether it is archived.
-pub fn parse_desktop_record(json: &str) -> Option<(Vec<String>, bool)> {
+/// One of the desktop app's session records: the folder it worked in (the
+/// worktree it made, if it made one, else where it ran) and whether it is
+/// archived. A session that made a worktree is not one of the repo's.
+pub fn parse_desktop_record(json: &str) -> Option<(String, bool)> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    let folders = ["cwd", "worktreePath"]
+    let folder = ["worktreePath", "cwd"]
         .iter()
         .filter_map(|k| v.get(*k)?.as_str())
-        .filter(|s| !s.is_empty())
-        .map(trim_path)
-        .collect::<Vec<_>>();
-    let archived = v.get("isArchived")?.as_bool()?;
-    (!folders.is_empty()).then_some((folders, archived))
+        .find(|s| !s.is_empty())?;
+    Some((trim_path(folder), v.get("isArchived")?.as_bool()?))
 }
 
-/// A path as compared: forward slashes, no trailing separator.
+/// A path as compared: forward slashes, no trailing separator, and on
+/// Windows, where `C:` and `c:` are one drive, lower case.
 fn trim_path(p: &str) -> String {
-    let p = crate::paths::normalise(p);
+    let mut p = crate::paths::normalise(p);
+    if cfg!(windows) {
+        p = p.to_lowercase();
+    }
     match p.trim_end_matches('/') {
         "" => "/".to_string(),
         t => t.to_string(),
     }
 }
 
-/// Whether a process is still there, for a session file a crash left
-/// behind. `ps -p` on macOS and Linux; where there is no `ps` (Windows)
-/// the file is believed.
-fn process_alive(pid: u32) -> bool {
-    match std::process::Command::new("ps")
-        .args(["-p", &pid.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        Ok(status) => status.success(),
-        Err(_) => true,
+/// Which of `pids` are still running, for session files a crash left
+/// behind: one `ps` for all of them. On Windows, and wherever `ps` cannot
+/// be run, every file is believed (an MSYS `ps` there would know other
+/// pids).
+fn alive_pids(pids: &[u32]) -> HashSet<u32> {
+    if pids.is_empty() || cfg!(windows) {
+        return pids.iter().copied().collect();
     }
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    // Exits non-zero when any is gone; the ones still there are printed.
+    match std::process::Command::new("ps")
+        .args(["-o", "pid=", "-p", &list])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(out) => parse_pids(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => pids.iter().copied().collect(),
+    }
+}
+
+/// The pids `ps -o pid=` printed, one a line.
+fn parse_pids(output: &str) -> HashSet<u32> {
+    output
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect()
 }
 
 /// What is known about the Claude Code sessions of every folder, read once
@@ -220,6 +239,23 @@ pub struct ClaudeIndex {
 }
 
 impl ClaudeIndex {
+    /// [`ClaudeIndex::load`], kept for a few seconds: a refresh lists every
+    /// repo at once, and each would otherwise read it all again.
+    pub fn shared() -> std::sync::Arc<Self> {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        static LAST: Mutex<Option<(Instant, Arc<ClaudeIndex>)>> = Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, index)) = last.as_ref() {
+            if at.elapsed() < Duration::from_secs(3) {
+                return index.clone();
+            }
+        }
+        let index = Arc::new(Self::load());
+        *last = Some((Instant::now(), index.clone()));
+        index
+    }
+
     /// Read Claude Code's folder and the desktop app's records. Blocking.
     pub fn load() -> Self {
         let config = claude_config_dir();
@@ -234,7 +270,7 @@ impl ClaudeIndex {
             config.map(|c| c.join("projects")),
             running.iter().map(String::as_str),
             desktop.iter().map(String::as_str),
-            process_alive,
+            alive_pids,
         )
     }
 
@@ -243,19 +279,22 @@ impl ClaudeIndex {
         projects: Option<PathBuf>,
         running: impl IntoIterator<Item = &'a str>,
         desktop: impl IntoIterator<Item = &'a str>,
-        alive: impl Fn(u32) -> bool,
+        alive: impl Fn(&[u32]) -> HashSet<u32>,
     ) -> Self {
-        let running = running
+        let sessions: Vec<(u32, String)> = running
             .into_iter()
             .filter_map(parse_running_session)
-            .filter(|(pid, _)| alive(*pid))
+            .collect();
+        let pids: Vec<u32> = sessions.iter().map(|(pid, _)| *pid).collect();
+        let alive = alive(&pids);
+        let running = sessions
+            .into_iter()
+            .filter(|(pid, _)| alive.contains(pid))
             .map(|(_, cwd)| trim_path(&cwd))
             .collect();
         let mut by_folder: HashMap<String, Vec<bool>> = HashMap::new();
-        for (folders, archived) in desktop.into_iter().filter_map(parse_desktop_record) {
-            for folder in folders {
-                by_folder.entry(folder).or_default().push(archived);
-            }
+        for (folder, archived) in desktop.into_iter().filter_map(parse_desktop_record) {
+            by_folder.entry(folder).or_default().push(archived);
         }
         Self {
             projects,
@@ -452,7 +491,9 @@ mod tests {
             r#"{"sessionId": "local_3", "cwd": "/w/app/new", "isArchived": false}"#,
             r#"{"sessionId": "local_4", "worktreePath": null, "isArchived": false}"#,
         ];
-        let index = ClaudeIndex::from_parts(None, running, desktop, |pid| pid == 10);
+        let index = ClaudeIndex::from_parts(None, running, desktop, |pids| {
+            pids.iter().copied().filter(|p| *p == 10).collect()
+        });
 
         let fix = index.lookup("/w/app/fix").unwrap();
         assert!(fix.running && fix.archived.is_none());
@@ -461,9 +502,10 @@ mod tests {
         assert!(!old.running);
         assert_eq!(old.archived, Some(true));
 
-        // One record of two still open: not archived.
+        // One record of two still open: not archived. The session that made
+        // the worktree is its, not the repo's it started in.
         assert_eq!(index.lookup("/w/app/new").unwrap().archived, Some(false));
-        assert_eq!(index.lookup("/w/app").unwrap().archived, Some(true));
+        assert_eq!(index.lookup("/w/app"), None);
         assert_eq!(index.lookup("/w/elsewhere"), None);
     }
 
@@ -472,5 +514,11 @@ mod tests {
         assert_eq!(parse_desktop_record(r#"{"isArchived": true}"#), None);
         assert_eq!(parse_desktop_record(r#"{"cwd": "/a"}"#), None);
         assert_eq!(parse_running_session(r#"{"cwd": "/a"}"#), None);
+    }
+
+    #[test]
+    fn ps_output_is_read_as_pids() {
+        assert_eq!(parse_pids("  10\n 2034\n\n"), HashSet::from([10, 2034]));
+        assert!(parse_pids("").is_empty());
     }
 }
