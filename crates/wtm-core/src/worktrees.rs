@@ -212,10 +212,9 @@ pub async fn delete_worktree(
         };
     }
     // Without --force: git refuses dirty trees, which is exactly what we want.
-    match run_git(&repo.path, &["worktree", "remove", &params.worktree_path]).await {
-        Ok(_) => return DeleteWorktreeResult::success(""),
-        Err(e) => {
-            let message = e.detail();
+    match remove_worktree(repo, &params.worktree_path, false).await {
+        Ok(()) => return DeleteWorktreeResult::success(""),
+        Err(message) => {
             let lower = message.to_ascii_lowercase();
             let dirty = lower.contains("contains modified or untracked files")
                 || lower.contains("use --force");
@@ -227,15 +226,72 @@ pub async fn delete_worktree(
             }
         }
     }
-    match run_git(
-        &repo.path,
-        &["worktree", "remove", "--force", &params.worktree_path],
-    )
-    .await
-    {
-        Ok(_) => DeleteWorktreeResult::success(""),
-        Err(e) => DeleteWorktreeResult::refused(DeleteRefusal::Error, e.detail()),
+    match remove_worktree(repo, &params.worktree_path, true).await {
+        Ok(()) => DeleteWorktreeResult::success(""),
+        Err(message) => DeleteWorktreeResult::refused(DeleteRefusal::Error, message),
     }
+}
+
+/// `git worktree remove`, finishing the job when git stops halfway.
+///
+/// git checks the tree, deletes the folder, then drops its own bookkeeping
+/// whether or not the folder went. When something writes into the folder
+/// while it is being deleted (a dev server, a build watcher, an editor, a
+/// Claude session), the last `rmdir` fails with "Directory not empty", the
+/// worktree is no longer registered, and a stray folder is left behind that
+/// the list no longer shows. Deleting what is left is what the user asked
+/// for, and git's dirty-tree check has already passed (or was overridden),
+/// so it is removed here, but only once git's list confirms the path is no
+/// longer a worktree.
+async fn remove_worktree(
+    repo: &RepoConfig,
+    worktree_path: &str,
+    force: bool,
+) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path);
+    let message = match run_git(&repo.path, &args).await {
+        Ok(_) => return Ok(()),
+        Err(e) => e.detail(),
+    };
+    if !message.to_ascii_lowercase().contains("failed to delete") {
+        return Err(message);
+    }
+    match list_worktrees_raw(&repo.path).await {
+        Ok(all) if !all.iter().any(|w| w.path == worktree_path) => {}
+        _ => return Err(message),
+    }
+    remove_leftover(Path::new(worktree_path))
+        .await
+        .map_err(|e| leftover_message(worktree_path, &e))
+}
+
+/// Delete a folder git has already unregistered, retrying for a moment in
+/// case whatever was writing there is still finishing.
+async fn remove_leftover(path: &Path) -> std::io::Result<()> {
+    let mut last = None;
+    for delay_ms in [0, 250, 1000] {
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.expect("at least one attempt"))
+}
+
+fn leftover_message(worktree_path: &str, error: &std::io::Error) -> String {
+    format!(
+        "The worktree was removed from git, but its folder could not be deleted ({error}). \
+         Something is probably still writing into it, such as a dev server, a build watcher, \
+         an editor or a Claude session. Stop it, then delete the folder: {worktree_path}"
+    )
 }
 
 // MARK: Per-worktree git operations
@@ -370,6 +426,102 @@ mod tests {
             err,
             "The repository folder is missing: /nonexistent/wtm-missing-repo"
         );
+    }
+
+    /// Something writing into the worktree while git deletes it makes git
+    /// fail with "Directory not empty" after it has already unregistered
+    /// the worktree. The delete still succeeds and no folder is left.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_folder_written_to_during_delete_is_still_removed() {
+        let dir = std::env::temp_dir().join(format!("wtm-busy-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let main = dir.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "init.defaultBranch=main",
+                ])
+                .args(args)
+                .current_dir(&main)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(main.join(".gitignore"), "cache/\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "init"]);
+        let wt = dir.join("wt");
+        let wt_path = wt.to_string_lossy().into_owned();
+        git(&["worktree", "add", "--quiet", "-b", "feat", &wt_path]);
+        // Ignored files: git deletes them without counting the tree dirty,
+        // and enough of them that the delete takes a while.
+        for i in 0..2000 {
+            let d = wt.join("cache").join(format!("d{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("f"), "x").unwrap();
+        }
+
+        // A writer like a dev server's: keeps recreating a cache file for
+        // a moment, then stops.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let stop = stop.clone();
+            let busy = wt.join("cache").join("busy");
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let mut i = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed)
+                    && started.elapsed() < std::time::Duration::from_millis(400)
+                {
+                    if std::fs::create_dir_all(&busy).is_ok() {
+                        let _ = std::fs::write(busy.join(format!("n{i}")), "x");
+                    }
+                    i += 1;
+                }
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let repo = RepoConfig {
+            id: "r".into(),
+            name: "r".into(),
+            path: main.to_string_lossy().into_owned(),
+            main_branch: "main".into(),
+            init_command: String::new(),
+            commands: Vec::new(),
+        };
+        let params = DeleteWorktreeParams {
+            repo_id: "r".into(),
+            worktree_path: wt_path.clone(),
+            expected_branch: Some("feat".into()),
+            force: false,
+        };
+        let result = delete_worktree(&repo, &params).await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(result.ok, "{}", result.message);
+        assert!(!wt.exists(), "no folder is left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_that_will_not_go_says_what_to_do() {
+        let e = std::io::Error::from_raw_os_error(39);
+        let message = leftover_message("/w/feat", &e);
+        assert!(
+            message.starts_with("The worktree was removed from git"),
+            "{message}"
+        );
+        assert!(message.contains("dev server"), "{message}");
+        assert!(message.ends_with("/w/feat"), "{message}");
     }
 
     #[tokio::test]
