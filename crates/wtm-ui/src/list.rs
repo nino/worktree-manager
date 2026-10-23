@@ -456,6 +456,7 @@ pub fn badges_for(w: &WorktreeInfo, main_branch: &str, now: u64) -> Vec<Badge> {
             Quiet,
             "Status could not be determined",
         ));
+        out.extend(activity_badges(w, None, now));
         return out;
     };
     let trunk = if s.trunk_ref.is_empty() {
@@ -545,18 +546,13 @@ pub fn badges_for(w: &WorktreeInfo, main_branch: &str, now: u64) -> Vec<Badge> {
 fn activity_badges(w: &WorktreeInfo, git_activity: Option<u64>, now: u64) -> Vec<Badge> {
     let mut out = Vec::new();
     if let Some(t) = git_activity.max(w.claude_session) {
-        let ago = ago(t, now);
-        let ago = if ago == "now" {
-            ago
-        } else {
-            format!("{ago} ago")
-        };
+        let ago = format!("{} ago", ago(t, now));
         out.push(badge(
             ago.clone(),
             Hue::Gray,
             Emphasis::Quiet,
             format!(
-                "Last worked in {ago}: the newest of the last commit or checkout here, \
+                "Last activity {ago}: the newest of the last commit or checkout here, \
                  the uncommitted files and any Claude Code session"
             ),
         ));
@@ -567,11 +563,8 @@ fn activity_badges(w: &WorktreeInfo, git_activity: Option<u64>, now: u64) -> Vec
             Hue::Accent,
             Emphasis::Quiet,
             format!(
-                "Claude Code has a session in this worktree, last written to {}",
-                match ago(t, now).as_str() {
-                    "now" => "just now".to_string(),
-                    a => format!("{a} ago"),
-                }
+                "Claude Code has a session in this worktree, last written to {} ago",
+                ago(t, now)
             ),
         ));
     }

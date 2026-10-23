@@ -184,6 +184,12 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   tree comes back as `Dirty` and the UI asks a second, destructive question.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the
   repo's trunk (against `origin/<trunk>` when it exists), unpushed commits.
+- **Last activity** per worktree (`wtm_core::activity`), a quiet badge
+  ("3d ago"): the newest of the worktree's last HEAD reflog entry, the mtimes
+  of what `git status` lists as changed or untracked (into new folders), and
+  its Claude Code sessions. A "Claude" badge marks a worktree with a session,
+  found as `~/.claude/projects/<path with every non-alphanumeric as ->`
+  (`CLAUDE_CONFIG_DIR` moves it). No extra git process for either.
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
   and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then

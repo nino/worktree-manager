@@ -470,7 +470,19 @@ async fn ahead_behind_trunk(worktree_path: &str, trunk_ref: &str) -> (Option<u32
 
 /// Compute the full git status for a single worktree.
 pub async fn worktree_status(worktree_path: &str, trunk_ref: &str) -> GitResult<WorktreeStatus> {
-    let status_out = run_git(worktree_path, &["status", "--porcelain=v2", "--branch"]).await?;
+    // Unquoted, so a name with an accented letter keeps its place in the
+    // paths `activity` dates.
+    let status_out = run_git(
+        worktree_path,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+        ],
+    )
+    .await?;
     let parsed = parse_status_porcelain_v2(&status_out);
     let (ahead, behind) = ahead_behind_trunk(worktree_path, trunk_ref).await;
     let (path, changed) = (PathBuf::from(worktree_path), parsed.paths);
@@ -510,9 +522,10 @@ pub async fn worktree_info(
     primary_path: Option<&str>,
     trunk_ref: &str,
 ) -> WorktreeInfo {
-    let status = if w.prunable {
-        None
-    } else {
+    let status = async {
+        if w.prunable {
+            return None;
+        }
         // The row says "no status", and nothing says why. A folder that is
         // not there (a locked worktree on an unplugged drive, or one being
         // deleted) is expected to have none.
@@ -527,12 +540,16 @@ pub async fn worktree_info(
             })
             .ok()
     };
+    // Looked for even when git cannot answer: a session is a reason to keep
+    // a worktree whatever state its folder is in.
     let cwd = w.path.clone();
-    let claude_session =
+    let claude_session = async {
         tokio::task::spawn_blocking(move || crate::activity::last_claude_session(&cwd))
             .await
             .ok()
-            .flatten();
+            .flatten()
+    };
+    let (status, claude_session) = tokio::join!(status, claude_session);
     WorktreeInfo {
         path: w.path.clone(),
         branch: w.branch.clone(),

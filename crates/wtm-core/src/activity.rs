@@ -69,26 +69,56 @@ fn reflog_time(worktree: &Path) -> Option<u64> {
 }
 
 fn mtime(path: &Path) -> Option<u64> {
-    let modified = fs::symlink_metadata(path).ok()?.modified().ok()?;
-    Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs())
+    unix(fs::symlink_metadata(path).ok()?.modified().ok()?)
 }
 
 /// When the worktree at `worktree` was last worked in, in Unix seconds,
 /// given the paths (relative to it) that `git status` lists. `None` when
 /// neither time can be read. Blocking: it reads the disk.
 pub fn last_activity(worktree: &Path, changed: &[String]) -> Option<u64> {
+    let mut budget = MAX_PATHS;
     let files = changed
         .iter()
-        .take(MAX_PATHS)
-        .filter_map(|p| mtime(&worktree.join(p)));
+        .filter_map(|p| newest_within(&worktree.join(p), &mut budget));
     reflog_time(worktree).into_iter().chain(files).max()
+}
+
+/// The newest mtime of `path` and, for a folder, of what is in it, looking
+/// at no more than `budget` entries in all. `git status` names a new folder
+/// as `dir/` rather than its files, and a folder's own mtime does not change
+/// when a file in it is edited.
+fn newest_within(path: &Path, budget: &mut usize) -> Option<u64> {
+    let mut newest = None;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            continue;
+        };
+        newest = newest.max(meta.modified().ok().and_then(unix));
+        if meta.is_dir() {
+            if let Ok(entries) = fs::read_dir(&p) {
+                stack.extend(entries.filter_map(Result::ok).map(|e| e.path()));
+            }
+        }
+    }
+    newest
+}
+
+fn unix(t: SystemTime) -> Option<u64> {
+    Some(t.duration_since(UNIX_EPOCH).ok()?.as_secs())
 }
 
 // MARK: Claude Code sessions
 
 /// Claude Code's name for the folder that holds the sessions run in `cwd`.
 /// Lossy (`a.b` and `a/b` share one), which only ever errs towards saying a
-/// worktree has a session.
+/// worktree has a session. Claude Code shortens a name over 200 characters
+/// and adds a hash, and a session started in a subfolder is filed under
+/// that subfolder: neither is found.
 pub fn claude_project_name(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -134,16 +164,16 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// How long ago `then` was, short enough for a badge: "now", "5m", "3h",
-/// "4d", "3w", "5mo", "2y". A time in the future (a skewed clock) is "now".
+/// How long ago `then` was, short enough for a badge: "<1h", "3h", "4d",
+/// "3w", "5mo", "2y". A time in the future (a skewed clock) is "<1h". No
+/// minutes: the list is redrawn on model changes, at least at every
+/// background fetch (minutes apart), not on a clock.
 pub fn ago(then: u64, now: u64) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
+    const HOUR: u64 = 3600;
     const DAY: u64 = 24 * HOUR;
     let secs = now.saturating_sub(then);
     match secs {
-        s if s < MINUTE => "now".to_string(),
-        s if s < HOUR => format!("{}m", s / MINUTE),
+        s if s < HOUR => "<1h".to_string(),
         s if s < DAY => format!("{}h", s / HOUR),
         s if s < 14 * DAY => format!("{}d", s / DAY),
         s if s < 60 * DAY => format!("{}w", s / (7 * DAY)),
@@ -180,10 +210,9 @@ mod tests {
     #[test]
     fn ago_is_short_and_rounds_down() {
         let now = 1_000_000_000;
-        assert_eq!(ago(now, now), "now");
-        assert_eq!(ago(now + 30, now), "now");
-        assert_eq!(ago(now - 59, now), "now");
-        assert_eq!(ago(now - 60, now), "1m");
+        assert_eq!(ago(now, now), "<1h");
+        assert_eq!(ago(now + 30, now), "<1h");
+        assert_eq!(ago(now - 3599, now), "<1h");
         assert_eq!(ago(now - 3 * 3600 - 59, now), "3h");
         assert_eq!(ago(now - 86_400, now), "1d");
         assert_eq!(ago(now - 13 * 86_400, now), "13d");
@@ -208,6 +237,22 @@ mod tests {
         // A file changed since: that file's time, which is now.
         fs::write(wt.join("edited.txt"), "x").unwrap();
         let t = last_activity(&wt, &["edited.txt".into(), "deleted.txt".into()]).unwrap();
+        assert!(t >= now() - 60, "{t}");
+
+        // A new folder is dated by the newest file in it, however deep.
+        fs::create_dir_all(wt.join("notes/deep")).unwrap();
+        fs::write(wt.join("notes/deep/plan.md"), "x").unwrap();
+        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        fs::File::open(wt.join("notes"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        fs::File::open(wt.join("notes/deep"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        fs::remove_file(wt.join("edited.txt")).unwrap();
+        let t = last_activity(&wt, &["notes/".into()]).unwrap();
         assert!(t >= now() - 60, "{t}");
 
         // No git dir to be found and no files: nothing.
