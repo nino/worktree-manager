@@ -238,11 +238,12 @@ pub async fn delete_worktree(
 /// whether or not the folder went. When something writes into the folder
 /// while it is being deleted (a dev server, a build watcher, an editor, a
 /// Claude session), the last `rmdir` fails with "Directory not empty", the
-/// worktree is no longer registered, and a stray folder is left behind that
-/// the list no longer shows. Deleting what is left is what the user asked
-/// for, and git's dirty-tree check has already passed (or was overridden),
-/// so it is removed here, but only once git's list confirms the path is no
-/// longer a worktree.
+/// worktree is no longer registered, and a stray folder is left that the
+/// list no longer shows. Deleting what is left is what the user asked for,
+/// and git's dirty-tree check has already passed (or was overridden), so it
+/// is removed here. git's list decides, not the wording of its error, which
+/// changes with the locale: a refusal (a dirty tree, a lock) leaves the
+/// worktree registered and is passed on untouched.
 async fn remove_worktree(
     repo: &RepoConfig,
     worktree_path: &str,
@@ -257,9 +258,6 @@ async fn remove_worktree(
         Ok(_) => return Ok(()),
         Err(e) => e.detail(),
     };
-    if !message.to_ascii_lowercase().contains("failed to delete") {
-        return Err(message);
-    }
     match list_worktrees_raw(&repo.path).await {
         Ok(all) if !all.iter().any(|w| w.path == worktree_path) => {}
         _ => return Err(message),
@@ -272,25 +270,31 @@ async fn remove_worktree(
 /// Delete a folder git has already unregistered, retrying for a moment in
 /// case whatever was writing there is still finishing.
 async fn remove_leftover(path: &Path) -> std::io::Result<()> {
-    let mut last = None;
-    for delay_ms in [0, 250, 1000] {
-        if delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
+    let attempt = || async {
         match tokio::fs::remove_dir_all(path).await {
-            Ok(()) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => last = Some(e),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
         }
+    };
+    for delay_ms in [250, 1000] {
+        if attempt().await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
-    Err(last.expect("at least one attempt"))
+    attempt().await
 }
 
 fn leftover_message(worktree_path: &str, error: &std::io::Error) -> String {
+    let cause = if error.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+        "Something is probably still writing into it, such as a dev server, a build \
+         watcher, an editor or a Claude session. Stop it, then delete the folder"
+    } else {
+        "Delete the folder by hand"
+    };
     format!(
         "The worktree was removed from git, but its folder could not be deleted ({error}). \
-         Something is probably still writing into it, such as a dev server, a build watcher, \
-         an editor or a Claude session. Stop it, then delete the folder: {worktree_path}"
+         {cause}: {worktree_path}"
     )
 }
 
@@ -439,6 +443,8 @@ mod tests {
         std::fs::create_dir_all(&main).unwrap();
         let git = |args: &[&str]| {
             let ok = std::process::Command::new("git")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .args([
                     "-c",
                     "user.name=t",
@@ -469,8 +475,9 @@ mod tests {
             std::fs::write(d.join("f"), "x").unwrap();
         }
 
-        // A writer like a dev server's: keeps recreating a cache file for
-        // a moment, then stops.
+        // A writer like a dev server's: keeps writing into a cache folder
+        // for a moment, then stops. `create_dir`, not `create_dir_all`, so
+        // it cannot bring the worktree back once the delete has finished.
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {
             let stop = stop.clone();
@@ -481,9 +488,8 @@ mod tests {
                 while !stop.load(std::sync::atomic::Ordering::Relaxed)
                     && started.elapsed() < std::time::Duration::from_millis(400)
                 {
-                    if std::fs::create_dir_all(&busy).is_ok() {
-                        let _ = std::fs::write(busy.join(format!("n{i}")), "x");
-                    }
+                    let _ = std::fs::create_dir(&busy);
+                    let _ = std::fs::write(busy.join(format!("n{i}")), "x");
                     i += 1;
                 }
             })
@@ -521,6 +527,8 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("dev server"), "{message}");
+        let other = leftover_message("/w/feat", &std::io::Error::from_raw_os_error(13));
+        assert!(!other.contains("dev server"), "{other}");
         assert!(message.ends_with("/w/feat"), "{message}");
     }
 
