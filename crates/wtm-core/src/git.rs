@@ -521,6 +521,7 @@ pub async fn worktree_info(
     w: &ParsedWorktree,
     primary_path: Option<&str>,
     trunk_ref: &str,
+    claude: Arc<crate::activity::ClaudeIndex>,
 ) -> WorktreeInfo {
     let status = async {
         if w.prunable {
@@ -543,13 +544,13 @@ pub async fn worktree_info(
     // Looked for even when git cannot answer: a session is a reason to keep
     // a worktree whatever state its folder is in.
     let cwd = w.path.clone();
-    let claude_session = async {
-        tokio::task::spawn_blocking(move || crate::activity::last_claude_session(&cwd))
+    let claude = async {
+        tokio::task::spawn_blocking(move || claude.lookup(&cwd))
             .await
             .ok()
             .flatten()
     };
-    let (status, claude_session) = tokio::join!(status, claude_session);
+    let (status, claude) = tokio::join!(status, claude);
     WorktreeInfo {
         path: w.path.clone(),
         branch: w.branch.clone(),
@@ -558,7 +559,7 @@ pub async fn worktree_info(
         locked: w.locked,
         prunable: w.prunable,
         status,
-        claude_session,
+        claude,
     }
 }
 
@@ -566,14 +567,25 @@ pub async fn worktree_info(
 /// task per worktree, bounded by the git gate).
 pub async fn list_worktrees(repo_path: &str, trunk_ref: &str) -> GitResult<Vec<WorktreeInfo>> {
     let all = list_worktrees_raw(repo_path).await?;
+    let claude = Arc::new(
+        tokio::task::spawn_blocking(crate::activity::ClaudeIndex::load)
+            .await
+            .unwrap_or_default(),
+    );
     let primary = all.first().filter(|w| !w.bare).map(|w| w.path.clone());
     let mut set = tokio::task::JoinSet::new();
     let mut order = Vec::new();
     for (i, w) in all.into_iter().filter(|w| !w.bare).enumerate() {
         let primary = primary.clone();
         let trunk = trunk_ref.to_string();
+        let claude = claude.clone();
         order.push(i);
-        set.spawn(async move { (i, worktree_info(&w, primary.as_deref(), &trunk).await) });
+        set.spawn(async move {
+            (
+                i,
+                worktree_info(&w, primary.as_deref(), &trunk, claude).await,
+            )
+        });
     }
     let mut results: Vec<Option<WorktreeInfo>> = (0..order.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {

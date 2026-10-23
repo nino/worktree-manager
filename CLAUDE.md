@@ -187,9 +187,14 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 - **Last activity** per worktree (`wtm_core::activity`), a quiet badge
   ("3d ago"): the newest of the worktree's last HEAD reflog entry, the mtimes
   of what `git status` lists as changed or untracked (into new folders), and
-  its Claude Code sessions. A "Claude" badge marks a worktree with a session,
-  found as `~/.claude/projects/<path with every non-alphanumeric as ->`
-  (`CLAUDE_CONFIG_DIR` moves it). No extra git process for either.
+  its Claude Code transcripts. A "Claude" badge marks a worktree that is a
+  session's working folder: "Claude running" while `~/.claude/sessions/<pid>.json`
+  names it and the pid is alive, "Claude archived" when every Claude desktop
+  app record for it (`<app data>/Claude/claude-code-sessions/**/local_*.json`,
+  `isArchived`) is archived. Transcripts are found as
+  `~/.claude/projects/<path with every non-alphanumeric as ->`
+  (`CLAUDE_CONFIG_DIR` moves `~/.claude`). `ClaudeIndex` reads all of it once
+  per listing; no extra git process.
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
   and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then

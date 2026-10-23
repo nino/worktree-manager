@@ -545,7 +545,8 @@ pub fn badges_for(w: &WorktreeInfo, main_branch: &str, now: u64) -> Vec<Badge> {
 /// session there: what to go by when choosing which worktrees to delete.
 fn activity_badges(w: &WorktreeInfo, git_activity: Option<u64>, now: u64) -> Vec<Badge> {
     let mut out = Vec::new();
-    if let Some(t) = git_activity.max(w.claude_session) {
+    let claude = w.claude.unwrap_or_default();
+    if let Some(t) = git_activity.max(claude.last_written) {
         let ago = format!("{} ago", ago(t, now));
         out.push(badge(
             ago.clone(),
@@ -557,16 +558,31 @@ fn activity_badges(w: &WorktreeInfo, git_activity: Option<u64>, now: u64) -> Vec
             ),
         ));
     }
-    if let Some(t) = w.claude_session {
-        out.push(badge(
-            "Claude",
-            Hue::Accent,
-            Emphasis::Quiet,
-            format!(
-                "Claude Code has a session in this worktree, last written to {} ago",
-                ago(t, now)
-            ),
-        ));
+    if let Some(c) = w.claude {
+        let written = c
+            .last_written
+            .map(|t| format!(", last written to {} ago", ago(t, now)))
+            .unwrap_or_default();
+        let (text, hue, tooltip) = if c.running {
+            (
+                "Claude running",
+                Hue::Accent,
+                format!("A Claude Code session is running in this worktree{written}"),
+            )
+        } else if c.archived == Some(true) {
+            (
+                "Claude archived",
+                Hue::Gray,
+                format!("Its Claude Code sessions are archived in the Claude app{written}"),
+            )
+        } else {
+            (
+                "Claude",
+                Hue::Accent,
+                format!("Claude Code has a session in this worktree{written}"),
+            )
+        };
+        out.push(badge(text, hue, Emphasis::Quiet, tooltip));
     }
     out
 }
@@ -597,7 +613,7 @@ pub fn notice_is_long(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wtm_core::WorktreeStatus;
+    use wtm_core::{ClaudeSessions, WorktreeStatus};
 
     fn worktree(path: &str, branch: Option<&str>) -> WorktreeInfo {
         WorktreeInfo {
@@ -608,7 +624,7 @@ mod tests {
             locked: false,
             prunable: false,
             status: None,
-            claude_session: None,
+            claude: None,
         }
     }
 
@@ -727,14 +743,35 @@ mod tests {
         let mut w = with_status(Some(s));
         assert_eq!(texts(&w, now), ["✓", "3d ago"]);
 
-        w.claude_session = Some(now - 3600);
+        w.claude = Some(ClaudeSessions {
+            last_written: Some(now - 3600),
+            ..Default::default()
+        });
         assert_eq!(texts(&w, now), ["✓", "1h ago", "Claude"]);
         assert_eq!(coloured(&w), 0);
 
         // Nothing could be read: no badge rather than a made-up date.
-        w.claude_session = None;
+        w.claude = None;
         w.status.as_mut().unwrap().last_activity = None;
         assert_eq!(texts(&w, now), ["✓"]);
+    }
+
+    #[test]
+    fn a_running_session_outranks_an_archived_one() {
+        let mut w = with_status(Some(clean_status()));
+        let mut c = ClaudeSessions {
+            archived: Some(true),
+            ..Default::default()
+        };
+        w.claude = Some(c);
+        assert_eq!(texts(&w, 0), ["✓", "Claude archived"]);
+        c.running = true;
+        w.claude = Some(c);
+        assert_eq!(texts(&w, 0), ["✓", "Claude running"]);
+        c.running = false;
+        c.archived = Some(false);
+        w.claude = Some(c);
+        assert_eq!(texts(&w, 0), ["✓", "Claude"]);
     }
 
     #[test]

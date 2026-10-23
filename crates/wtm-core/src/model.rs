@@ -301,7 +301,7 @@ mod tests {
             locked: false,
             prunable: false,
             status: None,
-            claude_session: None,
+            claude: None,
         });
         assert_eq!(
             n.locate_branch("fix"),
