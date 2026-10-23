@@ -184,6 +184,18 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   tree comes back as `Dirty` and the UI asks a second, destructive question.
 - **Status** per worktree: staged / unstaged / untracked, ahead/behind the
   repo's trunk (against `origin/<trunk>` when it exists), unpushed commits.
+- **Last activity** per worktree (`wtm_core::activity`), a quiet badge
+  ("3d ago"): the newest of the worktree's last HEAD reflog entry, the mtimes
+  of what `git status` lists as changed or untracked (into new folders), and
+  its Claude Code transcripts. A "Claude" badge marks a worktree that is a
+  session's working folder: "Claude running" while `~/.claude/sessions/<pid>.json`
+  names it and the pid is alive, "Claude archived" when every Claude desktop
+  app record for it (`<app data>/Claude/claude-code-sessions/**/local_*.json`,
+  `isArchived`) is archived. Transcripts are found as
+  `~/.claude/projects/<path with every non-alphanumeric as ->`
+  (`CLAUDE_CONFIG_DIR` moves `~/.claude`). `ClaudeIndex` reads all of it,
+  with one `ps` for the pids, at most every 3 s; no extra git process. All
+  of it is under `HOME`, so a throwaway `HOME` sandboxes it.
 - **Open in terminal** uses the Launch Services handler for
   `public.unix-executable` — what a terminal registers as "default terminal" —
   and falls back to Terminal.app. On Linux it tries `$TERMINAL`, then

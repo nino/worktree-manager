@@ -843,6 +843,7 @@ impl Ui {
             model: &self.model,
             query: &query,
             file_manager: self.file_manager,
+            now: wtm_core::activity::now(),
         };
         TreeList {
             sections: list::sections(&cx, |id| !self.collapsed.contains(id), v),

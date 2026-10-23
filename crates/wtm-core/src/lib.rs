@@ -16,6 +16,7 @@
 //! Nothing here knows about a UI toolkit or an operating system; that lives
 //! behind the traits in `wtm-platform`.
 
+pub mod activity;
 pub mod app;
 pub mod branch_name;
 pub mod branch_tool;

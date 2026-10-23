@@ -108,6 +108,11 @@ pub struct WorktreeStatus {
     pub unpushed_count: u32,
     /// True if the branch tracks an upstream remote.
     pub has_upstream: bool,
+    /// When the worktree was last worked in, in Unix seconds (see
+    /// [`crate::activity`]); `None` if neither the reflog nor a changed
+    /// file could be read.
+    #[serde(default)]
+    pub last_activity: Option<u64>,
 }
 
 impl WorktreeStatus {
@@ -135,6 +140,25 @@ pub struct WorktreeInfo {
     pub prunable: bool,
     /// Git status; `None` if it could not be computed.
     pub status: Option<WorktreeStatus>,
+    /// The Claude Code sessions run in this worktree; `None` if it has none
+    /// (see [`crate::activity`]).
+    #[serde(default)]
+    pub claude: Option<ClaudeSessions>,
+}
+
+/// What is known of the Claude Code sessions whose working folder is a
+/// worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSessions {
+    /// When a session's transcript was last written, in Unix seconds.
+    pub last_written: Option<u64>,
+    /// A session is running there now.
+    pub running: bool,
+    /// From the Claude desktop app's records: `Some(true)` when every one
+    /// naming the worktree is archived, `Some(false)` when one is not,
+    /// `None` when there are none.
+    pub archived: Option<bool>,
 }
 
 /// Where the branch of a new worktree comes from.

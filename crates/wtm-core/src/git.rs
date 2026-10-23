@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -261,6 +261,18 @@ pub struct ParsedStatus {
     pub has_staged: bool,
     pub has_unstaged: bool,
     pub has_untracked: bool,
+    /// The changed and untracked paths, relative to the worktree, for
+    /// [`crate::activity`]. Quoted paths (unusual characters) are left out.
+    pub paths: Vec<String>,
+}
+
+/// The path of a porcelain v2 entry, which follows `fields` space-separated
+/// fields (the path itself may hold spaces). A rename's original path, after
+/// a tab, is dropped: the file is no longer there.
+fn entry_path(line: &str, fields: usize) -> Option<String> {
+    let rest = line.splitn(fields + 1, ' ').nth(fields)?;
+    let path = rest.split('\t').next()?;
+    (!path.is_empty() && !path.starts_with('"')).then(|| path.to_string())
 }
 
 /// Parse the output of `git status --porcelain=v2 --branch`.
@@ -310,9 +322,17 @@ pub fn parse_status_porcelain_v2(output: &str) -> ParsedStatus {
                     if y != b'.' {
                         r.has_unstaged = true;
                     }
+                    let fields = if bytes[0] == b'1' { 8 } else { 9 };
+                    r.paths.extend(entry_path(line, fields));
                 }
-                b'u' => r.has_unstaged = true, // unmerged conflict needs resolution
-                b'?' => r.has_untracked = true,
+                b'u' => {
+                    r.has_unstaged = true; // unmerged conflict needs resolution
+                    r.paths.extend(entry_path(line, 10));
+                }
+                b'?' => {
+                    r.has_untracked = true;
+                    r.paths.extend(entry_path(line, 1));
+                }
                 _ => {}
             }
         }
@@ -450,9 +470,27 @@ async fn ahead_behind_trunk(worktree_path: &str, trunk_ref: &str) -> (Option<u32
 
 /// Compute the full git status for a single worktree.
 pub async fn worktree_status(worktree_path: &str, trunk_ref: &str) -> GitResult<WorktreeStatus> {
-    let status_out = run_git(worktree_path, &["status", "--porcelain=v2", "--branch"]).await?;
+    // Unquoted, so a name with an accented letter keeps its place in the
+    // paths `activity` dates.
+    let status_out = run_git(
+        worktree_path,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+        ],
+    )
+    .await?;
     let parsed = parse_status_porcelain_v2(&status_out);
     let (ahead, behind) = ahead_behind_trunk(worktree_path, trunk_ref).await;
+    let (path, changed) = (PathBuf::from(worktree_path), parsed.paths);
+    let last_activity =
+        tokio::task::spawn_blocking(move || crate::activity::last_activity(&path, &changed))
+            .await
+            .ok()
+            .flatten();
     let has_upstream = parsed.upstream.is_some();
     Ok(WorktreeStatus {
         has_unstaged: parsed.has_unstaged,
@@ -468,6 +506,7 @@ pub async fn worktree_status(worktree_path: &str, trunk_ref: &str) -> GitResult<
             0
         },
         unpushed: has_upstream && parsed.ahead_upstream > 0,
+        last_activity,
     })
 }
 
@@ -482,10 +521,12 @@ pub async fn worktree_info(
     w: &ParsedWorktree,
     primary_path: Option<&str>,
     trunk_ref: &str,
+    claude: Arc<crate::activity::ClaudeIndex>,
 ) -> WorktreeInfo {
-    let status = if w.prunable {
-        None
-    } else {
+    let status = async {
+        if w.prunable {
+            return None;
+        }
         // The row says "no status", and nothing says why. A folder that is
         // not there (a locked worktree on an unplugged drive, or one being
         // deleted) is expected to have none.
@@ -500,6 +541,16 @@ pub async fn worktree_info(
             })
             .ok()
     };
+    // Looked for even when git cannot answer: a session is a reason to keep
+    // a worktree whatever state its folder is in.
+    let cwd = w.path.clone();
+    let claude = async {
+        tokio::task::spawn_blocking(move || claude.lookup(&cwd))
+            .await
+            .ok()
+            .flatten()
+    };
+    let (status, claude) = tokio::join!(status, claude);
     WorktreeInfo {
         path: w.path.clone(),
         branch: w.branch.clone(),
@@ -508,6 +559,7 @@ pub async fn worktree_info(
         locked: w.locked,
         prunable: w.prunable,
         status,
+        claude,
     }
 }
 
@@ -515,14 +567,27 @@ pub async fn worktree_info(
 /// task per worktree, bounded by the git gate).
 pub async fn list_worktrees(repo_path: &str, trunk_ref: &str) -> GitResult<Vec<WorktreeInfo>> {
     let all = list_worktrees_raw(repo_path).await?;
+    let claude = tokio::task::spawn_blocking(crate::activity::ClaudeIndex::shared)
+        .await
+        .unwrap_or_else(|e| {
+            // The panic itself is reported by the panic hook.
+            warn!("no Claude Code sessions for {repo_path}: {e}");
+            Default::default()
+        });
     let primary = all.first().filter(|w| !w.bare).map(|w| w.path.clone());
     let mut set = tokio::task::JoinSet::new();
     let mut order = Vec::new();
     for (i, w) in all.into_iter().filter(|w| !w.bare).enumerate() {
         let primary = primary.clone();
         let trunk = trunk_ref.to_string();
+        let claude = claude.clone();
         order.push(i);
-        set.spawn(async move { (i, worktree_info(&w, primary.as_deref(), &trunk).await) });
+        set.spawn(async move {
+            (
+                i,
+                worktree_info(&w, primary.as_deref(), &trunk, claude).await,
+            )
+        });
     }
     let mut results: Vec<Option<WorktreeInfo>> = (0..order.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
@@ -733,6 +798,22 @@ mod tests {
         assert!(conflict.has_unstaged);
         let detached = parse_status_porcelain_v2("# branch.head (detached)");
         assert!(detached.detached && detached.head.is_none());
+    }
+
+    #[test]
+    fn status_lists_changed_paths() {
+        let s = parse_status_porcelain_v2(
+            "# branch.head main\n\
+             1 .M N... 100644 100644 100644 ccc ddd src/with space.rs\n\
+             2 R. N... 100644 100644 100644 aaa bbb R100 new name.rs\told.rs\n\
+             u UU N... 1 1 1 1 h1 h2 h3 conflict.txt\n\
+             ? notes/\n\
+             ? \"tab\\there\"\n",
+        );
+        assert_eq!(
+            s.paths,
+            vec!["src/with space.rs", "new name.rs", "conflict.txt", "notes/"]
+        );
     }
 
     #[test]
