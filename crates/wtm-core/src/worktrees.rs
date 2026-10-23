@@ -520,14 +520,17 @@ mod tests {
 
     #[test]
     fn a_folder_that_will_not_go_says_what_to_do() {
-        let e = std::io::Error::from_raw_os_error(39);
+        let e = std::io::Error::from(std::io::ErrorKind::DirectoryNotEmpty);
         let message = leftover_message("/w/feat", &e);
         assert!(
             message.starts_with("The worktree was removed from git"),
             "{message}"
         );
         assert!(message.contains("dev server"), "{message}");
-        let other = leftover_message("/w/feat", &std::io::Error::from_raw_os_error(13));
+        let other = leftover_message(
+            "/w/feat",
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
         assert!(!other.contains("dev server"), "{other}");
         assert!(message.ends_with("/w/feat"), "{message}");
     }
