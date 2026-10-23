@@ -31,8 +31,8 @@ use objc2_app_kit::{
     NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    NSArray, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSObject, NSObjectProtocol,
-    NSPoint, NSRect, NSSize, NSUserDefaults, NSURL,
+    NSArray, NSEdgeInsets, NSIndexSet, NSInteger, NSMutableIndexSet, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSRect, NSSize, NSUserDefaults, NSURL,
 };
 use wtm_core::splice::{moves, splice, Splice};
 use wtm_core::WindowFrame;
@@ -49,7 +49,7 @@ use crate::cells::{
 use crate::elements::{same_shape, symbol_name, Built};
 use crate::items::{ItemKind, WTMItem};
 use crate::outline::OutlineView;
-use crate::rowview::{RowStyle, RowView, LAST_ROW_EXTRA, WELL_LEAD};
+use crate::rowview::{RowStyle, RowView, CARD_BOTTOM_ROOM, CARD_MARGIN, LAST_ROW_EXTRA, WELL_LEAD};
 use crate::util::{ns, render, symbol};
 
 static CONTROLLER: OnceLock<MainThreadBound<Retained<Controller>>> = OnceLock::new();
@@ -994,6 +994,11 @@ impl Controller {
         let Some(outline) = self.ivars().outline.borrow().clone() else {
             return;
         };
+        let last = outline
+            .itemAtRow(outline.numberOfRows() - 1)
+            .and_then(|item| item.downcast::<WTMItem>().ok())
+            .map(|item| self.row_style(&outline, &item));
+        self.fit_bottom_inset(last);
         let mut heights_changed = false;
         for row in 0..outline.numberOfRows() {
             let Some(item) = outline.itemAtRow(row) else {
@@ -1036,6 +1041,37 @@ impl Controller {
         NSAnimationContext::currentContext().setDuration(0.0);
         outline.noteHeightOfRowsWithIndexesChanged(&rows);
         NSAnimationContext::endGrouping();
+    }
+
+    /// Room below the last card when the list is scrolled to its end, so
+    /// the card sits as far from the window's bottom edge as every card sits
+    /// from its sides. An open card's last row already keeps
+    /// `CARD_BOTTOM_ROOM` under the card for its shadow; a closed header
+    /// keeps none.
+    fn fit_bottom_inset(&self, last: Option<RowStyle>) {
+        let Some(scroll) = self.ivars().scroll.borrow().clone() else {
+            return;
+        };
+        let bottom = match last {
+            Some(RowStyle::Child { .. }) => CARD_MARGIN - CARD_BOTTOM_ROOM,
+            _ => CARD_MARGIN,
+        };
+        if (scroll.contentInsets().bottom - bottom).abs() < 0.5 {
+            return;
+        }
+        let none = NSEdgeInsets {
+            top: 0.0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        };
+        scroll.setContentInsets(NSEdgeInsets { bottom, ..none });
+        // The content inset shortens the scroller too; this gives it back
+        // the window's full height.
+        scroll.setScrollerInsets(NSEdgeInsets {
+            bottom: -bottom,
+            ..none
+        });
     }
 
     fn make_cell_view(
@@ -1327,6 +1363,8 @@ impl Controller {
         scroll.setHasVerticalScroller(true);
         scroll.setAutohidesScrollers(true);
         scroll.setDrawsBackground(false);
+        // The bottom inset is set by hand (see `fit_bottom_inset`).
+        scroll.setAutomaticallyAdjustsContentInsets(false);
         scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
 
         // Notice bar (hidden until there is something to say). Its content
@@ -1809,7 +1847,10 @@ impl Controller {
         };
         let clip = scroll.contentView();
         let document = scroll.documentView().map_or(0.0, |d| d.frame().size.height);
-        let y = offset.clamp(0.0, (document - clip.bounds().size.height).max(0.0));
+        // The bottom inset is room past the document's end that the list
+        // can scroll into.
+        let end = document + scroll.contentInsets().bottom - clip.bounds().size.height;
+        let y = offset.clamp(0.0, end.max(0.0));
         clip.scrollToPoint(NSPoint::new(clip.bounds().origin.x, y));
         scroll.reflectScrolledClipView(&clip);
     }
