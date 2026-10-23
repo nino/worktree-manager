@@ -882,8 +882,6 @@ impl App {
             };
             if result.ok {
                 info!("deleted worktree {path}");
-                app.refresh_repo(repo.id.clone()).await;
-                app.rewatch();
             } else if result.reason == Some(DeleteRefusal::Dirty) {
                 // The ladder working, not a fault: the UI asks again.
                 info!("not deleting {path} yet: it has changes");
@@ -891,6 +889,12 @@ impl App {
                 app.inner
                     .reporter
                     .error(&format!("Delete failed: {}", result.message));
+            }
+            // Also after a failure: git may have unregistered the worktree
+            // before failing to delete its folder, and the row must go.
+            if result.reason != Some(DeleteRefusal::Dirty) {
+                app.refresh_repo(repo.id.clone()).await;
+                app.rewatch();
             }
             app.update(|m| {
                 m.busy.remove(&path);
