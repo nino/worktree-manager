@@ -2,6 +2,7 @@
 //! order, and what each row says. Pure functions of the model, so the rules
 //! are tested here and every toolkit shows the same thing.
 
+use wtm_core::activity::ago;
 use wtm_core::branch_tool::{split_tool_prefix, BranchTool};
 use wtm_core::paths::{slugify_branch, tildify};
 use wtm_core::{Focus, Model, RepoNode, WorktreeInfo};
@@ -203,6 +204,8 @@ pub struct Context<'a> {
     pub model: &'a Model,
     pub query: &'a str,
     pub file_manager: &'a str,
+    /// Unix seconds, for how long ago a worktree was last worked in.
+    pub now: u64,
 }
 
 pub fn sections(cx: &Context, open: impl Fn(&str) -> bool, v: &ViewCx<Msg>) -> Vec<Section> {
@@ -319,7 +322,7 @@ fn worktree_row(cx: &Context, node: &RepoNode, w: &WorktreeInfo, v: &ViewCx<Msg>
             .key(),
         )),
         on_copy_branch: w.branch.clone().map(|b| v.on(Msg::Copy(b))),
-        badges: badges_for(w, &node.repo.main_branch),
+        badges: badges_for(w, &node.repo.main_branch, cx.now),
         busy: busy.map(|b| b.label().to_string()),
         path: tildify(&w.path, &cx.model.home),
         path_full: w.path.clone(),
@@ -423,7 +426,7 @@ fn badge(
 /// The badge row for a worktree, in display order. In the light appearance
 /// each state has its own hue; where colour is rationed only uncommitted
 /// work and a missing folder spend it (`Emphasis`).
-pub fn badges_for(w: &WorktreeInfo, main_branch: &str) -> Vec<Badge> {
+pub fn badges_for(w: &WorktreeInfo, main_branch: &str, now: u64) -> Vec<Badge> {
     use Emphasis::*;
     let mut out = Vec::new();
     if w.is_main {
@@ -533,6 +536,45 @@ pub fn badges_for(w: &WorktreeInfo, main_branch: &str) -> Vec<Badge> {
             "No upstream branch configured",
         ));
     }
+    out.extend(activity_badges(w, s.last_activity, now));
+    out
+}
+
+/// When the worktree was last worked in, and whether Claude Code has a
+/// session there: what to go by when choosing which worktrees to delete.
+fn activity_badges(w: &WorktreeInfo, git_activity: Option<u64>, now: u64) -> Vec<Badge> {
+    let mut out = Vec::new();
+    if let Some(t) = git_activity.max(w.claude_session) {
+        let ago = ago(t, now);
+        let ago = if ago == "now" {
+            ago
+        } else {
+            format!("{ago} ago")
+        };
+        out.push(badge(
+            ago.clone(),
+            Hue::Gray,
+            Emphasis::Quiet,
+            format!(
+                "Last worked in {ago}: the newest of the last commit or checkout here, \
+                 the uncommitted files and any Claude Code session"
+            ),
+        ));
+    }
+    if let Some(t) = w.claude_session {
+        out.push(badge(
+            "Claude",
+            Hue::Accent,
+            Emphasis::Quiet,
+            format!(
+                "Claude Code has a session in this worktree, last written to {}",
+                match ago(t, now).as_str() {
+                    "now" => "just now".to_string(),
+                    a => format!("{a} ago"),
+                }
+            ),
+        ));
+    }
     out
 }
 
@@ -573,6 +615,7 @@ mod tests {
             locked: false,
             prunable: false,
             status: None,
+            claude_session: None,
         }
     }
 
@@ -650,6 +693,7 @@ mod tests {
             unpushed: false,
             unpushed_count: 0,
             has_upstream: true,
+            last_activity: None,
         }
     }
 
@@ -662,7 +706,7 @@ mod tests {
     }
 
     fn emphases(w: &WorktreeInfo) -> Vec<Emphasis> {
-        badges_for(w, "main")
+        badges_for(w, "main", 0)
             .into_iter()
             .map(|b| b.emphasis)
             .collect()
@@ -673,6 +717,31 @@ mod tests {
             .into_iter()
             .filter(|e| matches!(e, Emphasis::Attention | Emphasis::Alarm))
             .count()
+    }
+
+    fn texts(w: &WorktreeInfo, now: u64) -> Vec<String> {
+        badges_for(w, "main", now)
+            .into_iter()
+            .map(|b| b.text)
+            .collect()
+    }
+
+    #[test]
+    fn last_activity_is_the_newest_of_git_and_claude_and_quiet() {
+        let now = 10_000_000;
+        let mut s = clean_status();
+        s.last_activity = Some(now - 3 * 86_400);
+        let mut w = with_status(Some(s));
+        assert_eq!(texts(&w, now), ["✓", "3d ago"]);
+
+        w.claude_session = Some(now - 3600);
+        assert_eq!(texts(&w, now), ["✓", "1h ago", "Claude"]);
+        assert_eq!(coloured(&w), 0);
+
+        // Nothing could be read: no badge rather than a made-up date.
+        w.claude_session = None;
+        w.status.as_mut().unwrap().last_activity = None;
+        assert_eq!(texts(&w, now), ["✓"]);
     }
 
     #[test]

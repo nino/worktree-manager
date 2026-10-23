@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -261,6 +261,18 @@ pub struct ParsedStatus {
     pub has_staged: bool,
     pub has_unstaged: bool,
     pub has_untracked: bool,
+    /// The changed and untracked paths, relative to the worktree, for
+    /// [`crate::activity`]. Quoted paths (unusual characters) are left out.
+    pub paths: Vec<String>,
+}
+
+/// The path of a porcelain v2 entry, which follows `fields` space-separated
+/// fields (the path itself may hold spaces). A rename's original path, after
+/// a tab, is dropped: the file is no longer there.
+fn entry_path(line: &str, fields: usize) -> Option<String> {
+    let rest = line.splitn(fields + 1, ' ').nth(fields)?;
+    let path = rest.split('\t').next()?;
+    (!path.is_empty() && !path.starts_with('"')).then(|| path.to_string())
 }
 
 /// Parse the output of `git status --porcelain=v2 --branch`.
@@ -310,9 +322,17 @@ pub fn parse_status_porcelain_v2(output: &str) -> ParsedStatus {
                     if y != b'.' {
                         r.has_unstaged = true;
                     }
+                    let fields = if bytes[0] == b'1' { 8 } else { 9 };
+                    r.paths.extend(entry_path(line, fields));
                 }
-                b'u' => r.has_unstaged = true, // unmerged conflict needs resolution
-                b'?' => r.has_untracked = true,
+                b'u' => {
+                    r.has_unstaged = true; // unmerged conflict needs resolution
+                    r.paths.extend(entry_path(line, 10));
+                }
+                b'?' => {
+                    r.has_untracked = true;
+                    r.paths.extend(entry_path(line, 1));
+                }
                 _ => {}
             }
         }
@@ -453,6 +473,12 @@ pub async fn worktree_status(worktree_path: &str, trunk_ref: &str) -> GitResult<
     let status_out = run_git(worktree_path, &["status", "--porcelain=v2", "--branch"]).await?;
     let parsed = parse_status_porcelain_v2(&status_out);
     let (ahead, behind) = ahead_behind_trunk(worktree_path, trunk_ref).await;
+    let (path, changed) = (PathBuf::from(worktree_path), parsed.paths);
+    let last_activity =
+        tokio::task::spawn_blocking(move || crate::activity::last_activity(&path, &changed))
+            .await
+            .ok()
+            .flatten();
     let has_upstream = parsed.upstream.is_some();
     Ok(WorktreeStatus {
         has_unstaged: parsed.has_unstaged,
@@ -468,6 +494,7 @@ pub async fn worktree_status(worktree_path: &str, trunk_ref: &str) -> GitResult<
             0
         },
         unpushed: has_upstream && parsed.ahead_upstream > 0,
+        last_activity,
     })
 }
 
@@ -500,6 +527,12 @@ pub async fn worktree_info(
             })
             .ok()
     };
+    let cwd = w.path.clone();
+    let claude_session =
+        tokio::task::spawn_blocking(move || crate::activity::last_claude_session(&cwd))
+            .await
+            .ok()
+            .flatten();
     WorktreeInfo {
         path: w.path.clone(),
         branch: w.branch.clone(),
@@ -508,6 +541,7 @@ pub async fn worktree_info(
         locked: w.locked,
         prunable: w.prunable,
         status,
+        claude_session,
     }
 }
 
@@ -733,6 +767,22 @@ mod tests {
         assert!(conflict.has_unstaged);
         let detached = parse_status_porcelain_v2("# branch.head (detached)");
         assert!(detached.detached && detached.head.is_none());
+    }
+
+    #[test]
+    fn status_lists_changed_paths() {
+        let s = parse_status_porcelain_v2(
+            "# branch.head main\n\
+             1 .M N... 100644 100644 100644 ccc ddd src/with space.rs\n\
+             2 R. N... 100644 100644 100644 aaa bbb R100 new name.rs\told.rs\n\
+             u UU N... 1 1 1 1 h1 h2 h3 conflict.txt\n\
+             ? notes/\n\
+             ? \"tab\\there\"\n",
+        );
+        assert_eq!(
+            s.paths,
+            vec!["src/with space.rs", "new name.rs", "conflict.txt", "notes/"]
+        );
     }
 
     #[test]

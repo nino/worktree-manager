@@ -108,6 +108,11 @@ pub struct WorktreeStatus {
     pub unpushed_count: u32,
     /// True if the branch tracks an upstream remote.
     pub has_upstream: bool,
+    /// When the worktree was last worked in, in Unix seconds (see
+    /// [`crate::activity`]); `None` if neither the reflog nor a changed
+    /// file could be read.
+    #[serde(default)]
+    pub last_activity: Option<u64>,
 }
 
 impl WorktreeStatus {
@@ -135,6 +140,10 @@ pub struct WorktreeInfo {
     pub prunable: bool,
     /// Git status; `None` if it could not be computed.
     pub status: Option<WorktreeStatus>,
+    /// When Claude Code last wrote to a session run in this worktree, in
+    /// Unix seconds; `None` if it has none (see [`crate::activity`]).
+    #[serde(default)]
+    pub claude_session: Option<u64>,
 }
 
 /// Where the branch of a new worktree comes from.
