@@ -506,7 +506,11 @@ mod tests {
         };
         let params = DeleteWorktreeParams {
             repo_id: "r".into(),
-            worktree_path: wt_path.clone(),
+            // As git lists it: macOS's temp folder sits behind a symlink and
+            // Windows spells paths its own way, and the delete matches on this.
+            worktree_path: list_worktrees_raw(&repo.path).await.unwrap()[1]
+                .path
+                .clone(),
             expected_branch: Some("feat".into()),
             force: false,
         };
