@@ -220,7 +220,7 @@ pub async fn delete_worktree(
             let dirty = lower.contains("contains modified or untracked files")
                 || lower.contains("use --force");
             if !dirty {
-                return DeleteWorktreeResult::refused(DeleteRefusal::Error, message);
+                return after_failed_remove(repo, &params.worktree_path, message).await;
             }
             if !params.force {
                 return DeleteWorktreeResult::refused(DeleteRefusal::Dirty, message);
@@ -234,7 +234,72 @@ pub async fn delete_worktree(
     .await
     {
         Ok(_) => DeleteWorktreeResult::success(""),
-        Err(e) => DeleteWorktreeResult::refused(DeleteRefusal::Error, e.detail()),
+        Err(e) => after_failed_remove(repo, &params.worktree_path, e.detail()).await,
+    }
+}
+
+/// `git worktree remove` unregisters the worktree even when emptying its
+/// folder fails half way ("failed to delete '…': Directory not empty"),
+/// typically because something wrote into the folder while git was deleting
+/// it. Saying "Delete failed" then misleads: the row goes on the next
+/// refresh, and what is left may be files written after git's clean check,
+/// so they are named in the error (which is reported, to learn what writes
+/// there), not removed.
+async fn after_failed_remove(
+    repo: &RepoConfig,
+    worktree_path: &str,
+    message: String,
+) -> DeleteWorktreeResult {
+    // Only a failure on the folder itself, not on git's own bookkeeping.
+    let folder_failed = message.contains(&format!("failed to delete '{worktree_path}'"));
+    if !folder_failed || tokio::fs::metadata(worktree_path).await.is_err() {
+        return DeleteWorktreeResult::refused(DeleteRefusal::Error, message);
+    }
+    let still_listed = match list_worktrees_raw(&repo.path).await {
+        Ok(all) => all.iter().any(|w| w.path == worktree_path),
+        Err(_) => true,
+    };
+    if still_listed {
+        return DeleteWorktreeResult::refused(DeleteRefusal::Error, message);
+    }
+    let left = leftover_names(worktree_path).await;
+    // The notice this becomes is already reported; this keeps git's words.
+    log::info!("git unregistered {worktree_path} but left {left} behind: {message}");
+    DeleteWorktreeResult::refused(
+        DeleteRefusal::Error,
+        format!(
+            "The worktree was removed from git, but its folder still holds {left}. \
+             Something may have been writing there while it was deleted; \
+             check those files, then delete the folder yourself."
+        ),
+    )
+}
+
+/// The first few top-level names still in `dir`, for the warning and the
+/// message.
+async fn leftover_names(dir: &str) -> String {
+    const SHOWN: usize = 5;
+    const COUNTED: usize = 100;
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return "files that could not be listed".into();
+    };
+    let mut names = Vec::new();
+    let mut total = 0;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if names.len() < SHOWN {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        total += 1;
+        if total > COUNTED {
+            break;
+        }
+    }
+    let more = total - names.len();
+    match (names.is_empty(), more) {
+        (true, _) => "nothing (it is now empty)".into(),
+        (false, 0) => names.join(", "),
+        (false, n) if total > COUNTED => format!("{} and over {n} more", names.join(", ")),
+        (false, n) => format!("{} and {n} more", names.join(", ")),
     }
 }
 
@@ -398,6 +463,53 @@ mod tests {
             "{err}"
         );
         assert!(!dir.join("~").exists(), "nothing is made inside the repo");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_half_deleted_worktree_folder_is_reported_not_removed() {
+        let dir = std::env::temp_dir().join(format!("wtm-half-deleted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo_dir = dir.join("repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        run_git(&repo_dir, &["init", "--quiet"]).await.unwrap();
+        let repo = RepoConfig {
+            id: "r".into(),
+            name: "r".into(),
+            path: repo_dir.to_string_lossy().into_owned(),
+            main_branch: "main".into(),
+            init_command: String::new(),
+            commands: Vec::new(),
+        };
+        // What git leaves when a writer races its delete: no longer a
+        // worktree, a folder with files in it.
+        let left = dir.join("wt");
+        std::fs::create_dir_all(left.join("target")).unwrap();
+        std::fs::write(left.join("notes.md"), "x").unwrap();
+        let left = left.to_string_lossy().into_owned();
+        let message = format!("error: failed to delete '{left}': Directory not empty");
+
+        let result = after_failed_remove(&repo, &left, message.clone()).await;
+        assert_eq!(result.reason, Some(DeleteRefusal::Error));
+        assert!(
+            result
+                .message
+                .starts_with("The worktree was removed from git")
+                && result.message.contains("notes.md")
+                && result.message.contains("target"),
+            "{}",
+            result.message
+        );
+        assert!(
+            Path::new(&left).join("notes.md").exists(),
+            "nothing deleted"
+        );
+
+        // A worktree git still lists, or any other failure, keeps git's words.
+        let listed = after_failed_remove(&repo, &repo.path, message).await;
+        assert!(listed.message.starts_with("error: failed to delete"));
+        let other = after_failed_remove(&repo, &left, "fatal: something else".into()).await;
+        assert_eq!(other.message, "fatal: something else");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
