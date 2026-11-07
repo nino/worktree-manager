@@ -15,6 +15,7 @@ pub mod cells;
 pub mod controller;
 pub mod dialogs;
 pub mod elements;
+pub mod exceptions;
 pub mod items;
 pub mod menu;
 pub mod outline;

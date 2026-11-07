@@ -891,7 +891,12 @@ pub fn forward(record: &log::Record) {
 /// Report panics through `reporter`, after whatever the hook already did
 /// (printing the message), which runs first so the log has it even if the
 /// send is slow.
-pub fn install_panic_hook(reporter: Arc<Reporter>) {
+///
+/// `foreign` names an exception from outside Rust that has just been thrown,
+/// if the OS backend can tell. Such an exception reaching a Rust frame ends
+/// as a panic that says only "panic in a function that cannot unwind", so
+/// without this the report never says what went wrong.
+pub fn install_panic_hook(reporter: Arc<Reporter>, foreign: fn() -> Option<String>) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
@@ -901,12 +906,28 @@ pub fn install_panic_hook(reporter: Arc<Reporter>) {
             .map(|s| s.to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "panic with a non-string payload".into());
+        let message = if message.contains(CANNOT_UNWIND) {
+            with_foreign_cause(message, foreign())
+        } else {
+            message
+        };
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
         let thread = std::thread::current();
         reporter.panic(&message, location, thread.name());
     }));
+}
+
+/// What Rust says when an exception from outside it reaches a Rust frame.
+const CANNOT_UNWIND: &str = "panic in a function that cannot unwind";
+
+/// The panic's message, followed by the foreign exception that caused it.
+fn with_foreign_cause(message: String, foreign: Option<String>) -> String {
+    match foreign {
+        Some(cause) => format!("{message}, after {cause}"),
+        None => message,
+    }
 }
 
 #[cfg(test)]
@@ -1085,6 +1106,19 @@ mod tests {
         assert!(unkeyed_rec.0.lock().is_empty());
         assert!(!dir.join("analytics-id").exists(), "no id before opting in");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panic_names_the_foreign_exception_behind_it() {
+        assert_eq!(
+            with_foreign_cause(
+                "panic in a function that cannot unwind".into(),
+                Some("NSInternalInconsistencyException: bad row".into())
+            ),
+            "panic in a function that cannot unwind, \
+             after NSInternalInconsistencyException: bad row"
+        );
+        assert_eq!(with_foreign_cause("boom".into(), None), "boom");
     }
 
     #[test]
