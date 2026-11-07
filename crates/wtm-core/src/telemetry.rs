@@ -906,7 +906,11 @@ pub fn install_panic_hook(reporter: Arc<Reporter>, foreign: fn() -> Option<Strin
             .map(|s| s.to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "panic with a non-string payload".into());
-        let message = with_foreign_cause(message, foreign());
+        let message = if message.contains(CANNOT_UNWIND) {
+            with_foreign_cause(message, foreign())
+        } else {
+            message
+        };
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
@@ -914,6 +918,9 @@ pub fn install_panic_hook(reporter: Arc<Reporter>, foreign: fn() -> Option<Strin
         reporter.panic(&message, location, thread.name());
     }));
 }
+
+/// What Rust says when an exception from outside it reaches a Rust frame.
+const CANNOT_UNWIND: &str = "panic in a function that cannot unwind";
 
 /// The panic's message, followed by the foreign exception that caused it.
 fn with_foreign_cause(message: String, foreign: Option<String>) -> String {

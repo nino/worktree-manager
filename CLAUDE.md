@@ -147,7 +147,8 @@ selection, key loop), `cells` (row cell views), `rowview` (the card drawing),
 `outline` (NSOutlineView subclass), `button` (focusable buttons, the branch
 bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
 (agent marks), `tooltip`, `dialogs` (sheets), `settings` (its own window),
-`badge`, `items`, `menu`, `platform`, `util`.
+`badge`, `items`, `menu`, `platform`, `exceptions` (notes the last
+Objective-C exception for the panic report), `util`.
 
 ## Key behaviors
 
@@ -210,7 +211,8 @@ bezel, icon buttons), `picker` (branch popover), `branchlabel` + `toolicon`
   a few professional users: Settings → "Error reports", off by default (`sendErrorReports` in the config), and nothing is
   sent while it is off (feedback the user writes and sends is the one
   exception; see below), nor ever asked about. When on, panics (a hook in
-  `wtm-app` that waits up to 2 s for the send), the errors the app shows
+  `wtm-app` that waits up to 2 s for the send; on macOS a "cannot unwind"
+  panic also names the AppKit exception behind it), the errors the app shows
   (error notices, failed creations, deletes and listings) and the warnings
   and errors the `wtm_*` crates log (`warn!`, `error!`; level `warning` or
   `error`, typed by module) go to PostHog as `$exception` events, plus one
